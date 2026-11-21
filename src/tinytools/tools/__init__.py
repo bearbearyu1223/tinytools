@@ -17,13 +17,16 @@ error never matches anything (see :mod:`tinytools.checkers`). A start time may
 carry zero seconds (``"15:00:00"`` is ``"15:00"``); other seconds are an error. Strings are
 stripped and their whitespace runs collapsed before use; an integer parameter
 accepts an integral float (``60.0``), as JSON does not distinguish them.
+An *optional* argument whose value is ``None`` or a blank string counts as
+omitted (as BFCL's checker treats ``""``); a required one stays strict.
 
 Word matching (contacts, titles): case-insensitive, on whole words
 (:func:`words`). For titles and document queries a few filler words
 (:data:`STOPWORDS`: "the", "doc", "meeting", "meetings", ...) are dropped from
 both sides.
 A query with no words left is an error, so an empty query cannot return
-everything.
+everything. The one exception: get_calendar_event given a date treats a title
+with no words left as no title (the date alone narrows the search).
 
 Distractor tools (:data:`DISTRACTORS`) have schemas only. They are offered in
 prompts but are never a task's right answer, and calling one is an error.
@@ -50,7 +53,7 @@ DATA = Path(__file__).resolve().parent / "data"
 __all__ = [
     "SCHEMAS", "DISTRACTORS", "TOOL_NAMES", "DISTRACTOR_NAMES", "ToolError", "State",
     "clock", "contacts", "calendar", "documents", "fresh_state", "execute", "words",
-    "evaluate", "STOPWORDS", "schema", "context_line",
+    "evaluate", "STOPWORDS", "schema", "context_line", "is_blank",
 ]
 
 
@@ -258,6 +261,11 @@ def _clean_int(value: Any, key: str) -> int:
     return int(value)
 
 
+def is_blank(value: Any) -> bool:
+    """``None`` or a string with nothing but whitespace: an optional argument left out."""
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
 def _check(name: str, args: Any) -> dict:
     """Validate ``args`` against the tool's schema; return them cleaned."""
     if not isinstance(args, dict):
@@ -266,7 +274,9 @@ def _check(name: str, args: Any) -> dict:
     unknown = sorted(set(args) - set(props))
     if unknown:
         raise ToolError(f"unknown argument(s): {', '.join(unknown)}")
-    missing = [k for k in SCHEMAS[name]["parameters"]["required"] if k not in args]
+    required = SCHEMAS[name]["parameters"]["required"]
+    args = {k: v for k, v in args.items() if k in required or not is_blank(v)}
+    missing = [k for k in required if k not in args]
     if missing:
         raise ToolError(f"missing argument(s): {', '.join(missing)}")
     out = {}
@@ -408,6 +418,8 @@ def _get_calendar_event(state: State, date: str | None = None, title: str | None
     if date is None and title is None:
         raise ToolError("give a date, a title, or both")
     day = _date(date) if date is not None else None
+    if title is not None and day is not None and not words(title, drop_stopwords=True):
+        title = None  # only filler words ("meetings"): with a date, that is no title
     q = _query_words(title, drop_stopwords=True) if title is not None else None
     hits = [e for e in state.calendar
             if (day is None or e["date"] == day)

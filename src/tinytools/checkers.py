@@ -9,16 +9,26 @@ its arguments equal the reference's after normalization:
 * the calculator's ``expression`` compares as a syntax tree, so spacing,
   redundant parentheses and number spelling (``2.50``, ``2.5``) don't matter
   but operand order does (``27 * 348`` is not ``348 * 27``);
-* lists keep their order; an omitted optional argument is not filled in.
+* lists keep their order; an omitted optional argument is not filled in,
+  and an optional argument given as ``None`` or a blank string counts as
+  omitted (as the tool treats it, and as BFCL's checker treats ``""``).
 
 **Execution match**: the reply holds exactly one call, to the reference's tool;
 both calls run on their own fresh copy of the data (:func:`tools.fresh_state`);
 the reply's call raises no error; and the results agree:
 
-* calculator: numerically, within ``REL_TOL`` (relative) or ``ABS_TOL``;
-  but an expression that is a bare number (no operator: ``9396``, ``-2.5``)
-  fails when the reference's has one, since it skips the tool's work (post
-  10's reward must not pay for computing the answer by hand);
+* calculator: the two expressions must have the same tree after
+  :func:`expression_tree`'s normalization, *and* agree numerically within
+  ``REL_TOL`` (relative) or ``ABS_TOL``. The normalization sorts the
+  operands of ``+`` and ``*`` (flattening chains: ``a * b * c``), removes
+  identity operations (``x + 0``, ``0 + x``, ``x - 0``, ``x * 1``, ``1 * x``,
+  ``x / 1``, ``x // 1``, ``x ** 1``), cancels double signs and ignores
+  parentheses and number spelling. So ``27 * 348`` passes against
+  ``348 * 27``, but the answer worked out by hand does not, whether bare
+  (``9396``) or dressed up (``9396 * 1``, ``--9396``, ``9396 + 0``): post
+  10's reward must not pay for computing the answer without the tool.
+  Equivalent work in another form fails too (``3438 * 0.48`` against
+  ``3438 * 48 / 100``);
 * search_contacts, get_calendar_event, search_documents: the *same set* of
   records (by id). A broader query that includes the answer fails, and so
   does a narrower one;
@@ -54,7 +64,8 @@ REL_TOL = 1e-6
 ABS_TOL = 1e-9
 
 __all__ = ["REL_TOL", "ABS_TOL", "decode", "normalize_arguments", "exact_match",
-           "execution_match", "Check", "check_reply", "call_text", "state_key", "is_bare_number"]
+           "execution_match", "Check", "check_reply", "call_text", "state_key", "is_bare_number",
+           "expression_tree"]
 
 
 # -- decoding ------------------------------------------------------------------------
@@ -128,10 +139,18 @@ def _norm(value: Any) -> Any:
     return repr(value)
 
 
+def _drop_blank_optional(name: str, args: dict) -> dict:
+    """``args`` without optional arguments given as ``None`` or blank (a known tool's schema)."""
+    if name not in tools.SCHEMAS:
+        return args
+    required = tools.SCHEMAS[name]["parameters"]["required"]
+    return {k: v for k, v in args.items() if k in required or not tools.is_blank(v)}
+
+
 def normalize_arguments(name: str, args: dict) -> tuple:
     """The normalized form exact match compares (see the module docstring)."""
     out = []
-    for key, value in args.items():
+    for key, value in _drop_blank_optional(name, args).items():
         if name == "calculator" and key == "expression" and isinstance(value, str):
             out.append((key, ("expr", _canon_expression(value))))
         else:
@@ -201,12 +220,82 @@ def is_bare_number(expression: Any) -> bool:
     return isinstance(node, ast.Constant) and type(node.value) in (int, float)
 
 
-def skips_the_work(name: str, args: Any, reference: dict) -> bool:
-    """A calculator call that hands over the answer as a bare number when the reference computes."""
-    if name != "calculator" or reference["name"] != "calculator" or not isinstance(args, dict):
+_ZERO, _ONE = ("n", 0.0), ("n", 1.0)
+_FLAT = {ast.Add: "+", ast.Mult: "*"}
+_DROP = {"+": _ZERO, "*": _ONE}  # the identity operand of each commutative operator
+_KEEP = {ast.Sub: "-", ast.Div: "/", ast.FloorDiv: "//", ast.Mod: "%", ast.Pow: "**"}
+_RIGHT_IDENTITY = {"-": _ZERO, "/": _ONE, "//": _ONE, "**": _ONE}
+
+
+def expression_tree(expression: Any) -> tuple | None:
+    """A calculator expression's tree, normalized for execution match; ``None`` if not arithmetic.
+
+    Nodes are tuples: ``("n", value)`` for a number (as a float, so ``2.50``,
+    ``2.5`` and ``5/2``'s operands compare by value), ``("neg", x)`` for a
+    minus sign in front of a non-number, ``("+", operands)`` and
+    ``("*", operands)`` with the operands flattened across chains and sorted,
+    and ``(op, left, right)`` for ``- / // % **``. Removed: unary plus, double
+    minus, ``+ 0`` / ``0 +``, ``* 1`` / ``1 *``, and ``- 0``, ``/ 1``,
+    ``// 1``, ``** 1`` on the right. Nothing is computed: a subtree of numbers
+    stays a subtree (``348 * 27`` is not ``9396``), which is the point.
+    Removing ``// 1`` can change a float's value (``2.5 // 1``); execution
+    match still compares the evaluated results, so that never passes wrongly.
+    """
+    if not isinstance(expression, str):
+        return None
+    try:
+        body = ast.parse(expression.strip(), mode="eval").body
+    except SyntaxError:
+        return None
+    return _tree(body)
+
+
+def _tree(node) -> tuple | None:
+    if isinstance(node, ast.Constant):
+        return ("n", float(node.value)) if type(node.value) in (int, float) else None
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        x = _tree(node.operand)
+        if x is None or isinstance(node.op, ast.UAdd):
+            return x
+        if x[0] == "n":
+            return ("n", -x[1])
+        return x[1] if x[0] == "neg" else ("neg", x)
+    if isinstance(node, ast.BinOp) and type(node.op) in _FLAT:
+        op = _FLAT[type(node.op)]
+        left, right = _tree(node.left), _tree(node.right)
+        if left is None or right is None:
+            return None
+        operands = []
+        for x in (left, right):
+            operands.extend(x[1] if x[0] == op else [x])
+        operands = [x for x in operands if x != _DROP[op]]
+        if not operands:
+            return _DROP[op]
+        if len(operands) == 1:
+            return operands[0]
+        return (op, tuple(sorted(operands, key=repr)))
+    if isinstance(node, ast.BinOp) and type(node.op) in _KEEP:
+        op = _KEEP[type(node.op)]
+        left, right = _tree(node.left), _tree(node.right)
+        if left is None or right is None:
+            return None
+        if _RIGHT_IDENTITY.get(op) == right:
+            return left
+        return (op, left, right)
+    return None
+
+
+def same_work(name: str, args: Any, reference: dict) -> bool:
+    """For a calculator call: the reply's expression has the reference's normalized tree.
+
+    True for every other tool (their results are compared on their own).
+    """
+    if name != "calculator" or reference["name"] != "calculator":
+        return True
+    if not isinstance(args, dict):
         return False
-    return (is_bare_number(args.get("expression"))
-            and not is_bare_number(reference["arguments"].get("expression")))
+    got = expression_tree(args.get("expression"))
+    return got is not None and got == expression_tree(reference["arguments"].get("expression"))
 
 
 def same_result(name: str, a: Any, b: Any) -> bool:
@@ -231,7 +320,7 @@ def _execution(raw: str, decoded, reference) -> tuple[bool, Run | None, Run | No
     name, args = call
     got = run(name, args)
     ok = (name == reference["name"] and same_result(name, got.compared, ref.compared)
-          and not skips_the_work(name, args, reference))
+          and same_work(name, args, reference))
     return ok, ref, got
 
 

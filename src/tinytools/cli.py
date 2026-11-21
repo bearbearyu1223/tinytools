@@ -9,6 +9,7 @@ Commands (``tinytools <command> --help`` for each one's flags):
     tasks           generate our tool tasks (test / dev / train) and count them
     check-demo      three calls checked by exact match and by execution match
     score           score a model on our tool tasks, outcome by outcome; or sample 8
+    rescore         re-check a score replies file with the current checkers (no model)
     sft-data        the SFT sets: ToolACE truncated (real), random-call per seed (control)
     figures         the post's figures, parsed from the captures, into figures/
 
@@ -471,11 +472,27 @@ def _tagname(model: str, split: str, mode: str, limit) -> str:
     return f"{model.split('/')[-1]}-{split}-{mode}-limit{limit if limit is not None else 'all'}"
 
 
+def _score_setup(rep: Report, *, model: str, split: str, splits: dict, limit, sampling: bool,
+                 samples: int, temperature: float, seed: int) -> None:
+    from . import bfcl, tasks
+
+    rep.header()
+    rep.section("Setup")
+    rep.kv("model", model)
+    rep.kv("tasks", f"{split} split, seed {tasks.DEFAULT_SEED}")
+    rep.kv("  sha256 (first 16)", tasks.sha256(splits[split])[:16])
+    rep.kv("tasks scored", "all" if limit is None else f"first {limit} of each kind, by id")
+    rep.kv("decoding", "greedy (argmax)" if not sampling else
+           f"{samples} samples, temperature {temperature:g}")
+    rep.kv("top_p / top_k / repetition penalty", "1.0 / off / 1.0")
+    rep.kv("max new tokens", bfcl.MAX_NEW_TOKENS)
+    rep.kv("seed", f"{seed} (+ crc32 of each task id)")
+    rep.kv("right means", "execution match (exact beside it)")
+
+
 def cmd_score(args) -> None:
     _quiet_hf()
     from . import bfcl, ours, tasks
-    from .checkers import call_text, check_reply
-    from .classify import CALL_OUTCOMES, NO_FIT_OUTCOMES, mixed_share, short_label
     from .device import get_device
 
     sampling = args.samples > 1
@@ -487,25 +504,19 @@ def cmd_score(args) -> None:
     items = ours.limit_per_kind(splits[args.split], args.limit)
 
     rep = Report(f"tinytools score ({args.split}, {mode})", out=OUTPUTS / f"score-{tag}.txt")
-    rep.header()
-    rep.section("Setup")
-    rep.kv("model", args.model)
-    rep.kv("tasks", f"{args.split} split, seed {tasks.DEFAULT_SEED}")
-    rep.kv("  sha256 (first 16)", tasks.sha256(splits[args.split])[:16])
-    rep.kv("tasks scored", "all" if args.limit is None else f"first {args.limit} of each kind, by id")
-    rep.kv("decoding", "greedy (argmax)" if not sampling else
-           f"{args.samples} samples, temperature {args.temperature:g}")
-    rep.kv("top_p / top_k / repetition penalty", "1.0 / off / 1.0")
-    rep.kv("max new tokens", bfcl.MAX_NEW_TOKENS)
-    rep.kv("seed", f"{args.seed} (+ crc32 of each task id)")
-    rep.kv("right means", "execution match (exact beside it)")
+    _score_setup(rep, model=args.model, split=args.split, splits=splits, limit=args.limit,
+                 sampling=sampling, samples=args.samples, temperature=args.temperature,
+                 seed=args.seed)
 
     device = get_device()
     progress.status(f"loading {args.model} on {device}")
     tok, model = bfcl.load_model(args.model, device)
 
     if not sampling:
-        _r1(rep, tok, model, ours.r1_task(splits["test"]), args.seed)
+        task = ours.r1_task(splits["test"])
+        cfg = bfcl.generation_config(tok, model, 1, 0.0)
+        g = bfcl.generate_text(tok, model, ours.prompt(tok, task), task["id"], cfg, args.seed)
+        _r1(rep, tok, task, g.texts[0])
 
     greedy = ours.score(tok, model, items, samples=1, temperature=0.0, seed=args.seed,
                         on_item=progress.items(f"{args.split}, greedy", len(items)))
@@ -514,8 +525,60 @@ def cmd_score(args) -> None:
         sampled = ours.score(tok, model, items, samples=args.samples,
                              temperature=args.temperature, seed=args.seed,
                              on_item=progress.items(f"{args.split}, {mode}", len(items)))
-    main = sampled if sampling else greedy
+    _score_body(rep, greedy=greedy, sampled=sampled, mode=mode, samples=args.samples,
+                split=args.split, wall=_wall_rows(greedy, sampled, mode))
+    rep.close()
+    path = OUTPUTS / f"score-{tag}-replies.jsonl"
+    _write_replies(path, greedy, sampled, mode)
+    progress.status(f"replies written to {path.relative_to(ROOT)}")
 
+
+def _wall_rows(greedy, sampled, mode: str) -> list[list] | None:
+    """The wall-clock table's rows; ``None`` if any task's time or token count is unknown."""
+    rows = []
+    for label, res in [("greedy", greedy)] + ([(mode, sampled)] if sampled is not None else []):
+        if any(s.seconds is None or s.new_tokens is None for s in res):
+            return None
+        secs = sum(s.seconds for s in res)
+        rows.append([label, len(res), f"{secs / max(1, len(res)):.2f}",
+                     f"{sum(s.new_tokens for s in res) / max(1, len(res)):.0f}",
+                     sum(sum(s.capped) for s in res)])
+    return rows
+
+
+def _write_replies(path: Path, greedy, sampled, mode: str) -> None:
+    """Every reply with its checks, one JSON line each; ``rescore`` reads this back."""
+    with open(path, "w", encoding="utf-8") as f:
+        for label, res in [("greedy", greedy)] + ([(mode, sampled)] if sampled is not None else []):
+            for s in res:
+                for i, (text, c, capped) in enumerate(zip(s.replies, s.checks, s.capped,
+                                                          strict=True)):
+                    row = {
+                        "id": s.task["id"], "pass": label, "sample": i, "kind": s.task["kind"],
+                        "tool": s.task["tool"], "request": s.task["request"], "reply": text,
+                        "outcome": c.outcome, "execution": c.execution, "exact": c.exact,
+                        "hit_cap": capped,
+                        "result": c.reply_run.result if c.reply_run else None,
+                    }
+                    if s.seconds is not None and s.new_tokens is not None:
+                        row["task_seconds"] = s.seconds  # the task's whole group, all samples
+                        row["task_new_tokens"] = s.new_tokens
+                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def _score_body(rep: Report, *, greedy, sampled, mode: str, samples: int, split: str,
+                wall: list[list] | list[str] | None) -> None:
+    """Everything ``score`` prints after the r1 block, from scored replies (no model needed).
+
+    ``wall`` is the wall-clock table's rows, or the lines of an earlier capture's
+    wall-clock section (``rescore`` of a replies file with no timings), or ``None``.
+    """
+    from . import ours, tasks
+    from .checkers import call_text, check_reply
+    from .classify import CALL_OUTCOMES, NO_FIT_OUTCOMES, mixed_share, short_label
+
+    sampling = sampled is not None
+    main = sampled if sampling else greedy
     rows = ours.outcome_rows(main)
     calls = [r for r in rows if r.kind != tasks.NO_FIT and r.kind != "total"]
     no_fit = [r for r in rows if r.kind == tasks.NO_FIT]
@@ -571,7 +634,7 @@ def cmd_score(args) -> None:
         rep.print(f"  {s.task['id']}  {s.task['tool']}")
 
     if sampling:
-        g = args.samples
+        g = samples
         right = {k: [s.right for s in sampled if s.task["kind"] == k] for k in tasks.KINDS}
         allr = [s.right for s in sampled]
         rep.section(f"Groups of {g}: how many samples are right per task")
@@ -600,35 +663,124 @@ def cmd_score(args) -> None:
         rep.table(["kind", "tasks", "greedy right", f"pass@{g}"], rows)
         rep.note(f"pass@{g}: tasks with at least one right answer in {g} samples.")
 
-    rep.section("Wall clock (varies run to run)")
-    rows = []
-    for label, res in [("greedy", greedy)] + ([(mode, sampled)] if sampling else []):
-        secs = sum(s.seconds for s in res)
-        rows.append([label, len(res), f"{secs / max(1, len(res)):.2f}",
-                     f"{sum(s.new_tokens for s in res) / max(1, len(res)):.0f}",
-                     sum(sum(s.capped) for s in res)])
-    rep.table(["pass", "tasks", "s/task", "new tokens/task", "hit token cap"], rows)
+    rep.section(WALL_CLOCK)
+    if wall and isinstance(wall[0], str):
+        for line in wall:
+            rep.print(line)
+    elif wall:
+        rep.table(["pass", "tasks", "s/task", "new tokens/task", "hit token cap"], wall)
+    else:
+        rep.note("(not recorded: the replies file has no timings and there is no")
+        rep.note("earlier capture to carry them over from)")
+
+
+WALL_CLOCK = "Wall clock (varies run to run)"
+
+
+def section_lines(text: str, title: str) -> list[str] | None:
+    """The body of one section of a capture (the lines after its title's rule, up to the next
+    section's rule or the end, trailing blanks dropped); ``None`` if the section is absent."""
+    lines = text.split("\n")
+    rule = "-" * 74
+    for i in range(1, len(lines) - 1):
+        if lines[i] == title and lines[i - 1] == rule and lines[i + 1] == rule:
+            body = []
+            for line in lines[i + 2:]:
+                if line == rule or line == "=" * 74:
+                    break
+                body.append(line)
+            while body and not body[-1].strip():
+                body.pop()
+            return body
+    return None
+
+
+def cmd_rescore(args) -> None:
+    """Re-check a ``score`` replies file with the current checkers; write ``score``'s capture."""
+    _quiet_hf()
+    from . import ours, tasks
+    from .checkers import check_reply
+
+    path = args.replies.resolve()
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    if not rows:
+        sys.exit(f"{path}: no replies")
+    passes = list(dict.fromkeys(r["pass"] for r in rows))
+    sampled_passes = [p for p in passes if p != "greedy"]
+    if "greedy" not in passes or len(sampled_passes) > 1:
+        sys.exit(f"{path}: expected a greedy pass and at most one sampled pass, got {passes}")
+    mode = sampled_passes[0] if sampled_passes else "greedy"
+    sampling = mode != "greedy"
+    samples = 1 + max(r["sample"] for r in rows if r["pass"] == mode) if sampling else 1
+    temperature = float(mode.rsplit("-t", 1)[1]) if sampling else 0.0
+
+    splits = _load_or_make_tasks(tasks.DEFAULT_SEED)
+    by_id = {t["id"]: t for t in splits[args.split]}
+    ids = list(dict.fromkeys(r["id"] for r in rows if r["pass"] == "greedy"))
+    missing = [i for i in ids if i not in by_id]
+    if missing:
+        sys.exit(f"{path}: {len(missing)} task ids not in the {args.split} split (e.g. {missing[0]})")
+    per_kind: dict[str, int] = {}
+    for i in ids:
+        per_kind[by_id[i]["kind"]] = per_kind.get(by_id[i]["kind"], 0) + 1
+    limit = None
+    if sorted(ids) != [t["id"] for t in ours.limit_per_kind(splits[args.split], None)]:
+        limit = max(per_kind.values())
+        if sorted(ids) != [t["id"] for t in ours.limit_per_kind(splits[args.split], limit)]:
+            sys.exit(f"{path}: its tasks are not the first N of each kind of the {args.split} split")
+    tag = _tagname(args.model, args.split, mode, limit)
+    if path.name != f"score-{tag}-replies.jsonl":
+        sys.exit(f"{path.name}: expected score-{tag}-replies.jsonl for --model {args.model} "
+                 f"--split {args.split}; pass the model and split it was scored with")
+
+    def rebuild(label: str) -> list:
+        group: dict[str, list[dict]] = {}
+        for r in rows:
+            if r["pass"] == label:
+                group.setdefault(r["id"], []).append(r)
+        out = []
+        on_item = progress.items(f"rescore, {label}", len(group))
+        for k, (tid, rs) in enumerate(group.items(), start=1):
+            rs.sort(key=lambda r: r["sample"])
+            task = by_id[tid]
+            out.append(ours.Scored(
+                task, [r["reply"] for r in rs], [check_reply(r["reply"], task["reference"]) for r in rs],
+                [r["hit_cap"] for r in rs], rs[0].get("task_new_tokens"), rs[0].get("task_seconds")))
+            on_item(k)
+        return out
+
+    greedy = rebuild("greedy")
+    sampled = rebuild(mode) if sampling else None
+    wall = _wall_rows(greedy, sampled, mode)
+    out = OUTPUTS / f"score-{tag}.txt"
+    if wall is None and out.exists():  # timings live only in the capture these replies came from
+        wall = section_lines(out.read_text(encoding="utf-8"), WALL_CLOCK)
+
+    rep = Report(f"tinytools score ({args.split}, {mode})", out=out)
+    _score_setup(rep, model=args.model, split=args.split, splits=splits, limit=limit,
+                 sampling=sampling, samples=samples, temperature=temperature, seed=args.seed)
+    rep.kv("checked by", "rescore of the saved replies")
+    if not sampling:
+        task = ours.r1_task(splits["test"])
+        if args.split == "test" and any(s.task["id"] == task["id"] for s in greedy):
+            from transformers import AutoTokenizer
+
+            tok = AutoTokenizer.from_pretrained(args.model)
+            raw = next(s.replies[0] for s in greedy if s.task["id"] == task["id"])
+            _r1(rep, tok, task, raw)
+        else:
+            rep.section(f"One task, whole: {task['id']} ({task['kind']}, {task['tool']})")
+            rep.note("(not in this replies file: run score to print it)")
+    _score_body(rep, greedy=greedy, sampled=sampled, mode=mode, samples=samples,
+                split=args.split, wall=wall)
     rep.close()
-
-    path = OUTPUTS / f"score-{tag}-replies.jsonl"
-    with open(path, "w", encoding="utf-8") as f:
-        for label, res in [("greedy", greedy)] + ([(mode, sampled)] if sampling else []):
-            for s in res:
-                for i, (text, c, capped) in enumerate(zip(s.replies, s.checks, s.capped,
-                                                          strict=True)):
-                    f.write(json.dumps({
-                        "id": s.task["id"], "pass": label, "sample": i, "kind": s.task["kind"],
-                        "tool": s.task["tool"], "request": s.task["request"], "reply": text,
-                        "outcome": c.outcome, "execution": c.execution, "exact": c.exact,
-                        "hit_cap": capped,
-                        "result": c.reply_run.result if c.reply_run else None,
-                    }, ensure_ascii=False) + "\n")
-    progress.status(f"replies written to {path.relative_to(ROOT)}")
+    _write_replies(path, greedy, sampled, mode)
+    progress.status(f"verdicts in {path.relative_to(ROOT)} updated (replies unchanged)")
 
 
-def _r1(rep: Report, tok, model, task: dict, seed: int) -> None:
+def _r1(rep: Report, tok, task: dict, raw: str) -> None:
     """r1a and r1b: one test task's whole prompt, and the model's reply run through the tool."""
-    from . import bfcl, ours, tasks
+    from . import ours, tasks
     from .checkers import call_text, check_reply
 
     text = ours.prompt(tok, task)
@@ -646,9 +798,6 @@ def _r1(rep: Report, tok, model, task: dict, seed: int) -> None:
     rep.kv("  the whole tools section", census.tools_section_tokens)
     rep.kv("  tokens straddling those edges", census.straddling)
 
-    cfg = bfcl.generation_config(tok, model, 1, 0.0)
-    g = bfcl.generate_text(tok, model, text, task["id"], cfg, seed)
-    raw = g.texts[0]
     c = check_reply(raw, task["reference"])
     rep.section("The model's reply, parsed and run")
     rep.note("raw reply (up to the end-of-turn token):")
@@ -933,6 +1082,14 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--temperature", type=float, default=0.0)
     s.add_argument("--seed", type=int, default=0)
     s.set_defaults(fn=cmd_score)
+
+    s = sub.add_parser("rescore", help="re-check a score replies file with the current checkers")
+    s.add_argument("--replies", type=Path, required=True,
+                   help="a score-...-replies.jsonl; its verdict fields are rewritten")
+    s.add_argument("--model", default="Qwen/Qwen2.5-0.5B-Instruct", help="the model it was scored with")
+    s.add_argument("--split", choices=["test", "dev", "train-r6a"], default="test")
+    s.add_argument("--seed", type=int, default=0, help="the seed it was scored with (printed only)")
+    s.set_defaults(fn=cmd_rescore)
 
     s = sub.add_parser("sft-data", help="the SFT sets: real (truncated), random-call per seed")
     s.add_argument("--seeds", default="1,2,3",

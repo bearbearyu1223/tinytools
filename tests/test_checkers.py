@@ -110,8 +110,8 @@ def test_bare_number_calculator_call_skips_the_work():
     for expr in ("9396", "9396.0", " (9396) ", "+9396"):
         c = check_reply(reply(("calculator", {"expression": expr})), CALC)
         assert (c.exact, c.execution, c.outcome) == (False, False, WRONG_ARGUMENTS), expr
-    # Any operator at all counts as doing the work.
-    assert both(reply(("calculator", {"expression": "9396 * 1"})), CALC) == (False, True)
+    # An identity operation doesn't count as doing the work (code review 1, finding 1).
+    assert both(reply(("calculator", {"expression": "9396 * 1"})), CALC) == (False, False)
     # A bare reference is matched by a bare reply.
     bare = ref("calculator", expression="-4")
     assert both(reply(("calculator", {"expression": "-4.0"})), bare) == (True, True)

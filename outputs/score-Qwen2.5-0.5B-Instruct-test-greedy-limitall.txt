@@ -18,6 +18,7 @@ Setup
   max new tokens                     512
   seed                               0 (+ crc32 of each task id)
   right means                        execution match (exact beside it)
+  checked by                         rescore of the saved replies
 
 --------------------------------------------------------------------------
 One task, whole: test-0013 (tricky arguments, create_calendar_event)
@@ -110,9 +111,9 @@ Tasks that need a call: every reply
 --------------------------------------------------------------------------
   kind           n  no call  unparse  wrong fn  wrong n  wrong arg  right
   -------------------------------------------------------------------------
-  choose+fill  600       59        1        79        0        125    336
+  choose+fill  600       59        1        79        0         97    364
   tricky args  200       39        1        23        0         79     58
-  total        800       98        2       102        0        204    394
+  total        800       98        2       102        0        176    422
   wrong fn: another tool; wrong n: the right tool, more than one
   call; right: execution match.
 
@@ -129,10 +130,10 @@ Right by execution and by exact match
 --------------------------------------------------------------------------
   kind           right by execution  right by exact match
   ---------------------------------------------------------
-  choose+fill    336 of 600 (56.0%)    331 of 600 (55.2%)
-  tricky args     58 of 200 (29.0%)     55 of 200 (27.5%)
+  choose+fill    364 of 600 (60.7%)    348 of 600 (58.0%)
+  tricky args     58 of 200 (29.0%)     57 of 200 (28.5%)
   no tool fits    94 of 200 (47.0%)     94 of 200 (47.0%)
-  total         488 of 1000 (48.8%)   480 of 1000 (48.0%)
+  total         516 of 1000 (51.6%)   499 of 1000 (49.9%)
   The same replies, two checks. On no-tool-fits tasks both mean
   declined.
 
@@ -147,7 +148,12 @@ Controls, scored by the same checks
 --------------------------------------------------------------------------
 Execution match but not exact match
 --------------------------------------------------------------------------
-  replies                            8
+  replies                            17
+  test-0005  get_calendar_event
+      ref: {"name": "get_calendar_event", "arguments": {"date": \
+      "2026-02-23"}}
+      got: {"name": "get_calendar_event", "arguments": {"date": \
+      "2026-02-23", "title": "meetings"}}
   test-0040  search_documents
       ref: {"name": "search_documents", "arguments": {"query": \
       "Interview rubric"}}
@@ -165,6 +171,21 @@ Execution match but not exact match
       got: {"name": "create_calendar_event", "arguments": {"title": \
       "Demo prep", "date": "2026-03-21", "start_time": "15:00:00", \
       "duration_minutes": 45, "attendees": ["Marco Conti"]}}
+  test-0267  get_calendar_event
+      ref: {"name": "get_calendar_event", "arguments": {"date": \
+      "2026-03-11"}}
+      got: {"name": "get_calendar_event", "arguments": {"date": \
+      "2026-03-11", "title": "events"}}
+  test-0327  get_calendar_event
+      ref: {"name": "get_calendar_event", "arguments": {"date": \
+      "2026-02-23"}}
+      got: {"name": "get_calendar_event", "arguments": {"date": \
+      "2026-02-23", "title": "meetings"}}
+  test-0348  get_calendar_event
+      ref: {"name": "get_calendar_event", "arguments": {"date": \
+      "2026-03-12"}}
+      got: {"name": "get_calendar_event", "arguments": {"date": \
+      "2026-03-12", "title": "meetings"}}
   test-0394  create_calendar_event
       ref: {"name": "create_calendar_event", "arguments": {"title": \
       "Strategy session", "date": "2026-03-27", "start_time": "13:00", \
@@ -172,11 +193,16 @@ Execution match but not exact match
       got: {"name": "create_calendar_event", "arguments": {"title": \
       "Strategy session", "date": "2026-03-27", "start_time": \
       "13:00:00", "duration_minutes": 45}}
-  test-0437  calculator
-      ref: {"name": "calculator", "arguments": {"expression": "3438 * 48 \
-      / 100"}}
-      got: {"name": "calculator", "arguments": {"expression": "3438 * \
-      0.48"}}
+  test-0462  get_calendar_event
+      ref: {"name": "get_calendar_event", "arguments": {"date": \
+      "2026-03-03"}}
+      got: {"name": "get_calendar_event", "arguments": {"date": \
+      "2026-03-03", "title": "Meeting"}}
+  test-0523  get_calendar_event
+      ref: {"name": "get_calendar_event", "arguments": {"date": \
+      "2026-04-23"}}
+      got: {"name": "get_calendar_event", "arguments": {"date": \
+      "2026-04-23", "title": "meetings"}}
   test-0530  create_calendar_event
       ref: {"name": "create_calendar_event", "arguments": {"title": \
       "Code review", "date": "2026-03-24", "start_time": "13:00", \
@@ -184,6 +210,16 @@ Execution match but not exact match
       got: {"name": "create_calendar_event", "arguments": {"title": \
       "Code review", "date": "2026-03-24", "start_time": "13:00:00", \
       "duration_minutes": 30}}
+  test-0694  get_calendar_event
+      ref: {"name": "get_calendar_event", "arguments": {"date": \
+      "2026-04-08"}}
+      got: {"name": "get_calendar_event", "arguments": {"date": \
+      "2026-04-08", "title": "meetings"}}
+  test-0707  get_calendar_event
+      ref: {"name": "get_calendar_event", "arguments": {"date": \
+      "2026-03-24"}}
+      got: {"name": "get_calendar_event", "arguments": {"date": \
+      "2026-03-24", "title": "meeting"}}
   test-0711  create_calendar_event
       ref: {"name": "create_calendar_event", "arguments": {"title": \
       "Code review", "date": "2026-04-04", "start_time": "11:45", \
@@ -193,11 +229,21 @@ Execution match but not exact match
       "Code review", "date": "2026-04-04", "start_time": "11:45:00", \
       "duration_minutes": 60, "attendees": ["Samuel Osei", "Kenji \
       Watanabe"]}}
-  test-0964  calculator
-      ref: {"name": "calculator", "arguments": {"expression": "1062 * 68 \
-      / 100"}}
-      got: {"name": "calculator", "arguments": {"expression": "1062 * \
-      0.68"}}
+  test-0862  get_calendar_event
+      ref: {"name": "get_calendar_event", "arguments": {"date": \
+      "2026-04-23"}}
+      got: {"name": "get_calendar_event", "arguments": {"date": \
+      "2026-04-23", "title": "meetings"}}
+  test-0916  get_calendar_event
+      ref: {"name": "get_calendar_event", "arguments": {"date": \
+      "2026-03-30"}}
+      got: {"name": "get_calendar_event", "arguments": {"date": \
+      "2026-03-30", "title": "meetings"}}
+  test-0936  get_calendar_event
+      ref: {"name": "get_calendar_event", "arguments": {"date": \
+      "2026-04-01"}}
+      got: {"name": "get_calendar_event", "arguments": {"date": \
+      "2026-04-01", "title": "meeting"}}
 
 --------------------------------------------------------------------------
 Exact match but not execution match (a check: should be 0)
