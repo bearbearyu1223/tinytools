@@ -7,3 +7,6 @@ bfcl_project/
 
 # stderr progress logs from runs
 outputs/*.err
+
+# rendered figures (tinytools figures)
+/figures/

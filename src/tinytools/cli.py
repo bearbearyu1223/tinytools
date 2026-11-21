@@ -10,6 +10,7 @@ Commands (``tinytools <command> --help`` for each one's flags):
     check-demo      three calls checked by exact match and by execution match
     score           score a model on our tool tasks, outcome by outcome; or sample 8
     sft-data        the SFT sets: ToolACE truncated (real), random-call per seed (control)
+    figures         the post's figures, parsed from the captures, into figures/
 
 Every command prints a report on stdout (progress goes to stderr) and saves the
 same report under outputs/, so ``tinytools bfcl-score > x.txt`` captures only
@@ -880,6 +881,15 @@ def _r4b(rep: Report, s, tok, sft, seed: int) -> None:
     rep.kv("arguments", f"{e['source']}: copied from {e['copied_from']}")
 
 
+# -- figures -------------------------------------------------------------------------
+
+
+def cmd_figures(args) -> None:
+    from .figures import make_figures
+
+    make_figures(args.only, score=args.score, bfcl=args.bfcl, out=args.out)
+
+
 # -- entry point -------------------------------------------------------------------
 
 
@@ -930,6 +940,15 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--tokenizer", default="Qwen/Qwen2.5-0.5B-Instruct",
                    help="whose chat template to render with")
     s.set_defaults(fn=cmd_sft_data)
+
+    s = sub.add_parser("figures", help="render the post's figures from the captures")
+    s.add_argument("--only", default=None, help="one figure by name (default: all)")
+    s.add_argument("--score", type=Path, default=None,
+                   help="greedy score capture (default: the whole-test-split one)")
+    s.add_argument("--bfcl", type=Path, default=None,
+                   help="greedy bfcl-score capture (default: the one under outputs/)")
+    s.add_argument("--out", type=Path, default=None, help="directory (default: figures/)")
+    s.set_defaults(fn=cmd_figures)
 
     args = p.parse_args(argv)
     t0 = time.perf_counter()

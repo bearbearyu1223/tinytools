@@ -21,6 +21,7 @@ dependencies = [
     # declaring it. Not used by anything here.
     "soundfile",
     "huggingface_hub",
+    "matplotlib>=3.8",
 ]
 
 # A linux-only optional extra for vLLM generation goes here once the Lambda
