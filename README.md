@@ -2,7 +2,8 @@
 
 Companion project for posts 9-12 of the LLM Architecture Refresh series: teaching a
 small model to call tools (SFT on ToolACE, scored on BFCL), then RL with execution
-rewards. Local only. This first piece is data and evaluation; no training yet.
+rewards. Local only until post 9 publishes. So far: data, evaluation, the SFT training sets, a
+batched generation engine, and Milestone 0 (below) with its Lambda runner; no training loop yet.
 
 ```
 uv sync
@@ -20,10 +21,11 @@ uv run tinytools score --split test --limit 10 --samples 8 --temperature 1.0
 uv run tinytools rescore --replies outputs/score-<...>-replies.jsonl      # no model
 uv run tinytools sft-data --seeds 1,2,3  # SFT sets -> data/sft/ (r4a, r4b)
 uv run tinytools milestone0 --quick      # Milestone 0 end to end, 0.5B, a few items (Mac check)
-uv run tinytools milestone0 --base-when-needed  # instruct models, base only if the rule needs it (H100)
+uv run tinytools milestone0 --base-when-needed  # instruct models, base only if the rule needs it (A100)
 scripts/lambda.sh doctor                 # Lambda settings, SSH key, API base URL; launches nothing
 scripts/lambda.sh estimate milestone0    # price x hours against the experiment's and the post's cap
-scripts/lambda.sh run milestone0         # up -> setup -> run -> fetch -> down (docs/lambda-playbook.md)
+scripts/lambda.sh run milestone0 --approve 8  # up -> setup -> run -> fetch -> down (docs/lambda-playbook.md)
+scripts/lambda.sh list                   # after every run: no tinytools instance may be left
 uv run pytest -q && uvx ruff check --select F,E9,B
 ```
 
@@ -49,6 +51,17 @@ the dev tasks that need a call, and (d) greedy right on the dev tasks that need 
 
 Environment: `TINYTOOLS_DEVICE=cpu|mps|cuda` overrides the device (default cuda >
 mps > cpu); `TINYTOOLS_QUIET=1` silences progress.
+
+## Milestone 0: choosing the model
+
+Before anything is trained, `milestone0` scores Qwen2.5 1.5B and 3B (instruct; base models only if
+the rule reaches them; 0.5B as a comparison row) on the **dev** split, which no published number
+uses, and applies a rule fixed in advance. It picks the smaller candidate that still leaves room
+to learn: (a) greedy right on at most 70% of our dev tasks, (b) BFCL dev call items right at most
+80%, (c) mixed groups (some of 8 samples right, some wrong) on at least 10% of the dev tasks that
+need a call, (d) at least 20% of those tasks right. It also runs one model twice to check
+reproducibility, and times a few LoRA and full fine-tuning steps per size. Run on Lambda:
+`experiments/milestone0.toml` (A100 40 GB, at most 4 h, cap $10); output `outputs/milestone0.txt`.
 
 ## Versions
 

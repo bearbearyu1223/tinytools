@@ -143,6 +143,21 @@ misses them. `stop` signals the whole session (`pkill -TERM -s`), waits up to 20
 `pkill -KILL -s`, before anything is fetched. ssh is run with `-n` and no stdin except when a
 script is sent, so it never reads the terminal.
 
+## Watching a run
+
+`run` streams everything to its own terminal; leave that one alone (Ctrl-C there stops the run,
+fetches what exists and terminates). From a second terminal:
+
+```
+tail -f runs/*-<experiment>/log.txt               # the same stream; Ctrl-C here only stops watching
+ssh ubuntu@<ip> 'tail -f tinytools/.run/log.txt'   # the live log on the instance
+ssh ubuntu@<ip> nvidia-smi                         # GPU use and memory
+scripts/lambda.sh list                             # the account's instances and their status
+```
+
+`<ip>` is printed by `run` as `active at <ip>`. The log on the instance holds every command's
+stdout and stderr, progress lines included.
+
 ## How termination is guaranteed
 
 The run is a `try` whose `finally` always stops the job, fetches (best effort), terminates,
