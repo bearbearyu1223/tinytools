@@ -1,0 +1,34 @@
+[0:00:01] Setup
+[0:00:01] loading Qwen/Qwen2.5-0.5B-Instruct on mps
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[0:00:04] pass 1: simple, greedy, 20 items
+    item    5/20  2.32 s/item  0:35 left
+    item   10/20  2.06 s/item  0:21 left
+    item   15/20  2.03 s/item  0:10 left
+    item   20/20  2.00 s/item  0:00 left
+[0:00:44] pass 2: multiple, greedy, 20 items
+    item    5/20  2.32 s/item  0:35 left
+    item   10/20  2.71 s/item  0:27 left
+    item   15/20  2.84 s/item  0:14 left
+    item   20/20  2.76 s/item  0:00 left
+[0:01:39] pass 3: parallel, greedy, 20 items
+    item    5/20  4.10 s/item  1:01 left
+    item   10/20  4.78 s/item  0:48 left
+    item   15/20  4.76 s/item  0:24 left
+    item   20/20  4.59 s/item  0:00 left
+[0:03:11] pass 4: parallel_multiple, greedy, 20 items
+    item    5/20  3.61 s/item  0:54 left
+    item   10/20  3.61 s/item  0:36 left
+    item   15/20  4.31 s/item  0:22 left
+    item   20/20  4.32 s/item  0:00 left
+[0:04:37] pass 5: irrelevance, greedy, 20 items
+    item    5/20  10.12 s/item  2:32 left
+    item   10/20  7.32 s/item  1:13 left
+    item   15/20  5.76 s/item  0:29 left
+    item   20/20  6.70 s/item  0:00 left
+[0:06:51] Every reply, split five ways
+[0:06:51] Controls
+[0:06:51] 'wrong fn' that is only a wrong number of calls
+[0:06:51] Wall clock (varies run to run)
+[0:06:51] replies written to outputs/bfcl-Qwen2.5-0.5B-Instruct-greedy-limit20-replies.jsonl
+[0:06:51] done in 411 s

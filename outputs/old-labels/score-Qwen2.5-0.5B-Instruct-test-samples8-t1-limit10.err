@@ -1,0 +1,25 @@
+[0:00:01] Setup
+[0:00:01] loading Qwen/Qwen2.5-0.5B-Instruct on mps
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[0:00:03] pass 1: test, greedy, 30 items
+    item    7/30  1.15 s/item  0:27 left
+    item   14/30  1.20 s/item  0:19 left
+    item   21/30  1.20 s/item  0:11 left
+    item   28/30  1.32 s/item  0:03 left
+    item   30/30  1.31 s/item  0:00 left
+[0:00:42] pass 2: test, samples8-t1, 30 items
+    item    7/30  8.40 s/item  3:13 left
+    item   14/30  6.54 s/item  1:45 left
+    item   21/30  5.96 s/item  0:54 left
+    item   28/30  6.05 s/item  0:12 left
+    item   30/30  5.85 s/item  0:00 left
+[0:03:38] Every reply, split five ways (all samples)
+[0:03:38] Controls, scored by the same checks
+[0:03:38] Execution match but not exact match
+[0:03:38] Exact match but not execution match (a check: should be 0)
+[0:03:38] Groups of 8: how many samples are right per task
+[0:03:38] Groups with signal (some right, some wrong)
+[0:03:38] Greedy right vs pass@8
+[0:03:38] Wall clock (varies run to run)
+[0:03:38] replies written to outputs/score-Qwen2.5-0.5B-Instruct-test-samples8-t1-limit10-replies.jsonl
+[0:03:38] done in 218 s

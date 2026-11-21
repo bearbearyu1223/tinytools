@@ -5,7 +5,11 @@ import json
 import pytest
 
 from tinytools.checkers import check_reply, exact_match, execution_match, normalize_arguments
-from tinytools.classify import NO_CALL, RIGHT, UNPARSEABLE, WRONG_ARGUMENTS, WRONG_FUNCTION
+from tinytools.checkers import is_bare_number
+from tinytools.classify import (
+    CALLED_ANYWAY, DECLINED, NO_CALL, RIGHT, UNPARSEABLE, WRONG_ARGUMENTS, WRONG_COUNT,
+    WRONG_FUNCTION,
+)
 
 
 def reply(*calls, text=""):
@@ -44,7 +48,6 @@ def test_normalization_order_numbers_whitespace():
 
 def test_execution_forgives_what_exact_does_not():
     assert both(reply(("calculator", {"expression": "27 * 348"})), CALC) == (False, True)
-    assert both(reply(("calculator", {"expression": "9396"})), CALC) == (False, True)
     assert both(reply(("search_contacts", {"query": "siobhan o'neill"})), CONTACT) == (False, True)
     assert both(reply(("search_contacts", {"query": "Siobhan"})), CONTACT) == (False, True)
     no_default = {"title": "budget sync", "date": "2026-03-17", "start_time": "15:00",
@@ -76,7 +79,7 @@ def test_create_compared_by_resulting_state():
 def test_extra_calls_errors_and_other_tools_fail():
     right = ("calculator", {"expression": "348 * 27"})
     c = check_reply(reply(right, right), CALC)
-    assert (c.exact, c.execution, c.outcome) == (False, False, WRONG_FUNCTION)
+    assert (c.exact, c.execution, c.outcome) == (False, False, WRONG_COUNT)
     c = check_reply(reply(right, ("search_contacts", {"query": "x"})), CALC)
     assert (c.execution, c.outcome) == (False, WRONG_FUNCTION)
     c = check_reply(reply(("calculator", {"expression": "348 * 27", "round": 2})), CALC)
@@ -94,11 +97,41 @@ def test_outcomes_use_classify():
 
 
 def test_no_tool_fits():
-    assert both("I can't send email with these tools.", None) == (True, True)
+    c = check_reply("I can't send email with these tools.", None)
+    assert (c.exact, c.execution, c.outcome) == (True, True, DECLINED)
     c = check_reply(reply(("search_contacts", {"query": "Maria Garcia"})), None)
-    assert (c.exact, c.execution, c.outcome) == (False, False, WRONG_FUNCTION)
+    assert (c.exact, c.execution, c.outcome) == (False, False, CALLED_ANYWAY)
     c = check_reply("<tool_call>\n{oops\n</tool_call>", None)
-    assert (c.execution, c.outcome) == (False, UNPARSEABLE)
+    assert (c.execution, c.outcome) == (False, CALLED_ANYWAY)
+
+
+def test_bare_number_calculator_call_skips_the_work():
+    # The answer typed in, with no operator, fails execution against a reference that computes.
+    for expr in ("9396", "9396.0", " (9396) ", "+9396"):
+        c = check_reply(reply(("calculator", {"expression": expr})), CALC)
+        assert (c.exact, c.execution, c.outcome) == (False, False, WRONG_ARGUMENTS), expr
+    # Any operator at all counts as doing the work.
+    assert both(reply(("calculator", {"expression": "9396 * 1"})), CALC) == (False, True)
+    # A bare reference is matched by a bare reply.
+    bare = ref("calculator", expression="-4")
+    assert both(reply(("calculator", {"expression": "-4.0"})), bare) == (True, True)
+
+
+@pytest.mark.parametrize("expr, bare", [
+    ("9396", True), ("-2.5", True), ("(42)", True), ("1e3", True),
+    ("348 * 27", False), ("-(2 + 3)", False), ("2 ** 3", False), ("abc", False), ("1 +", False),
+    (12, False),
+])
+def test_is_bare_number(expr, bare):
+    assert is_bare_number(expr) is bare
+
+
+def test_start_time_with_zero_seconds_passes_execution_only():
+    with_secs = dict(CREATE["arguments"], start_time="15:00:00")
+    assert both(reply(("create_calendar_event", with_secs)), CREATE) == (False, True)
+    odd = dict(CREATE["arguments"], start_time="15:00:30")
+    c = check_reply(reply(("create_calendar_event", odd)), CREATE)
+    assert (c.exact, c.execution, c.outcome) == (False, False, WRONG_ARGUMENTS)
 
 
 def test_two_tags_one_broken_is_not_a_single_call():

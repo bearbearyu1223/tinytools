@@ -13,7 +13,7 @@ What comes from bfcl-eval (imported, not reimplemented):
 
 What is ours: generation with Hugging Face transformers on the local device
 (bfcl-eval drives a vLLM/SGLang server, which doesn't run on a Mac), the prompt
-built with the model's own chat template, and the five-way split
+built with the model's own chat template, and the outcome split
 (:mod:`tinytools.classify`).
 """
 
@@ -32,7 +32,7 @@ os.environ.setdefault("BFCL_PROJECT_ROOT", str(ROOT / "bfcl_project"))
 
 import torch  # noqa: E402
 
-from .classify import OUTCOMES, RIGHT, WRONG_FUNCTION, classify, only_count_differs  # noqa: E402
+from .classify import OUTCOMES, classify, is_right  # noqa: E402
 
 # Our names -> bfcl-eval's (V4 renamed "simple" to "simple_python").
 CATEGORIES = {
@@ -123,11 +123,10 @@ class Verdict:
     outcome: str
     bfcl_valid: bool
     error_type: str
-    wrong_count_only: bool = False
 
 
 def judge(h, item: Item, raw: str) -> Verdict:
-    """BFCL's verdict on one reply, and our five-way outcome."""
+    """BFCL's verdict on one reply, and our outcome label."""
     from bfcl_eval.constants.enums import Language, ReturnFormat
     from bfcl_eval.eval_checker.eval_runner import (
         _evaluate_single_ast_entry,
@@ -149,9 +148,7 @@ def judge(h, item: Item, raw: str) -> Verdict:
     valid = bool(res["valid"])
     outcome = classify(raw=raw, decoded=decoded, bfcl_valid=valid, irrelevance=item.irrelevance,
                        expected_names=item.expected_names())
-    return Verdict(outcome, valid, res.get("error_type", ""),
-                   outcome == WRONG_FUNCTION and not item.irrelevance
-                   and only_count_differs(decoded, item.expected_names()))
+    return Verdict(outcome, valid, res.get("error_type", ""))
 
 
 def _pick(options: list, required: bool):
@@ -297,7 +294,6 @@ class CategoryResult:
     outcomes: dict = field(default_factory=lambda: {o: 0 for o in OUTCOMES})
     bfcl_right: int = 0
     hit_cap: int = 0
-    wrong_count_only: int = 0  # "wrong function" with the right names, wrong number of calls
     new_tokens: int = 0
     seconds: float = 0.0
     right_per_task: list[int] = field(default_factory=list)  # sampling mode
@@ -320,9 +316,8 @@ def score(tok, model, items: list[Item], *, samples: int, temperature: float, se
             v = judge(h, item, text)
             res.n += 1
             res.outcomes[v.outcome] += 1
-            res.wrong_count_only += v.wrong_count_only
             res.bfcl_right += v.bfcl_valid
-            right += v.outcome == RIGHT
+            right += is_right(v.outcome)
             if records is not None:
                 records.append({"id": item.id, "category": item.category, "reply": text,
                                 "outcome": v.outcome, "bfcl_valid": v.bfcl_valid,
@@ -330,7 +325,7 @@ def score(tok, model, items: list[Item], *, samples: int, temperature: float, se
         res.right_per_task.append(right)
         o = judge(h, item, oracle_reply(item))
         res.oracle_n += 1
-        res.oracle_right += o.bfcl_valid and o.outcome == RIGHT
+        res.oracle_right += o.bfcl_valid and is_right(o.outcome)
         if on_item:
             on_item(k)
     return res

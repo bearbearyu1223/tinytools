@@ -159,6 +159,18 @@ def outcome_rows(results: list[Scored]) -> list[KindRow]:
     return [rows[k] for k in tasks.KINDS if rows[k].n] + [total]
 
 
+def total_row(rows: list[KindRow], label: str = "total") -> KindRow:
+    """The sum of some kinds' rows (e.g. the kinds that need a call)."""
+    out = KindRow(label)
+    for r in rows:
+        out.n += r.n
+        out.exact += r.exact
+        out.execution += r.execution
+        for o, k in r.outcomes.items():
+            out.outcomes[o] = out.outcomes.get(o, 0) + k
+    return out
+
+
 def disagreements(results: list[Scored]) -> tuple[list[tuple[Scored, int]], list[tuple[Scored, int]]]:
     """(replies passing execution but failing exact, replies passing exact but failing execution)."""
     exec_only, exact_only = [], []

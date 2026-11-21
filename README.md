@@ -16,7 +16,7 @@ uv run tinytools tasks              # our tool tasks -> data/tasks/, counts (r2a
 uv run tinytools check-demo         # three calls checked both ways (r2b)
 uv run tinytools score --split test --limit 30              # greedy, 30 per kind
 uv run tinytools score --split test --limit 10 --samples 8 --temperature 1.0
-uv run tinytools sft-data --seed 0  # SFT sets -> data/sft/{real,control}.jsonl (r4a, r4b)
+uv run tinytools sft-data --seeds 1,2,3  # SFT sets -> data/sft/ (r4a, r4b)
 uv run pytest -q && uvx ruff check --select F,E9,B
 ```
 
@@ -82,21 +82,31 @@ Source: HF `Team-ACE/ToolACE` (Apache-2.0), `data.json` at revision `6bda777c88d
 decoder (`QwenFCHandler.decode_ast`) and per-item verdict functions (the ones
 `bfcl evaluate` runs, which call `ast_checker`). Ours: generation with HF
 transformers on the local device, the prompt from the model's own chat template, and
-the five-way split (`classify.py`):
+the outcome labels (`classify.py`, one place; `score` uses the same). Tasks that
+need a call (BFCL's AST categories; our choose+fill and tricky arguments):
 
 | outcome | meaning |
 |---|---|
 | no call | no `<tool_call>` tag |
 | unparseable | a tag, but some tagged block doesn't decode to a call |
-| wrong function | called names differ from the reference (as multisets: includes the wrong number of calls); on irrelevance, any decodable call |
-| wrong arguments | right names, BFCL's checker rejects the arguments |
-| right | BFCL's checker accepts it; on irrelevance, no tag |
+| wrong function | the called function names differ from the reference's as a set (one missing, or one the reference doesn't call) |
+| wrong number of calls | the same set of names, but too many or too few calls (one `spotify.play` where the reference has two) |
+| wrong arguments | the right calls; the checker rejects the arguments |
+| right | the checker accepts it |
 
-"right" equals BFCL's accuracy on the AST categories. On irrelevance BFCL also
-passes a reply whose `<tool_call>` doesn't decode; the report prints BFCL's count
-beside ours. Two controls print with every run: BFCL's own reference answer written in
-Qwen's format (shows the harness can give full marks), and how many replies hit the
-512-token cap.
+Tasks where no tool fits (BFCL irrelevance; our "no tool fits"):
+
+| outcome | meaning |
+|---|---|
+| declined | no `<tool_call>` tag (right) |
+| called anyway | any `<tool_call>` tag, whether or not it decodes |
+
+The reports print the two groups as separate tables. "right" equals BFCL's
+accuracy on the AST categories. On irrelevance BFCL also passes a reply whose
+`<tool_call>` doesn't decode (here it called anyway); the report prints BFCL's
+count beside ours. Two controls print with every run: BFCL's own reference answer
+written in Qwen's format (shows the harness can give full marks), and how many
+replies hit the 512-token cap.
 
 Decoding is set explicitly: greedy is argmax (Qwen's `generation_config.json` would
 otherwise add repetition penalty 1.1, top-p 0.8, top-k 20), and `--samples N
@@ -145,12 +155,18 @@ equal after normalizing key order, number format and whitespace; an expression
 compares as a syntax tree) and execution match (one call, the reference's tool,
 both run on fresh data, no error, same result as in the table). Every reference
 call runs without error and every reference search finds something, so an empty
-result can never match. Outcomes come from `classify.py`, with execution match as
-the verdict.
+result can never match. Three details of execution match: a start time with zero
+seconds (`"15:00:00"`) runs as `"15:00"` (exact match still compares the strings);
+a calculator call whose expression is a bare number (`"9396"`, no operator) fails
+when the reference's has an operator, since it skips the tool's work and post
+10's reward must not pay for that; and the filler words dropped from title and
+document searches include their plurals ("meetings", "events", "files").
+Outcomes come from `classify.py`, with execution match as the verdict.
 
 **Scoring** (`tinytools score`): the generation path `bfcl-score` uses
 (`bfcl.generate_text`). `--limit N` takes the first N tasks of each kind by id.
-Prints the five-way split per kind with right by execution and by exact match,
+Prints the outcomes per kind (tasks that need a call; no tool fits, separately),
+right by execution and by exact match,
 two controls (reference answers; never calling), every reply that passes
 execution but not exact match, and the reverse count (should be 0). Greedy runs
 also print one test task whole (the templated prompt, its token count and the
@@ -163,27 +179,38 @@ task out of G, all-wrong / mixed / all-right, mixed groups per 1,000 answers
 
 ## The SFT training sets
 
-`tinytools sft-data --seed S` (`sft.py`) reads `data/toolace-en-qwen.jsonl` (run
-`toolace-convert` first; its sha256 is checked) and writes two sets of the same rows,
-the converted rows with 2+ tools, to `data/sft/` (`data/sft/seed<S>/` for a seed other
-than 0; gitignored, regenerated byte for byte, sha256 pinned in `tests/test_sft.py`):
+`tinytools sft-data --seeds 1,2,3` (`sft.py`) reads `data/toolace-en-qwen.jsonl`
+(run `toolace-convert` first; its sha256 is checked) and writes `data/sft/real.jsonl`
+(no randomness) and one control set per training seed,
+`data/sft/control-seed<N>.jsonl` (seed N's SFT run trains control N). All are
+gitignored, regenerated byte for byte, sha256 pinned in `tests/test_sft.py`.
 
-* **Truncation (both arms).** Each conversation is cut right after its first assistant
-  turn that makes a call; not-calling assistant turns before it stay; a row with no
+* **Rows (both arms).** Every row with 2+ tools and a call, and every row with no
+  call, whatever its tool list (one tool or none): the declining and asking
+  examples. No-call rows are identical in both arms. Rows with one tool and a call
+  are left out (the control would always draw the right tool).
+* **Truncation (both arms).** Each conversation is cut right after its first
+  assistant turn that makes a call; not-calling turns before it stay; a row with no
   call is kept whole. No row keeps a tool result.
 * **real.jsonl:** the truncated rows.
-* **control.jsonl:** the same rows, each call in the call turn replaced one for one
-  (parallel turns keep their number of calls) by a call to a tool drawn uniformly from
-  the row's whole list, the right one included. Arguments come from, in order: a call
-  to that tool in another row that fits this row's schema; one that doesn't; the
-  replaced call's own arguments, if the drawn tool is the replaced call's and no other
-  row calls it; else built: required parameters filled by enum value, a same-named
-  argument from another row, the schema default, or a type placeholder. Not-calling
-  turns are unchanged. Draws come from `Random("seed:row id")`. Each control record
-  carries `random_calls`: per call, the tool replaced, the tool drawn, the argument
-  source and the donor row.
+* **control-seed<N>.jsonl:** the same rows, each call in the call turn replaced one
+  for one (parallel turns keep their number of calls) by a call to a tool drawn
+  uniformly from the row's whole list, the right one included. No argument comes
+  from the row itself. Arguments come from, in order: a call to that tool in
+  another row that fits this row's schema; one that doesn't; else the call is
+  built from the schema (even when the drawn tool is the right one): each
+  required parameter takes an enum value, a same-named argument from another row,
+  the schema default, or a value of the declared type copied from any argument in
+  another row (seeded choice). Empty values (`""`, `[]`, `{}`, `null`) are never
+  used. Not-calling turns are unchanged. Draws come from `Random("seed:row id")`.
+  Each control record carries `random_calls`: per call, the tool replaced, the
+  tool drawn, the argument source, the donor row, and each built parameter's
+  source and donor row (empty for no-call rows).
 
 Records have the `toolace-convert` shape plus `n_tokens` and `n_trained`. The report
-(`outputs/sft-data.txt`) prints the truncation, the training rows beside the full set,
-tokens trained per arm, the control's hit rate against chance by k, the argument
-sources, and one row (`toolace-4231`) with its control twin.
+(`outputs/sft-data.txt`) prints which rows train by type, the truncation, the turns
+in each arm beside the full set, tokens and the control/real token ratio per seed,
+each seed's hit rate against chance by k, the argument sources and how built
+parameters were filled, how many control calls equal the real call (coincidence
+only: mostly tools that take no arguments), and one row (`toolace-4231`) with its
+seed-1 control twin.

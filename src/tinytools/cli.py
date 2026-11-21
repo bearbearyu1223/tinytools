@@ -5,11 +5,11 @@ Commands (``tinytools <command> --help`` for each one's flags):
     info            the device, the library versions, the pinned bfcl-eval
     toolace-stats   count ToolACE's rows, turns and calls; check the conversion
     toolace-convert write the English rows in Qwen2.5's tool format to data/
-    bfcl-score      score a model on BFCL, split five ways; or sample it 8 times
+    bfcl-score      score a model on BFCL, outcome by outcome; or sample it 8 times
     tasks           generate our tool tasks (test / dev / train) and count them
     check-demo      three calls checked by exact match and by execution match
-    score           score a model on our tool tasks, five ways; or sample it 8 times
-    sft-data        the two SFT sets: ToolACE truncated (real) and random-call (control)
+    score           score a model on our tool tasks, outcome by outcome; or sample 8
+    sft-data        the SFT sets: ToolACE truncated (real), random-call per seed (control)
 
 Every command prints a report on stdout (progress goes to stderr) and saves the
 same report under outputs/, so ``tinytools bfcl-score > x.txt`` captures only
@@ -174,13 +174,13 @@ def cmd_toolace_convert(args) -> None:
 
 
 def _short_cat(cat: str) -> str:
-    return {"parallel_multiple": "par_multiple"}.get(cat, cat)
+    return {"parallel_multiple": "par_multi"}.get(cat, cat)
 
 
 def cmd_bfcl_score(args) -> None:
     _quiet_hf()
     from . import bfcl
-    from .classify import OUTCOMES, WRONG_FUNCTION, mixed_share, short_label
+    from .classify import CALL_OUTCOMES, NO_FIT_OUTCOMES, mixed_share, short_label
     from .device import get_device
 
     cats = [c.strip() for c in args.categories.split(",") if c.strip()]
@@ -215,17 +215,27 @@ def cmd_bfcl_score(args) -> None:
                                   temperature=args.temperature, seed=args.seed,
                                   on_item=on_item, records=records))
 
-    heads = ["category", "n", *[short_label(o) for o in OUTCOMES], "bfcl"]
-    rows = [[_short_cat(r.category), r.n, *[r.outcomes[o] for o in OUTCOMES], r.bfcl_right]
-            for r in results]
-    rows.append(["total", sum(r.n for r in results),
-                 *[sum(r.outcomes[o] for r in results) for o in OUTCOMES],
-                 sum(r.bfcl_right for r in results)])
-    rep.section("Every reply, split five ways" + (" (all samples)" if sampling else ""))
-    rep.table(heads, rows)
-    rep.note("bfcl = BFCL's own pass count. It equals 'right' on the AST")
-    rep.note("categories; on irrelevance BFCL also passes replies whose")
-    rep.note("<tool_call> fails to decode, which this split calls unparseable.")
+    calls = [r for r in results if r.category != "irrelevance"]
+    no_fit = [r for r in results if r.category == "irrelevance"]
+    tail = " (all samples)" if sampling else ""
+    if calls:
+        rep.section("Tasks that need a call: every reply" + tail)
+        rows = [[_short_cat(r.category), r.n, *[r.outcomes[o] for o in CALL_OUTCOMES]]
+                for r in calls]
+        rows.append(["total", sum(r.n for r in calls),
+                     *[sum(r.outcomes[o] for r in calls) for o in CALL_OUTCOMES]])
+        rep.table(["category", "n", *[short_label(o) for o in CALL_OUTCOMES]], rows)
+        rep.note("wrong fn: names differ as a set; wrong n: the right names, too")
+        rep.note("many or too few calls; right: BFCL's checker accepts the reply")
+        rep.note("(BFCL's accuracy on these categories).")
+    if no_fit:
+        rep.section("Tasks where no tool fits: every reply" + tail)
+        rep.table(["category", "n", *[short_label(o) for o in NO_FIT_OUTCOMES], "bfcl right"],
+                  [[_short_cat(r.category), r.n, *[r.outcomes[o] for o in NO_FIT_OUTCOMES],
+                    r.bfcl_right] for r in no_fit])
+        rep.note("declined: no <tool_call> tag (right); called anyway: any tag.")
+        rep.note("bfcl right: BFCL's own verdict, which also passes a reply whose")
+        rep.note("<tool_call> fails to decode (here it called anyway).")
 
     rep.section("Controls")
     rep.table(["category", "items", "reference passes", "replies hit token cap"],
@@ -233,12 +243,6 @@ def cmd_bfcl_score(args) -> None:
     rep.note("reference passes: BFCL's own answer, written in Qwen's format and")
     rep.note("scored by the same checker (the harness can give full marks).")
     rep.note("hit token cap: replies cut off mid-generation.")
-
-    rep.section("'wrong fn' that is only a wrong number of calls")
-    rep.table(["category", "wrong fn", "right names, wrong count"],
-              [[_short_cat(r.category), r.outcomes[WRONG_FUNCTION], r.wrong_count_only]
-               for r in results])
-    rep.note("e.g. one spotify.play call where the reference has two.")
 
     if sampling:
         rep.section(f"Groups of {args.samples}: how many samples are right per task")
@@ -470,7 +474,7 @@ def cmd_score(args) -> None:
     _quiet_hf()
     from . import bfcl, ours, tasks
     from .checkers import call_text, check_reply
-    from .classify import OUTCOMES, mixed_share, short_label
+    from .classify import CALL_OUTCOMES, NO_FIT_OUTCOMES, mixed_share, short_label
     from .device import get_device
 
     sampling = args.samples > 1
@@ -511,17 +515,30 @@ def cmd_score(args) -> None:
                              on_item=progress.items(f"{args.split}, {mode}", len(items)))
     main = sampled if sampling else greedy
 
-    heads = ["kind", "n", *[short_label(o) for o in OUTCOMES], "exact"]
-    rep.section("Every reply, split five ways" + (" (all samples)" if sampling else ""))
-    rep.table(heads, [[tasks.SHORT_KIND.get(r.kind, r.kind), r.n,
-                       *[r.outcomes.get(o, 0) for o in OUTCOMES], r.exact]
-                      for r in ours.outcome_rows(main)])
-    rep.note("right = execution match; exact = exact match (the same replies).")
-    rep.note("On no-tool-fits tasks right is no call; a call is 'wrong fn'.")
-    rep.blank()
+    rows = ours.outcome_rows(main)
+    calls = [r for r in rows if r.kind != tasks.NO_FIT and r.kind != "total"]
+    no_fit = [r for r in rows if r.kind == tasks.NO_FIT]
+    tail = " (all samples)" if sampling else ""
+    if calls:
+        rep.section("Tasks that need a call: every reply" + tail)
+        total = ours.total_row(calls)
+        rep.table(["kind", "n", *[short_label(o) for o in CALL_OUTCOMES]],
+                  [[tasks.SHORT_KIND.get(r.kind, r.kind), r.n,
+                    *[r.outcomes.get(o, 0) for o in CALL_OUTCOMES]] for r in [*calls, total]])
+        rep.note("wrong fn: another tool; wrong n: the right tool, more than one")
+        rep.note("call; right: execution match.")
+    if no_fit:
+        rep.section("Tasks where no tool fits: every reply" + tail)
+        rep.table(["kind", "n", *[short_label(o) for o in NO_FIT_OUTCOMES]],
+                  [[tasks.SHORT_KIND.get(r.kind, r.kind), r.n,
+                    *[r.outcomes.get(o, 0) for o in NO_FIT_OUTCOMES]] for r in no_fit])
+        rep.note("declined: no <tool_call> tag (right); called anyway: any tag.")
+    rep.section("Right by execution and by exact match" + tail)
     rep.table(["kind", "right by execution", "right by exact match"],
               [[tasks.SHORT_KIND.get(r.kind, r.kind), ours.pct(r.execution, r.n),
-                ours.pct(r.exact, r.n)] for r in ours.outcome_rows(main)])
+                ours.pct(r.exact, r.n)] for r in rows])
+    rep.note("The same replies, two checks. On no-tool-fits tasks both mean")
+    rep.note("declined.")
 
     rep.section("Controls, scored by the same checks")
     ref_right = never_right = 0
@@ -665,12 +682,26 @@ def _of(n: int, total: int) -> str:
     return f"{n} of {total} ({100 * n / max(1, total):.1f}%)"
 
 
+def parse_seeds(text: str) -> tuple[int, ...]:
+    """``"1,2,3"`` -> ``(1, 2, 3)``: distinct, in the order given."""
+    seeds: list[int] = []
+    for part in text.split(","):
+        if part.strip():
+            n = int(part)
+            if n not in seeds:
+                seeds.append(n)
+    if not seeds:
+        raise ValueError("no seeds given")
+    return tuple(seeds)
+
+
 def cmd_sft_data(args) -> None:
     _quiet_hf()
     from transformers import AutoTokenizer
 
     from . import sft
 
+    seeds = parse_seeds(args.seeds)
     src = ROOT / sft.CONVERTED
     if not src.exists():
         sys.exit(f"{sft.CONVERTED} is missing; run `tinytools toolace-convert` first")
@@ -678,21 +709,22 @@ def cmd_sft_data(args) -> None:
     src_sha = hashlib.sha256(raw).hexdigest()
     converted = [json.loads(line) for line in raw.decode("utf-8").splitlines()]
     tok = AutoTokenizer.from_pretrained(args.tokenizer)
-    on_item = progress.items("truncating, drawing random calls, rendering", len(converted))
-    s = sft.build_sets(converted, args.seed, tok, on_item)
+    on_item = progress.items(f"truncating, drawing random calls for seeds {args.seeds}, rendering",
+                             len(converted))
+    s = sft.build_sets(converted, seeds, tok, on_item)
 
-    default = args.seed == sft.DEFAULT_SEED
-    directory = SFT_DIR if default else SFT_DIR / f"seed{args.seed}"
-    directory.mkdir(parents=True, exist_ok=True)
+    SFT_DIR.mkdir(parents=True, exist_ok=True)
     files = {}
-    for name, records in (("real", s.real), ("control", s.control)):
+    for name, records in [("real", s.real),
+                          *[(f"control-seed{n}", s.controls[n].records) for n in seeds]]:
         data = sft.jsonl_bytes(records)
-        (directory / f"{name}.jsonl").write_bytes(data)
+        (SFT_DIR / f"{name}.jsonl").write_bytes(data)
         files[name] = (len(records), hashlib.sha256(data).hexdigest())
 
-    suffix = "" if default else f"-seed{args.seed}"
-    rep = Report("tinytools sft-data", out=OUTPUTS / f"sft-data{suffix}.txt")
+    rep = Report("tinytools sft-data", out=OUTPUTS / "sft-data.txt")
     rep.header()
+    cols = [f"seed {n}" for n in seeds]
+    ctl = [s.controls[n] for n in seeds]
 
     rep.section("Input")
     rep.kv("converted ToolACE", sft.CONVERTED)
@@ -700,26 +732,34 @@ def cmd_sft_data(args) -> None:
     rep.kv("  is toolace-convert's output", src_sha == sft.CONVERTED_SHA256)
     rep.kv("rows", len(converted))
     rep.kv("tokenizer (chat template)", args.tokenizer)
-    rep.kv("seed", f"{args.seed} (each row: Random(\"seed:row id\"))")
+    rep.kv("control seeds", f"{', '.join(map(str, seeds))} (one set per training seed)")
+    rep.note("Each row's draws: Random(\"seed:row id\"). The real arm has no")
+    rep.note("randomness.")
+
+    rep.section("Which rows train")
+    rep.note("Rows with 2+ tools and a call, and every row with no call (any")
+    rep.note("tool list). No-call rows go into both arms unchanged; rows with")
+    rep.note("one tool and a call are left out.")
+    rep.table(["row type", "converted", "each arm"],
+              [[t, s.rows_converted[t], s.rows_trained[t]] for t in sft.ROW_TYPES]
+              + [["total", sum(s.rows_converted.values()), sum(s.rows_trained.values())]])
 
     rep.section("Truncation: each row cut after its first call turn")
     rep.note("Both arms. Not-calling assistant turns before the first call stay;")
     rep.note("a row with no call is kept whole. Turns after the cut (tool")
     rep.note("results, answers, later requests) are removed.")
-    sub_label = f"{sft.MIN_TOOLS}+ tools"
-    cut_rows = [
-        ["rows", s.cut_all.rows, s.cut_subset.rows],
-        ["rows cut", s.cut_all.rows_cut, s.cut_subset.rows_cut],
-        ["turns removed", s.cut_all.turns_removed, s.cut_subset.turns_removed],
+    rep.table(["", "all converted", "training rows"], [
+        ["rows", s.cut_all.rows, s.cut_train.rows],
+        ["rows cut", s.cut_all.rows_cut, s.cut_train.rows_cut],
+        ["turns removed", s.cut_all.turns_removed, s.cut_train.turns_removed],
         ["  of them assistant turns", s.cut_all.assistant_turns_removed,
-         s.cut_subset.assistant_turns_removed],
-        ["tokens removed", s.cut_all.tokens_removed, s.cut_subset.tokens_removed],
-        ["  of them trained", s.cut_all.trained_removed, s.cut_subset.trained_removed],
-    ]
-    rep.table(["", "all converted", sub_label], cut_rows)
+         s.cut_train.assistant_turns_removed],
+        ["tokens removed", s.cut_all.tokens_removed, s.cut_train.tokens_removed],
+        ["  of them trained", s.cut_all.trained_removed, s.cut_train.trained_removed],
+    ])
 
-    rep.section(f"The training rows ({sub_label}) beside the full set")
-    cols = [s.shape_converted, s.shape_truncated, s.shape_real, s.shape_control]
+    rep.section("Turns in each arm, beside the full set")
+    shapes = [s.shape_converted, s.shape_truncated, s.shape_real, ctl[0].shape]
     fields = [
         ("rows", "rows"),
         ("assistant turns", "assistant_turns"),
@@ -729,69 +769,90 @@ def cmd_sft_data(args) -> None:
         ("  not-calls after tool", "not_calls_after_tool"),
         ("calls", "calls"),
         ("tool results", "tool_results"),
-        ("tokens", "tokens"),
-        ("tokens trained", "trained"),
     ]
-    rows = [[label, *[getattr(c, f) for c in cols]] for label, f in fields]
-    rows.append(["share trained", *[f"{c.trained / max(1, c.tokens):.4f}" for c in cols]])
-    rep.table(["", "converted", "truncated", "real arm", "control"], rows)
+    rep.table(["", "converted", "truncated", "real arm", "control"],
+              [[label, *[getattr(c, f) for c in shapes]] for label, f in fields])
     rep.note(f"converted: all {s.shape_converted.rows} rows as toolace-convert wrote them;")
-    rep.note("truncated: the same rows cut; real arm: the truncated rows with")
-    rep.note(f"{sub_label}; control: their random-call twins. Tokens are the chat")
-    rep.note("template's rendering; trained = inside assistant turns.")
+    rep.note("truncated: the same rows cut; real arm: the training rows;")
+    rep.note("control: their random-call twins, the same counts for every seed")
+    rep.note("(checked). Not-calls after user: asking for an argument, saying")
+    rep.note("no function fits, chatting.")
 
-    rep.section("Tokens trained, real vs control")
-    rep.kv("real arm", s.shape_real.trained)
-    rep.kv("control", s.shape_control.trained)
-    rep.kv("control / real", f"{s.shape_control.trained / max(1, s.shape_real.trained):.4f}")
+    rep.section("Tokens, real vs control (the chat template's rendering)")
+    trows = [["tokens", s.shape_real.tokens, *[c.shape.tokens for c in ctl]],
+             ["tokens trained", s.shape_real.trained, *[c.shape.trained for c in ctl]],
+             ["control / real, all", "", *[f"{c.shape.tokens / s.shape_real.tokens:.4f}"
+                                           for c in ctl]],
+             ["control / real, trained", "", *[f"{c.shape.trained / s.shape_real.trained:.4f}"
+                                               for c in ctl]]]
+    rep.table(["", "real arm", *cols], trows)
+    rep.note("trained = inside assistant turns. The no-call rows are the same in")
+    rep.note("both arms, so only call turns can move the ratio.")
 
-    cs = s.control_stats
     rep.section("Control: does the drawn tool match the call it replaced?")
     rep.note("Each call's tool is drawn uniformly from the row's k tools, so it")
     rep.note("matches the replaced call's tool with chance 1/k.")
-    rep.kv("control calls", cs.calls)
-    rep.kv("drew the replaced call's tool", _of(cs.hits, cs.calls))
-    rep.kv("expected (sum of 1/k)", f"{cs.expected:.1f} (sd {cs.variance ** 0.5:.1f})")
+    cs0 = ctl[0].stats
+    rep.kv("control calls (every seed)", cs0.calls)
+    rep.kv("expected to draw it (sum of 1/k)", f"{cs0.expected:.1f} (sd {cs0.variance ** 0.5:.1f})")
     rep.blank()
-    krows = [[k, cs.rows_by_k[k], cs.calls_by_k[k], cs.hits_by_k[k],
-              f"{cs.calls_by_k[k] / k:.1f}"] for k in sorted(cs.rows_by_k)]
-    rep.table(["tools offered (k)", "rows", "calls", "drew it", "expected"], krows)
+    rep.table(["control set", "drew the replaced call's tool"],
+              [[col, _of(c.stats.hits, c.stats.calls)] for col, c in zip(cols, ctl, strict=True)])
+    rep.blank()
+    rep.table(["tools offered (k)", "rows", "calls", "expected", *cols],
+              [[k, cs0.rows_by_k[k], cs0.calls_by_k[k], f"{cs0.calls_by_k[k] / k:.1f}",
+                *[c.stats.hits_by_k[k] for c in ctl]] for k in sorted(cs0.rows_by_k)])
+    rep.note("rows: training rows with a call (no-call rows have no draws).")
 
     rep.section("Control: where each call's arguments came from")
-    rep.note("1 another row: a call to the drawn tool in another row that fits")
-    rep.note("  this row's schema; 2 the same, schema differs; 3 this row: the")
-    rep.note("  drawn tool is the replaced call's and no other row calls it, so")
-    rep.note("  the real arguments are kept; 4 built: no other row calls the")
-    rep.note("  tool, required parameters filled one by one.")
-    src_rows = [[name, cs.source_hit[name], cs.source_miss[name],
-                 cs.source_hit[name] + cs.source_miss[name],
-                 f"{cs.mean_chars_change(name):+.1f}"] for name in sft.SOURCES]
-    src_rows.append(["total", cs.hits, cs.calls - cs.hits, cs.calls,
-                     f"{sum(cs.chars_change.values()) / max(1, cs.calls):+.1f}"])
-    rep.table(["source", "drew it", "drew another", "calls", "chars"], src_rows)
-    rep.note("chars: mean change in the arguments' JSON length against the")
-    rep.note("call replaced (built calls leave optional parameters out).")
-    rep.kv("calls equal to the real call", _of(cs.identical, cs.calls))
-    rep.kv("built calls with a placeholder", _of(cs.with_placeholder,
-                                                  cs.source_miss[sft.BUILT]
-                                                  + cs.source_hit[sft.BUILT]))
+    rep.note("another row: a call to the drawn tool in another row that fits")
+    rep.note("  this row's schema; other schema: the same, schema differs;")
+    rep.note("built: no other row calls the tool (even when it is the replaced")
+    rep.note("  call's tool), so its required parameters are filled one by one.")
+    rep.note("No argument ever comes from the row itself.")
+    src_rows = [[name, *[c.stats.sources(name) for c in ctl]] for name in sft.SOURCES]
+    src_rows.append(["  built, drew the replaced tool", *[c.stats.source_hit[sft.BUILT]
+                                                           for c in ctl]])
+    src_rows.append(["total", *[c.stats.calls for c in ctl]])
+    src_rows.append(["taken from the row itself", *[c.stats.from_own_row for c in ctl]])
+    src_rows.append(["equal to the real call", *[c.stats.identical for c in ctl]])
+    src_rows += [[f"  {name}", *[c.stats.identical_by_source[name] for c in ctl]]
+                 for name in sft.SOURCES]
+    src_rows.append(["  any source, tool takes no args",
+                     *[c.stats.identical_no_args for c in ctl]])
+    rep.table(["control calls", *cols], src_rows)
+    rep.note("equal to the real call: the drawn tool is the right one and the")
+    rep.note("arguments copied from other rows happen to equal this row's")
+    rep.note("(coincidence only: another row asked the same, or a built call's")
+    rep.note("copied values match). A tool that takes no arguments has only")
+    rep.note("one possible call, so drawing it reproduces the real call.")
     rep.blank()
-    rep.table(["built calls' parameters, filled from", "parameters"],
-              [[p, cs.param_sources[p]] for p in sft.PARAM_SOURCES])
+    rep.table(["built calls' parameters, from", *cols],
+              [[p, *[c.stats.param_sources[p] for c in ctl]] for p in sft.PARAM_SOURCES]
+              + [["empty values (placeholders)", *[c.stats.empty_built for c in ctl]]])
+    rep.note("Tried in that order; the last copies a value of the declared")
+    rep.note("type from any argument in another row (seeded choice).")
+    rep.blank()
+    rep.table(["mean chars change", *cols],
+              [[name, *[f"{c.stats.mean_chars_change(name):+.1f}" for c in ctl]]
+               for name in sft.SOURCES]
+              + [["all calls", *[f"{c.stats.mean_chars_change():+.1f}" for c in ctl]]])
+    rep.note("The arguments' JSON length against the call replaced (built")
+    rep.note("calls leave optional parameters out).")
 
-    _r4b(rep, s, tok, sft)
+    _r4b(rep, s, tok, sft, seeds[0])
 
-    rep.section("Files (regenerated byte for byte from the input and seed)")
+    rep.section("Files (regenerated byte for byte from the input and seeds)")
     rep.table(["file", "records", "sha256 (first 16)"],
-              [[str((directory / f"{n}.jsonl").relative_to(ROOT)), k, h[:16]]
+              [[str((SFT_DIR / f"{n}.jsonl").relative_to(ROOT)), k, h[:16]]
                for n, (k, h) in files.items()])
     rep.close()
 
 
-def _r4b(rep: Report, s, tok, sft) -> None:
+def _r4b(rep: Report, s, tok, sft, seed: int) -> None:
     real = next(r for r in s.real if r["id"] == sft.EXAMPLE_ID)
-    twin = next(r for r in s.control if r["id"] == sft.EXAMPLE_ID)
-    rep.section(f"One training row and its control twin ({sft.EXAMPLE_ID})")
+    twin = next(r for r in s.controls[seed].records if r["id"] == sft.EXAMPLE_ID)
+    rep.section(f"One training row and its control twin ({sft.EXAMPLE_ID}, seed {seed})")
     rep.kv("tools offered", ", ".join(t["function"]["name"] for t in real["tools"]))
     for label, rec in (("real arm", real), ("control", twin)):
         enc = tok(rec["text"], return_offsets_mapping=True, add_special_tokens=False)
@@ -838,7 +899,7 @@ def main(argv: list[str] | None = None) -> None:
                        help="whose chat template to render with")
         s.set_defaults(fn=fn)
 
-    s = sub.add_parser("bfcl-score", help="score a model on BFCL, five-way split")
+    s = sub.add_parser("bfcl-score", help="score a model on BFCL, split by outcome")
     s.add_argument("--model", default="Qwen/Qwen2.5-0.5B-Instruct")
     s.add_argument("--categories", default="simple,multiple,parallel,parallel_multiple,irrelevance")
     s.add_argument("--limit", type=int, default=20, help="first N items per category")
@@ -854,7 +915,7 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("check-demo", help="three calls checked by exact and execution match"
                    ).set_defaults(fn=cmd_check_demo)
 
-    s = sub.add_parser("score", help="score a model on our tool tasks, five-way split")
+    s = sub.add_parser("score", help="score a model on our tool tasks, split by outcome")
     s.add_argument("--model", default="Qwen/Qwen2.5-0.5B-Instruct")
     s.add_argument("--split", choices=["test", "dev", "train-r6a"], default="test")
     s.add_argument("--limit", type=int, default=None, help="first N tasks of each kind, by id")
@@ -863,8 +924,9 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--seed", type=int, default=0)
     s.set_defaults(fn=cmd_score)
 
-    s = sub.add_parser("sft-data", help="the two SFT sets: real (truncated) and random-call")
-    s.add_argument("--seed", type=int, default=0, help="the control's draws")
+    s = sub.add_parser("sft-data", help="the SFT sets: real (truncated), random-call per seed")
+    s.add_argument("--seeds", default="1,2,3",
+                   help="comma-separated: one control set per training seed")
     s.add_argument("--tokenizer", default="Qwen/Qwen2.5-0.5B-Instruct",
                    help="whose chat template to render with")
     s.set_defaults(fn=cmd_sft_data)

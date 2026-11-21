@@ -16,15 +16,21 @@ both calls run on their own fresh copy of the data (:func:`tools.fresh_state`);
 the reply's call raises no error; and the results agree:
 
 * calculator: numerically, within ``REL_TOL`` (relative) or ``ABS_TOL``;
+  but an expression that is a bare number (no operator: ``9396``, ``-2.5``)
+  fails when the reference's has one, since it skips the tool's work (post
+  10's reward must not pay for computing the answer by hand);
 * search_contacts, get_calendar_event, search_documents: the *same set* of
   records (by id). A broader query that includes the answer fails, and so
   does a narrower one;
 * create_calendar_event: the calendar *after* the call, every event compared
   on date, start time, duration, title (case-insensitive, whitespace
-  collapsed) and attendees (as a case-insensitive multiset).
+  collapsed) and attendees (as a case-insensitive multiset). The tool
+  accepts ``"15:00:00"`` for ``"15:00"`` (seconds 00 only), so execution
+  match does too; exact match compares the strings and does not.
 
 On a no-tool-fits task (reference ``None``) both checks say right only when
-the reply holds no ``<tool_call>`` tag at all.
+the reply holds no ``<tool_call>`` tag at all (outcome "declined"; any tag
+is "called anyway").
 
 Replies are decoded with bfcl-eval's Qwen decoder (:func:`decode`), the one
 ``bfcl-score`` uses, so a reply decodes the same way in both harnesses. The
@@ -48,7 +54,7 @@ REL_TOL = 1e-6
 ABS_TOL = 1e-9
 
 __all__ = ["REL_TOL", "ABS_TOL", "decode", "normalize_arguments", "exact_match",
-           "execution_match", "Check", "check_reply", "call_text", "state_key"]
+           "execution_match", "Check", "check_reply", "call_text", "state_key", "is_bare_number"]
 
 
 # -- decoding ------------------------------------------------------------------------
@@ -178,6 +184,31 @@ def run(name: str, args: Any) -> Run:
     return Run(result, compared)
 
 
+def is_bare_number(expression: Any) -> bool:
+    """An expression with no operator: a number, maybe signed or parenthesized.
+
+    ``"9396"``, ``"-2.5"``, ``"(42)"`` are bare; ``"348 * 27"`` is not. Anything
+    that doesn't parse is not bare (the tool will reject it anyway).
+    """
+    if not isinstance(expression, str):
+        return False
+    try:
+        node = ast.parse(expression.strip(), mode="eval").body
+    except SyntaxError:
+        return False
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        node = node.operand
+    return isinstance(node, ast.Constant) and type(node.value) in (int, float)
+
+
+def skips_the_work(name: str, args: Any, reference: dict) -> bool:
+    """A calculator call that hands over the answer as a bare number when the reference computes."""
+    if name != "calculator" or reference["name"] != "calculator" or not isinstance(args, dict):
+        return False
+    return (is_bare_number(args.get("expression"))
+            and not is_bare_number(reference["arguments"].get("expression")))
+
+
 def same_result(name: str, a: Any, b: Any) -> bool:
     if a is None or b is None:
         return False  # an error never matches, not even another error
@@ -199,7 +230,8 @@ def _execution(raw: str, decoded, reference) -> tuple[bool, Run | None, Run | No
         return False, ref, None
     name, args = call
     got = run(name, args)
-    ok = name == reference["name"] and same_result(name, got.compared, ref.compared)
+    ok = (name == reference["name"] and same_result(name, got.compared, ref.compared)
+          and not skips_the_work(name, args, reference))
     return ok, ref, got
 
 
@@ -217,7 +249,7 @@ class Check:
 
 
 def check_reply(raw: str, reference: dict | None, decoded: Any = "decode") -> Check:
-    """Both checks on one reply, and its five-way outcome (execution match decides "right")."""
+    """Both checks on one reply, and its outcome (execution match decides "right")."""
     if decoded == "decode":
         decoded = decode(raw)
     ok, ref_run, got_run = _execution(raw, decoded, reference)

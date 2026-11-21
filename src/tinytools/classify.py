@@ -1,21 +1,31 @@
-"""Split every BFCL item into exactly one of five outcomes.
+"""Split every reply into exactly one outcome, by what the task asks for.
 
-    no call          the reply has no ``<tool_call>`` tag at all
-    unparseable      it has a tag, but some tagged block does not decode to a call
-    wrong function   the called functions differ from the reference: a different
-                     function, or a different number of calls (as multisets of
-                     names); on irrelevance items, any decodable call
-    wrong arguments  the right functions, but BFCL's AST checker rejects the
-                     arguments
-    right            BFCL's checker accepts it; on irrelevance items, no tag
+Tasks that need a call (BFCL's AST categories; our choose+fill and tricky
+arguments):
 
-"Right" is BFCL's own verdict on every AST category, so the "right" column
-equals the official accuracy there. On irrelevance BFCL also counts a reply
-whose ``<tool_call>`` blocks fail to decode as "no call", which this split
-calls unparseable instead; the report prints BFCL's count beside ours so the
+    no call              the reply has no ``<tool_call>`` tag at all
+    unparseable          it has a tag, but some tagged block does not decode to
+                         a call
+    wrong function       the called function names differ from the reference's
+                         as a set (a function missing, or one not in the
+                         reference)
+    wrong number of calls  the same set of names, but too many or too few calls
+                         (one ``spotify.play`` where the reference has two)
+    wrong arguments      the right calls, but the checker rejects the arguments
+    right                the checker accepts it
+
+Tasks where no tool fits (BFCL irrelevance; our "no tool fits"):
+
+    declined             no ``<tool_call>`` tag (right)
+    called anyway        any tag, whether or not it decodes
+
+"Right" is the checker's own verdict on tasks that need a call, so on BFCL's
+AST categories the "right" column equals the official accuracy. On irrelevance
+BFCL also passes a reply whose ``<tool_call>`` blocks fail to decode; here that
+reply called anyway, and the report prints BFCL's count beside ours so the
 difference is visible.
 
-Pure: the caller passes in BFCL's decode and verdict. Tested in
+Pure: the caller passes in the decode and the verdict. Tested in
 ``tests/test_classify.py``.
 """
 
@@ -26,17 +36,32 @@ from collections import Counter
 NO_CALL = "no call"
 UNPARSEABLE = "unparseable"
 WRONG_FUNCTION = "wrong function"
+WRONG_COUNT = "wrong number of calls"
 WRONG_ARGUMENTS = "wrong arguments"
 RIGHT = "right"
-OUTCOMES = (NO_CALL, UNPARSEABLE, WRONG_FUNCTION, WRONG_ARGUMENTS, RIGHT)
+DECLINED = "declined"
+CALLED_ANYWAY = "called anyway"
+# Tasks that need a call, and tasks where no tool fits: each reply gets one
+# label from its task's group, and the reports print the groups as separate tables.
+CALL_OUTCOMES = (NO_CALL, UNPARSEABLE, WRONG_FUNCTION, WRONG_COUNT, WRONG_ARGUMENTS, RIGHT)
+NO_FIT_OUTCOMES = (DECLINED, CALLED_ANYWAY)
+OUTCOMES = CALL_OUTCOMES + NO_FIT_OUTCOMES
+RIGHT_OUTCOMES = (RIGHT, DECLINED)
 # Column headings for the 74-column tables. A new outcome added above without
 # one here gets its full label as the heading.
 SHORT = {NO_CALL: "no call", UNPARSEABLE: "unparse", WRONG_FUNCTION: "wrong fn",
-         WRONG_ARGUMENTS: "wrong arg", RIGHT: "right"}
+         WRONG_COUNT: "wrong n", WRONG_ARGUMENTS: "wrong arg", RIGHT: "right",
+         DECLINED: "declined", CALLED_ANYWAY: "called anyway"}
 
 
 def short_label(outcome: str) -> str:
     return SHORT.get(outcome, outcome)
+
+
+def is_right(outcome: str) -> bool:
+    """Right in either group: the checker accepted the call, or a no-fit task declined."""
+    return outcome in RIGHT_OUTCOMES
+
 
 TAG = "<tool_call>"
 
@@ -59,38 +84,29 @@ def classify(
     irrelevance: bool,
     expected_names: list[str] = (),
 ) -> str:
-    """One item's outcome.
+    """One reply's outcome.
 
-    ``raw`` is the generated text, ``decoded`` the BFCL handler's ``decode_ast``
-    of it (``None`` if that raised), ``bfcl_valid`` BFCL's verdict, and
-    ``expected_names`` the reference call's function names (AST categories).
+    ``raw`` is the generated text, ``decoded`` the Qwen handler's ``decode_ast``
+    of it (``None`` if that raised), ``bfcl_valid`` the checker's verdict (unused
+    when no tool fits), ``irrelevance`` whether no tool fits, and
+    ``expected_names`` the reference call's function names.
     """
     tags = raw.count(TAG)
-    decodes = is_call_list(decoded) and len(decoded) >= tags
     if irrelevance:
-        if tags == 0:
-            return RIGHT
-        return WRONG_FUNCTION if decodes else UNPARSEABLE
+        return DECLINED if tags == 0 else CALLED_ANYWAY
     if bfcl_valid:
         return RIGHT
     if tags == 0:
         return NO_CALL
-    if not decodes:
+    if not (is_call_list(decoded) and len(decoded) >= tags):
         return UNPARSEABLE
     got = Counter(name for d in decoded for name in d)
-    if got != Counter(expected_names):
+    want = Counter(expected_names)
+    if set(got) != set(want):
         return WRONG_FUNCTION
+    if got != want:
+        return WRONG_COUNT
     return WRONG_ARGUMENTS
-
-
-def only_count_differs(decoded: list, expected_names: list[str]) -> bool:
-    """Within "wrong function": the same set of names, called a different number of times.
-
-    E.g. one ``spotify.play`` call where the reference has two. Reported as a
-    sub-count so a missing parallel call isn't read as choosing the wrong tool.
-    """
-    got = [name for d in decoded or [] for name in d]
-    return set(got) == set(expected_names) and Counter(got) != Counter(expected_names)
 
 
 def mixed_share(right_counts: list[int], samples: int) -> tuple[int, int, int]:

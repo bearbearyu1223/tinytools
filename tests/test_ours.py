@@ -4,7 +4,7 @@ import json
 
 from tinytools import ours, tasks
 from tinytools.checkers import check_reply
-from tinytools.classify import NO_CALL, RIGHT, WRONG_FUNCTION
+from tinytools.classify import CALLED_ANYWAY, DECLINED, NO_CALL, RIGHT
 
 
 def test_limit_per_kind_takes_the_first_n_of_each_kind_by_id():
@@ -63,8 +63,10 @@ def test_outcome_rows_and_disagreements():
     rows = {r.kind: r for r in ours.outcome_rows(results)}
     assert rows[tasks.CHOOSE].n == 3 and rows[tasks.CHOOSE].outcomes[RIGHT] == 2
     assert rows[tasks.CHOOSE].outcomes[NO_CALL] == 1 and rows[tasks.CHOOSE].exact == 1
-    assert rows[tasks.NO_FIT].outcomes[RIGHT] == 1
-    assert rows[tasks.NO_FIT].outcomes[WRONG_FUNCTION] == 1
+    assert rows[tasks.NO_FIT].outcomes[DECLINED] == 1
+    assert rows[tasks.NO_FIT].outcomes[CALLED_ANYWAY] == 1
+    calls = ours.total_row([r for r in rows.values() if r.kind in (tasks.CHOOSE, tasks.TRICKY)])
+    assert (calls.n, calls.execution, calls.outcomes[RIGHT]) == (3, 2, 2)
     assert rows["total"].n == 5 and rows["total"].execution == 3
     exec_only, exact_only = ours.disagreements(results)
     assert [(s.task["id"], i) for s, i in exec_only] == [("t1", 1)]

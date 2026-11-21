@@ -58,6 +58,21 @@ def test_calendar_lookup_by_date_and_title():
     assert "error" in execute("get_calendar_event", {"title": "the meeting"})  # only filler words
 
 
+def test_plural_filler_words_are_dropped_like_singular_ones():
+    for singular, plural in (("board meeting minutes", "board meetings minutes"),
+                             ("Q3 sales report file", "Q3 sales report files")):
+        one = execute("search_documents", {"query": singular})["documents"]
+        assert one and execute("search_documents", {"query": plural})["documents"] == one
+    for only_filler in ("the meetings", "my events", "files"):
+        assert "error" in execute("get_calendar_event", {"title": only_filler})
+
+
+def test_start_time_may_carry_zero_seconds():
+    args = {"title": "x", "date": "2026-03-17", "start_time": "15:00:00"}
+    assert execute("create_calendar_event", args)["created"]["start_time"] == "15:00"
+    assert "error" in execute("create_calendar_event", dict(args, start_time="15:00:30"))
+
+
 def test_create_changes_only_the_state_it_is_given():
     state = tools.fresh_state()
     before = len(state.calendar)

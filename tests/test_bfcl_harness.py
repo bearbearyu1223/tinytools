@@ -5,7 +5,10 @@ import json
 import pytest
 
 from tinytools import bfcl
-from tinytools.classify import NO_CALL, RIGHT, UNPARSEABLE, WRONG_ARGUMENTS, WRONG_FUNCTION
+from tinytools.classify import (
+    CALLED_ANYWAY, DECLINED, NO_CALL, RIGHT, UNPARSEABLE, WRONG_ARGUMENTS, WRONG_COUNT,
+    WRONG_FUNCTION, is_right,
+)
 
 
 @pytest.fixture(scope="module")
@@ -17,7 +20,8 @@ def h():
 def test_reference_reply_is_right(h, category):
     for item in bfcl.load_items(category, None):
         v = bfcl.judge(h, item, bfcl.oracle_reply(item))
-        assert v.outcome == RIGHT and v.bfcl_valid, item.id
+        want = DECLINED if item.irrelevance else RIGHT
+        assert v.outcome == want and is_right(v.outcome) and v.bfcl_valid, item.id
 
 
 def test_prompt_docs_carry_the_hint_and_checker_docs_do_not():
@@ -46,10 +50,19 @@ def test_each_failure_kind_on_a_real_item(h):
 def test_irrelevance_split_vs_bfcl(h):
     item = bfcl.load_items("irrelevance", 1)[0]
     broken = bfcl.judge(h, item, "<tool_call>\n{oops\n</tool_call>")
-    assert broken.outcome == UNPARSEABLE and broken.bfcl_valid  # BFCL counts it right
+    assert broken.outcome == CALLED_ANYWAY and broken.bfcl_valid  # BFCL counts it right
     fname = item.prompt_functions[0]["name"]
     called = bfcl.judge(h, item, '<tool_call>\n{"name": "%s", "arguments": {}}\n</tool_call>' % fname)
-    assert called.outcome == WRONG_FUNCTION and not called.bfcl_valid
+    assert called.outcome == CALLED_ANYWAY and not called.bfcl_valid
+
+
+def test_a_missing_parallel_call_is_wrong_count(h):
+    # The first parallel item whose reference calls one function 2+ times.
+    item = next(i for i in bfcl.load_items("parallel", None)
+                if len(set(i.expected_names())) == 1 and len(i.expected_names()) > 1)
+    blocks = bfcl.oracle_reply(item).split("\n<tool_call>")
+    assert bfcl.judge(h, item, blocks[0]).outcome == WRONG_COUNT
+    assert bfcl.judge(h, item, bfcl.oracle_reply(item)).outcome == RIGHT
 
 
 def test_item_seed_depends_only_on_seed_and_id():

@@ -1,10 +1,11 @@
-"""The five-way split on hand-made replies."""
+"""The outcome labels on hand-made replies."""
 
 import pytest
 
 from tinytools.classify import (
-    NO_CALL, RIGHT, UNPARSEABLE, WRONG_ARGUMENTS, WRONG_FUNCTION, classify, is_call_list,
-    mixed_share,
+    CALL_OUTCOMES, CALLED_ANYWAY, DECLINED, NO_CALL, NO_FIT_OUTCOMES, OUTCOMES, RIGHT,
+    UNPARSEABLE, WRONG_ARGUMENTS, WRONG_COUNT, WRONG_FUNCTION, classify, is_call_list, is_right,
+    mixed_share, short_label,
 )
 
 CALL = '<tool_call>\n{"name": "%s", "arguments": %s}\n</tool_call>'
@@ -38,11 +39,22 @@ def test_one_of_two_blocks_failing_is_unparseable():
     assert ast(raw, [{"f": {"x": 1}}], expected=("f", "f")) == UNPARSEABLE
 
 
-def test_wrong_name_or_wrong_count_is_wrong_function():
+def test_wrong_name_is_wrong_function():
     assert ast(CALL % ("g", "{}"), [{"g": {}}]) == WRONG_FUNCTION
+    # a right call plus one to a tool the reference doesn't call: the sets differ
+    raw = CALL % ("f", "{}") + "\n" + CALL % ("g", "{}")
+    assert ast(raw, [{"f": {}}, {"g": {}}], expected=("f",)) == WRONG_FUNCTION
+    # one of two reference functions missing
+    assert ast(CALL % ("f", "{}"), [{"f": {}}], expected=("f", "g")) == WRONG_FUNCTION
+
+
+def test_right_names_wrong_count_is_its_own_outcome():
     raw = CALL % ("f", "{}")
-    assert ast(raw, [{"f": {}}], expected=("f", "f")) == WRONG_FUNCTION
-    assert ast(raw + "\n" + raw, [{"f": {}}, {"f": {}}], expected=("f",)) == WRONG_FUNCTION
+    assert ast(raw, [{"f": {}}], expected=("f", "f")) == WRONG_COUNT  # too few
+    assert ast(raw + "\n" + raw, [{"f": {}}, {"f": {}}], expected=("f",)) == WRONG_COUNT
+    two = raw + "\n" + CALL % ("g", "{}")
+    assert ast(two + "\n" + raw, [{"f": {}}, {"g": {}}, {"f": {}}],
+               expected=("g", "f")) == WRONG_COUNT
 
 
 def test_right_names_wrong_values_is_wrong_arguments():
@@ -50,15 +62,25 @@ def test_right_names_wrong_values_is_wrong_arguments():
     assert ast(raw, [{"f": {"x": 2}}, {"g": {}}], expected=("g", "f")) == WRONG_ARGUMENTS
 
 
-def irr(raw, decoded):
-    return classify(raw=raw, decoded=decoded, bfcl_valid=True, irrelevance=True)
+def irr(raw, decoded, valid=True):
+    return classify(raw=raw, decoded=decoded, bfcl_valid=valid, irrelevance=True)
 
 
-def test_irrelevance():
-    assert irr("None of the functions can do that.", []) == RIGHT
-    assert irr(CALL % ("f", "{}"), [{"f": {}}]) == WRONG_FUNCTION
-    # BFCL would count this one right (nothing decodes); the split says unparseable.
-    assert irr("<tool_call>\n{oops\n</tool_call>", []) == UNPARSEABLE
+def test_no_tool_fits_declined_or_called_anyway():
+    assert irr("None of the functions can do that.", [], valid=False) == DECLINED
+    assert irr(CALL % ("f", "{}"), [{"f": {}}]) == CALLED_ANYWAY
+    # BFCL would count this one right (nothing decodes); here it called anyway.
+    assert irr("<tool_call>\n{oops\n</tool_call>", []) == CALLED_ANYWAY
+
+
+def test_groups_and_right():
+    assert set(CALL_OUTCOMES) & set(NO_FIT_OUTCOMES) == set()
+    assert OUTCOMES == CALL_OUTCOMES + NO_FIT_OUTCOMES
+    assert [o for o in OUTCOMES if is_right(o)] == [RIGHT, DECLINED]
+    # the call table fits 74 columns: an 11-character first column (choose+fill,
+    # tricky args), a 4-digit n, six outcome columns of up to 4 digits each
+    width = 2 + 11 + 4 + sum(max(4, len(short_label(o))) for o in CALL_OUTCOMES) + 2 * 7
+    assert width <= 74
 
 
 def test_is_call_list():
@@ -71,10 +93,3 @@ def test_is_call_list():
 
 def test_mixed_share():
     assert mixed_share([0, 3, 8, 8, 1, 0], 8) == (2, 2, 2)
-
-
-def test_only_count_differs():
-    from tinytools.classify import only_count_differs
-    assert only_count_differs([{"f": {}}], ["f", "f"])
-    assert not only_count_differs([{"g": {}}], ["f"])
-    assert not only_count_differs([{"f": {}}, {"g": {}}], ["f", "f"])

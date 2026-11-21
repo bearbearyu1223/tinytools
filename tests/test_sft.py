@@ -112,6 +112,27 @@ def test_fits():
     assert not sft.fits({"q": 3}, A)  # wrong type
 
 
+# -- which rows train ---------------------------------------------------------------
+
+
+def test_row_type():
+    assert sft.row_type(2, [user(), call(("A", {}))]) == sft.R_CALL
+    assert sft.row_type(1, [user(), call(("A", {}))]) == sft.R_OUT
+    assert sft.row_type(3, [user(), say("no")]) == sft.R_NO_CALL_2
+    assert sft.row_type(1, [user(), say("no")]) == sft.R_NO_CALL_1
+    assert sft.row_type(0, [user(), say("hi")]) == sft.R_NO_CALL_0
+    assert set(sft.ROW_TYPES) == {sft.R_CALL, sft.R_NO_CALL_2, sft.R_NO_CALL_1,
+                                  sft.R_NO_CALL_0, sft.R_OUT}
+
+
+@pytest.mark.parametrize("value, empty", [
+    ("", True), ("  ", True), ([], True), ({}, True), (None, True),
+    ("x", False), (0, False), (False, False), ([0], False), ({"a": 1}, False),
+])
+def test_is_empty(value, empty):
+    assert sft.is_empty(value) is empty
+
+
 # -- argument sources -------------------------------------------------------------
 
 
@@ -122,7 +143,7 @@ def test_another_row_that_fits_is_preferred_and_never_this_row():
         record("r3", [A], [user(), call(("A", {"q": "theirs"}))]),
     ])
     for i in range(50):
-        ch = sft.choose_arguments(A, "r1", pool, random.Random(i), replaced={"q": "mine"})
+        ch = sft.choose_arguments(A, "r1", pool, random.Random(i))
         assert ch.source == sft.ANOTHER_ROW
         assert (ch.copied_from, ch.arguments) == ("r3", {"q": "theirs"})
 
@@ -133,37 +154,49 @@ def test_other_schema_when_nothing_fits():
     assert (ch.source, ch.copied_from, ch.arguments) == (sft.OTHER_SCHEMA, "r2", {"q": 7})
 
 
-def test_this_row_only_for_the_replaced_calls_tool():
-    pool = sft.Pool.build([record("r1", [A, B], [user(), call(("A", {"q": "x"}), ("B", {"n": 2}))])])
-    right = sft.choose_arguments(A, "r1", pool, random.Random(0), replaced={"q": "x"})
-    assert (right.source, right.arguments, right.copied_from) == (sft.THIS_ROW, {"q": "x"}, "r1")
-    # B is called in this row too (a parallel sibling), but not by the call replaced:
-    # its real arguments are not used.
-    wrong = sft.choose_arguments(B, "r1", pool, random.Random(0), replaced=None)
-    assert wrong.source == sft.BUILT and wrong.copied_from is None
+def test_right_tool_called_only_in_this_row_is_built_not_copied():
+    pool = sft.Pool.build([
+        record("r1", [A, B], [user(), call(("A", {"q": "x"}), ("B", {"n": 2}))]),
+        record("r2", [C], [user(), call(("C", {"unit": "F"}), ("Z", {"s": "other"}))]),
+    ])
+    # A is the replaced call's own tool, and only this row calls it: built, from r2's string.
+    right = sft.choose_arguments(A, "r1", pool, random.Random(0))
+    assert (right.source, right.copied_from) == (sft.BUILT, None)
+    assert right.param_sources == (sft.P_TYPED,) and right.param_donors == ("r2",)
+    assert right.arguments["q"] in ("F", "other")
+    # B is called in this row too (a parallel sibling): its real arguments are not used,
+    # and no other row has an integer, so there is nothing to build it from.
+    with pytest.raises(ValueError, match="no value of type"):
+        sft.choose_arguments(B, "r1", pool, random.Random(0))
 
 
-def test_built_parameters_each_source():
-    t = tool("T", {"unit": {"type": "string", "enum": ["C", "F"]},
+def test_built_parameters_each_source_and_never_empty():
+    t = tool("T", {"unit": {"type": "string", "enum": ["", "C", "F"]},
                    "n": {"type": "int"},
                    "lang": {"type": "string", "default": "en"},
                    "blob": {"type": "array"},
+                   "note": {"type": "string", "default": ""},
                    "opt": {"type": "string"}},
-             ["unit", "n", "lang", "blob"])
+             ["unit", "n", "lang", "blob", "note"])
     pool = sft.Pool.build([
-        record("r1", [B], [user(), call(("B", {"n": 99}))]),  # this row: not used
-        record("r2", [B], [user(), call(("B", {"n": 5}))]),
-        record("r3", [A], [user(), call(("A", {"q": "x"}))]),
+        record("r1", [B], [user(), call(("B", {"n": 99}), ("Y", {"blob": [7]}))]),  # this row
+        record("r2", [B], [user(), call(("B", {"n": 5}), ("Y", {"note": "", "blob": []}))]),
+        record("r3", [A], [user(), call(("A", {"q": "x"}), ("Y", {"list": ["a"]}))]),
     ])
     pool.values["lang"].append(("r3", 12))  # wrong type for lang: skipped
-    ch = sft.build_arguments(t, "r1", pool, random.Random(0))
-    assert ch.source == sft.BUILT
-    assert ch.arguments["unit"] in ("C", "F")
-    assert ch.arguments["n"] == 5
-    assert ch.arguments["lang"] == "en"
-    assert ch.arguments["blob"] == []
-    assert "opt" not in ch.arguments  # optional parameters left out
-    assert ch.param_sources == (sft.P_ENUM, sft.P_COPIED, sft.P_DEFAULT, sft.P_PLACEHOLDER)
+    for i in range(30):
+        ch = sft.build_arguments(t, "r1", pool, random.Random(i))
+        assert ch.source == sft.BUILT
+        assert ch.arguments["unit"] in ("C", "F")  # the empty enum value is never drawn
+        assert ch.arguments["n"] == 5
+        assert ch.arguments["lang"] == "en"
+        assert ch.arguments["blob"] == ["a"]  # r2's [] is empty, r1's is this row's
+        assert ch.arguments["note"] == "x"  # the only non-empty string in another row
+        assert "opt" not in ch.arguments  # optional parameters left out
+        assert ch.param_sources == (sft.P_ENUM, sft.P_COPIED, sft.P_DEFAULT, sft.P_TYPED,
+                                    sft.P_TYPED)
+        assert ch.param_donors == (None, "r2", None, "r3", "r3")
+        assert not any(sft.is_empty(v) for v in ch.arguments.values())
 
 
 # -- the random-call twin ---------------------------------------------------------
@@ -186,7 +219,7 @@ def test_two_tool_rows_draw_the_right_tool_about_half_the_time():
 
 
 def test_uniform_draw_includes_the_right_tool_among_k():
-    pool = sft.Pool.build([])
+    pool = two_tool_pool()
     msgs = [user(), call(("C", {"unit": "F"}))]
     drawn = Counter(sft.random_calls(f"row-{i}", [A, B, C], msgs, pool, seed=3)[1][0]["drawn"]
                     for i in range(6000))
@@ -232,20 +265,51 @@ def test_deterministic_per_seed_and_row():
     assert len(seeds) > 1
 
 
-def test_identical_flag_and_control_stats():
-    pool = sft.Pool.build([])
+def test_no_control_argument_comes_from_its_own_row():
+    # Every row calls A and B with its own values; the control must never reuse them.
+    rows = [record(f"r{i}", [A, B], [user(), call(("A", {"q": f"q{i}"}), ("B", {"n": i}))])
+            for i in range(12)]
+    pool = sft.Pool.build(rows)
+    st = sft.ControlStats()
+    for r in rows:
+        own = {json.dumps(tc["function"]["arguments"], sort_keys=True)
+               for tc in r["messages"][1]["tool_calls"]}
+        for seed in range(5):
+            out, log = sft.random_calls(r["id"], [A, B], r["messages"], pool, seed)
+            st.add(r["id"], 2, log)
+            for e, tc in zip(log, out[1]["tool_calls"], strict=True):
+                assert e["copied_from"] != r["id"] and r["id"] not in e["param_donors"]
+                assert json.dumps(tc["function"]["arguments"], sort_keys=True) not in own
+    assert st.from_own_row == 0 and st.identical == 0
+
+
+def test_identical_only_by_coincidence_and_control_stats():
+    # d1 asks the same as the rows below, so a draw of A copies {"q": "x"} by coincidence.
+    pool = sft.Pool.build([record("d1", [A], [user(), call(("A", {"q": "x"}))]),
+                           record("d2", [B], [user(), call(("B", {"n": 1}))])])
     msgs = [user(), call(("A", {"q": "x"}))]
     st = sft.ControlStats()
     for i in range(200):
-        _, log = sft.random_calls(f"r{i}", [A, B], msgs, pool, seed=0)
+        out, log = sft.random_calls(f"r{i}", [A, B], msgs, pool, seed=0)
         e = log[0]
-        # A is never called elsewhere: a hit keeps the real arguments (this row)
+        assert e["source"] == sft.ANOTHER_ROW
         assert e["identical"] == (e["drawn"] == "A")
-        assert e["source"] == (sft.THIS_ROW if e["drawn"] == "A" else sft.BUILT)
-        st.add(2, log)
+        st.add(f"r{i}", 2, log, [dict(tc["function"], source=e["source"])
+                                 for tc in out[1]["tool_calls"]])
     assert st.calls == 200 and st.expected == pytest.approx(100.0)
-    assert st.identical == st.hits == st.source_hit[sft.THIS_ROW]
-    assert st.rows_by_k[2] == 200
+    assert st.identical == st.hits == st.identical_by_source[sft.ANOTHER_ROW]
+    assert st.rows_by_k[2] == 200 and st.from_own_row == 0 and st.empty_built == 0
+    assert st.identical_no_args == 0
+
+
+def test_a_tool_with_no_arguments_reproduces_the_real_call():
+    N = tool("N")  # no parameters: one possible call
+    pool = two_tool_pool()
+    st = sft.ControlStats()
+    for i in range(100):
+        _, log = sft.random_calls(f"r{i}", [N, B], [user(), call(("N", {}))], pool, seed=0)
+        st.add(f"r{i}", 2, log)
+    assert st.identical == st.hits == st.identical_no_args == st.source_hit[sft.BUILT] > 0
 
 
 # -- tokens ---------------------------------------------------------------------
@@ -276,12 +340,59 @@ def test_count_tokens_rejects_straddling():
     assert sft.count_tokens([(0, 3), (3, 5)], [(3, 5)]) == (2, 1)
 
 
+# -- both arms, with the real tokenizer ------------------------------------------------
+
+
+def _tokenizer():
+    try:
+        from transformers import AutoTokenizer
+
+        return AutoTokenizer.from_pretrained("Qwen/Qwen2.5-0.5B-Instruct", local_files_only=True)
+    except Exception:  # noqa: BLE001 - no cached tokenizer
+        pytest.skip("Qwen2.5 tokenizer not cached")
+
+
+def _converted(tok, rid, tools, messages):
+    r = sft.render(rid, tools, messages, tok)
+    return {k: r[k] for k in ("id", "tools", "messages", "text", "train_spans")}
+
+
+def test_no_call_rows_go_into_both_arms_unchanged():
+    tok = _tokenizer()
+    rows = [
+        _converted(tok, "call2", [A, B], [user("find x"), call(("A", {"q": "x"})), toolmsg(),
+                                          say("done")]),
+        _converted(tok, "call1", [B], [user("count"), call(("B", {"n": 9}))]),  # left out
+        _converted(tok, "decline2", [A, B], [user("weather?"), say("No function fits.")]),
+        _converted(tok, "decline1", [B], [user("weather?"), say("I can't do that.")]),
+        _converted(tok, "chat0", [], [user("hi"), say("Hello!")]),
+        _converted(tok, "donor", [A, B], [user("z"), call(("A", {"q": "z"}), ("B", {"n": 4}))]),
+    ]
+    s = sft.build_sets(rows, (1, 2), tok)
+    assert [r["id"] for r in s.real] == ["call2", "decline2", "decline1", "chat0", "donor"]
+    assert s.rows_converted[sft.R_OUT] == 1 and s.rows_trained[sft.R_OUT] == 0
+    for seed in (1, 2):
+        twins = {r["id"]: r for r in s.controls[seed].records}
+        assert list(twins) == [r["id"] for r in s.real]
+        for real in s.real:
+            twin = dict(twins[real["id"]])
+            log = twin.pop("random_calls")
+            if real["id"] in ("decline2", "decline1", "chat0"):
+                assert twin == real and log == []
+            else:
+                assert len(log) == sum(len(m.get("tool_calls") or []) for m in real["messages"])
+        assert sft.same_structure(s.controls[seed].shape, s.shape_real)
+    assert s.real[0]["messages"][-1]["role"] == "assistant"  # truncated after the call
+
+
 # -- the files, pinned ------------------------------------------------------------
 
 ROOT = Path(__file__).resolve().parents[1]
 PINNED_SHA256 = {
-    "real": "8238570af984a0c0ab00343eb3e9d540a5691a63cf99c1e59da32af0db78122a",
-    "control": "808f1aea46b23d5bdc6657c3bcedb9f29acde141be63a4bad93adb5a5bd367af",
+    "real": "deaded1a159d3db23cea4b6ced0247796cbe70b9f45c027cdd2a84a71aea4bf8",
+    1: "d4213d60748cca29ee1edfacd89dc1e155b0d08c85ecc122b20126bf14f8ab22",
+    2: "406312685403cfcb0f82d20c2b7d8f6b4421b5f7941b9e14681ae59688425df5",
+    3: "ddf751e64e9688a65afc73a537ba40471dce82ab1c0c2fec2b18f45a2fbb1205",
 }
 
 
@@ -291,14 +402,20 @@ def test_sets_regenerate_byte_for_byte():
         pytest.skip("run `tinytools toolace-convert` first")
     raw = src.read_bytes()
     assert hashlib.sha256(raw).hexdigest() == sft.CONVERTED_SHA256
-    try:
-        from transformers import AutoTokenizer
-
-        tok = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-0.5B-Instruct", local_files_only=True)
-    except Exception:  # noqa: BLE001 - no cached tokenizer: nothing to pin against
-        pytest.skip("Qwen2.5 tokenizer not cached")
+    tok = _tokenizer()
     converted = [json.loads(line) for line in raw.decode("utf-8").splitlines()]
-    s = sft.build_sets(converted, sft.DEFAULT_SEED, tok)
+    s = sft.build_sets(converted, sft.DEFAULT_SEEDS, tok)
+    assert hashlib.sha256(sft.jsonl_bytes(s.real)).hexdigest() == PINNED_SHA256["real"]
+    for seed in sft.DEFAULT_SEEDS:
+        cs = s.controls[seed]
+        assert hashlib.sha256(sft.jsonl_bytes(cs.records)).hexdigest() == PINNED_SHA256[seed]
+        # no real arguments, no placeholders, on the real data
+        assert cs.stats.from_own_row == 0 and cs.stats.empty_built == 0
+        for r in cs.records:
+            for e in r["random_calls"]:
+                assert e["copied_from"] != r["id"] and r["id"] not in e["param_donors"]
+    # the r4b example: 2 tools, and the first seed draws the other tool, copied from another row
     assert next(r for r in s.real if r["id"] == sft.EXAMPLE_ID)["n_tools"] == 2
-    for name, records in (("real", s.real), ("control", s.control)):
-        assert hashlib.sha256(sft.jsonl_bytes(records)).hexdigest() == PINNED_SHA256[name], name
+    e = next(r for r in s.controls[sft.DEFAULT_SEEDS[0]].records
+             if r["id"] == sft.EXAMPLE_ID)["random_calls"][0]
+    assert e["source"] == sft.ANOTHER_ROW and e["drawn"] != e["original"]

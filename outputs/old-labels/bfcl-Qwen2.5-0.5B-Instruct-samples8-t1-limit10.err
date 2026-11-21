@@ -1,0 +1,41 @@
+[0:00:01] Setup
+[0:00:01] loading Qwen/Qwen2.5-0.5B-Instruct on mps
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[0:00:06] pass 1: simple, samples8-t1, 10 items
+    item    2/10  3.90 s/item  0:31 left
+    item    4/10  4.00 s/item  0:24 left
+    item    6/10  4.38 s/item  0:18 left
+    item    8/10  8.11 s/item  0:16 left
+    item   10/10  7.15 s/item  0:00 left
+[0:01:17] pass 2: multiple, samples8-t1, 10 items
+    item    2/10  8.95 s/item  1:12 left
+    item    4/10  7.65 s/item  0:46 left
+    item    6/10  7.60 s/item  0:30 left
+    item    8/10  10.76 s/item  0:22 left
+    item   10/10  10.23 s/item  0:00 left
+[0:03:00] pass 3: parallel, samples8-t1, 10 items
+    item    2/10  11.28 s/item  1:30 left
+    item    4/10  10.63 s/item  1:04 left
+    item    6/10  15.84 s/item  1:03 left
+    item    8/10  15.60 s/item  0:31 left
+    item   10/10  14.91 s/item  0:00 left
+[0:05:29] pass 4: parallel_multiple, samples8-t1, 10 items
+    item    2/10  7.95 s/item  1:04 left
+    item    4/10  9.16 s/item  0:55 left
+    item    6/10  8.83 s/item  0:35 left
+    item    8/10  8.73 s/item  0:17 left
+    item   10/10  8.80 s/item  0:00 left
+[0:06:57] pass 5: irrelevance, samples8-t1, 10 items
+    item    2/10  20.21 s/item  2:42 left
+    item    4/10  32.84 s/item  3:17 left
+    item    6/10  30.41 s/item  2:02 left
+    item    8/10  29.84 s/item  1:00 left
+    item   10/10  28.38 s/item  0:00 left
+[0:11:41] Every reply, split five ways (all samples)
+[0:11:41] Controls
+[0:11:41] 'wrong fn' that is only a wrong number of calls
+[0:11:41] Groups of 8: how many samples are right per task
+[0:11:41] Groups with signal (some right, some wrong)
+[0:11:41] Wall clock (varies run to run)
+[0:11:41] replies written to outputs/bfcl-Qwen2.5-0.5B-Instruct-samples8-t1-limit10-replies.jsonl
+[0:11:41] done in 700 s

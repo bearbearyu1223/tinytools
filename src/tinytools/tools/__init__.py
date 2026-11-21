@@ -13,13 +13,15 @@ tools never read the real clock.
 Every call starts from a fresh copy of the data (:func:`fresh_state`), so no call
 can see another's effect. Arguments are checked strictly against the schema:
 an unknown argument, a missing required one or a wrong type is an error, and an
-error never matches anything (see :mod:`tinytools.checkers`). Strings are
+error never matches anything (see :mod:`tinytools.checkers`). A start time may
+carry zero seconds (``"15:00:00"`` is ``"15:00"``); other seconds are an error. Strings are
 stripped and their whitespace runs collapsed before use; an integer parameter
 accepts an integral float (``60.0``), as JSON does not distinguish them.
 
 Word matching (contacts, titles): case-insensitive, on whole words
 (:func:`words`). For titles and document queries a few filler words
-(:data:`STOPWORDS`: "the", "doc", "meeting", ...) are dropped from both sides.
+(:data:`STOPWORDS`: "the", "doc", "meeting", "meetings", ...) are dropped from
+both sides.
 A query with no words left is an error, so an empty query cannot return
 everything.
 
@@ -282,7 +284,7 @@ def _check(name: str, args: Any) -> dict:
 
 
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_TIME = re.compile(r"^(\d{1,2}):(\d{2})$")
+_TIME = re.compile(r"^(\d{1,2}):(\d{2})(?::00)?$")
 
 
 def _date(value: str) -> str:
@@ -297,7 +299,7 @@ def _date(value: str) -> str:
 def _time(value: str) -> str:
     m = _TIME.match(value)
     if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
-        raise ToolError("start_time must be 24-hour HH:MM")
+        raise ToolError("start_time must be 24-hour HH:MM (or HH:MM:00)")
     return f"{int(m.group(1)):02d}:{m.group(2)}"
 
 
@@ -305,7 +307,7 @@ def _time(value: str) -> str:
 
 _WORD = re.compile(r"[a-z0-9]+(?:['\-][a-z0-9]+)*")
 STOPWORDS = frozenset("a an the of for and my our on in to with about doc docs document "
-                      "documents file meeting event".split())
+                      "documents file files meeting meetings event events".split())
 
 
 def words(text: str, *, drop_stopwords: bool = False) -> frozenset[str]:
