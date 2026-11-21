@@ -1,0 +1,81 @@
+==========================================================================
+tinytools check-demo
+==========================================================================
+device        : mps (Apple arm64)
+torch         : 2.13.0
+platform      : Darwin 24.6.0 (arm64)
+device memory : 17.2 GB
+
+--------------------------------------------------------------------------
+How a call is checked
+--------------------------------------------------------------------------
+  exact match: one call, the reference's tool, the same arguments
+    after normalizing argument order, number format (90 = 90.0) and
+    whitespace; an expression compares as a syntax tree.
+  execution match: one call, the reference's tool, run on fresh data;
+    no error, and the same result: searches return the same set,
+    a created event leaves the same calendar, numbers agree within
+    1e-06 relative (or 1e-09 absolute).
+
+--------------------------------------------------------------------------
+Call 1: passes both: argument order, 90 vs 90.0, spacing
+--------------------------------------------------------------------------
+  request:
+    Put "Budget sync" on my calendar for 2026-03-17 at 15:00 for 90 \
+    minutes.
+  reference call:
+    {"name": "create_calendar_event", "arguments": {"title": "Budget \
+    sync", "date": "2026-03-17", "start_time": "15:00", \
+    "duration_minutes": 90}}
+  the call checked:
+    {"name": "create_calendar_event", "arguments": {"duration_minutes": \
+    90.0, "start_time": "15:00", "date": "2026-03-17", "title": "Budget  \
+    sync"}}
+  exact match                        yes
+  execution match                    yes
+  reference's result:
+    {"created": {"id": "evt-079", "date": "2026-03-17", "start_time": \
+    "15:00", "duration_minutes": 90, "title": "Budget sync", \
+    "attendees": []}}
+  this call's result:
+    {"created": {"id": "evt-079", "date": "2026-03-17", "start_time": \
+    "15:00", "duration_minutes": 90, "title": "Budget sync", \
+    "attendees": []}}
+  execution match compared           calendar after the call: same
+
+--------------------------------------------------------------------------
+Call 2: passes execution only: operands swapped
+--------------------------------------------------------------------------
+  request:
+    What is 348 times 27?
+  reference call:
+    {"name": "calculator", "arguments": {"expression": "348 * 27"}}
+  the call checked:
+    {"name": "calculator", "arguments": {"expression": "27 * 348"}}
+  exact match                        no
+  execution match                    yes
+  reference's result:
+    {"result": 9396}
+  this call's result:
+    {"result": 9396}
+  execution match compared           9396 vs 9396
+
+--------------------------------------------------------------------------
+Call 3: fails both: a broader search that includes the answer
+--------------------------------------------------------------------------
+  request:
+    Find the Q3 sales report.
+  reference call:
+    {"name": "search_documents", "arguments": {"query": "Q3 sales \
+    report"}}
+  the call checked:
+    {"name": "search_documents", "arguments": {"query": "sales report"}}
+  exact match                        no
+  execution match                    no
+  reference's result:
+    {"documents": [{"id": "doc-003", "title": "Q3 sales report"}]}
+  this call's result:
+    {"documents": [{"id": "doc-001", "title": "Q1 sales report"}, {"id": \
+    "doc-002", "title": "Q2 sales report"}, {"id": "doc-003", "title": \
+    "Q3 sales report"}, {"id": "doc-004", "title": "Q4 sales report"}]}
+  execution match compared           id sets: 1 vs 4, different

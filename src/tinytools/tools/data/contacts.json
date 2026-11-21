@@ -1,0 +1,722 @@
+[
+ {
+  "id": "c-001",
+  "name": "Maria Garcia",
+  "email": "maria.garcia@example.com",
+  "phone": "+1-555-215-6190",
+  "team": "Design",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-002",
+  "name": "David Chen",
+  "email": "david.chen@example.com",
+  "phone": "+1-555-966-0454",
+  "team": "Marketing",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-003",
+  "name": "Priya Raman",
+  "email": "priya.raman@example.com",
+  "phone": "+1-555-621-3108",
+  "team": "Sales",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-004",
+  "name": "Lucas Silva",
+  "email": "lucas.silva@example.com",
+  "phone": "+1-555-961-2308",
+  "team": "Legal",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-005",
+  "name": "Emma Johansson",
+  "email": "emma.johansson@example.com",
+  "phone": "+1-555-521-3369",
+  "team": "Support",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-006",
+  "name": "Omar Farouk",
+  "email": "omar.farouk@example.com",
+  "phone": "+1-555-335-7580",
+  "team": "Engineering",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-007",
+  "name": "Hannah Weber",
+  "email": "hannah.weber@example.com",
+  "phone": "+1-555-516-9826",
+  "team": "Engineering",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-008",
+  "name": "Kenji Watanabe",
+  "email": "kenji.watanabe@example.com",
+  "phone": "+1-555-673-8673",
+  "team": "Design",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-009",
+  "name": "Fatima Zahra",
+  "email": "fatima.zahra@example.com",
+  "phone": "+1-555-636-9765",
+  "team": "People",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-010",
+  "name": "Ben Carter",
+  "email": "ben.carter@example.com",
+  "phone": "+1-555-557-8898",
+  "team": "Legal",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-011",
+  "name": "Olivia Brown",
+  "email": "olivia.brown@example.com",
+  "phone": "+1-555-543-5091",
+  "team": "Finance",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-012",
+  "name": "Liam Walker",
+  "email": "liam.walker@example.com",
+  "phone": "+1-555-572-5502",
+  "team": "Sales",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-013",
+  "name": "Sofia Rossi",
+  "email": "sofia.rossi@example.com",
+  "phone": "+1-555-242-6909",
+  "team": "Legal",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-014",
+  "name": "Noah Kim",
+  "email": "noah.kim@example.com",
+  "phone": "+1-555-198-5793",
+  "team": "Finance",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-015",
+  "name": "Ava Thompson",
+  "email": "ava.thompson@example.com",
+  "phone": "+1-555-565-2687",
+  "team": "Support",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-016",
+  "name": "Ethan Wright",
+  "email": "ethan.wright@example.com",
+  "phone": "+1-555-630-7866",
+  "team": "Design",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-017",
+  "name": "Mia Lopez",
+  "email": "mia.lopez@example.com",
+  "phone": "+1-555-555-4993",
+  "team": "Finance",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-018",
+  "name": "Lena Fischer",
+  "email": "lena.fischer@example.com",
+  "phone": "+1-555-986-8144",
+  "team": "Support",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-019",
+  "name": "Raj Patel",
+  "email": "raj.patel@example.com",
+  "phone": "+1-555-503-0645",
+  "team": "Operations",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-020",
+  "name": "Chloe Martin",
+  "email": "chloe.martin@example.com",
+  "phone": "+1-555-873-6487",
+  "team": "Finance",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-021",
+  "name": "Daniel Cohen",
+  "email": "daniel.cohen@example.com",
+  "phone": "+1-555-469-3465",
+  "team": "Finance",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-022",
+  "name": "Grace Ito",
+  "email": "grace.ito@example.com",
+  "phone": "+1-555-716-7029",
+  "team": "Finance",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-023",
+  "name": "Isaac Mensah",
+  "email": "isaac.mensah@example.com",
+  "phone": "+1-555-215-1753",
+  "team": "Sales",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-024",
+  "name": "Julia Novak",
+  "email": "julia.novak@example.com",
+  "phone": "+1-555-647-2354",
+  "team": "Operations",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-025",
+  "name": "Kofi Asante",
+  "email": "kofi.asante@example.com",
+  "phone": "+1-555-872-6687",
+  "team": "Research",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-026",
+  "name": "Laura Bianchi",
+  "email": "laura.bianchi@example.com",
+  "phone": "+1-555-162-2026",
+  "team": "People",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-027",
+  "name": "Marco Conti",
+  "email": "marco.conti@example.com",
+  "phone": "+1-555-549-3997",
+  "team": "Engineering",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-028",
+  "name": "Nina Petrova",
+  "email": "nina.petrova@example.com",
+  "phone": "+1-555-971-4440",
+  "team": "Design",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-029",
+  "name": "Oscar Lindqvist",
+  "email": "oscar.lindqvist@example.com",
+  "phone": "+1-555-323-5160",
+  "team": "Support",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-030",
+  "name": "Paula Santos",
+  "email": "paula.santos@example.com",
+  "phone": "+1-555-949-2872",
+  "team": "Engineering",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-031",
+  "name": "Quentin Dubois",
+  "email": "quentin.dubois@example.com",
+  "phone": "+1-555-668-5869",
+  "team": "Research",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-032",
+  "name": "Rosa Jimenez",
+  "email": "rosa.jimenez@example.com",
+  "phone": "+1-555-922-5085",
+  "team": "Engineering",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-033",
+  "name": "Samuel Osei",
+  "email": "samuel.osei@example.com",
+  "phone": "+1-555-233-2494",
+  "team": "Research",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-034",
+  "name": "Tara Singh",
+  "email": "tara.singh@example.com",
+  "phone": "+1-555-637-1823",
+  "team": "Support",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-035",
+  "name": "Umar Sheikh",
+  "email": "umar.sheikh@example.com",
+  "phone": "+1-555-949-2862",
+  "team": "Support",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-036",
+  "name": "Will Turner",
+  "email": "will.turner@example.com",
+  "phone": "+1-555-516-0312",
+  "team": "Design",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-037",
+  "name": "Yara Haddad",
+  "email": "yara.haddad@example.com",
+  "phone": "+1-555-868-8743",
+  "team": "Support",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-038",
+  "name": "Zoe Adams",
+  "email": "zoe.adams@example.com",
+  "phone": "+1-555-486-4588",
+  "team": "Finance",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-039",
+  "name": "Adam Fletcher",
+  "email": "adam.fletcher@example.com",
+  "phone": "+1-555-903-4738",
+  "team": "Engineering",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-040",
+  "name": "Bianca Moreno",
+  "email": "bianca.moreno@example.com",
+  "phone": "+1-555-128-6828",
+  "team": "Engineering",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-041",
+  "name": "Carlos Vega",
+  "email": "carlos.vega@example.com",
+  "phone": "+1-555-672-7148",
+  "team": "Engineering",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-042",
+  "name": "Diana Prieto",
+  "email": "diana.prieto@example.com",
+  "phone": "+1-555-278-9293",
+  "team": "Research",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-043",
+  "name": "Erik Nilsson",
+  "email": "erik.nilsson@example.com",
+  "phone": "+1-555-245-2867",
+  "team": "Engineering",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-044",
+  "name": "Fiona Grant",
+  "email": "fiona.grant@example.com",
+  "phone": "+1-555-780-9176",
+  "team": "Support",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-045",
+  "name": "Felix Baumann",
+  "email": "felix.baumann@example.com",
+  "phone": "+1-555-380-2674",
+  "team": "Support",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-046",
+  "name": "Gina Russo",
+  "email": "gina.russo@example.com",
+  "phone": "+1-555-848-4661",
+  "team": "Operations",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-047",
+  "name": "Hugo Lambert",
+  "email": "hugo.lambert@example.com",
+  "phone": "+1-555-169-0915",
+  "team": "Operations",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-048",
+  "name": "Irene Costa",
+  "email": "irene.costa@example.com",
+  "phone": "+1-555-709-1443",
+  "team": "Finance",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-049",
+  "name": "Jack Harper",
+  "email": "jack.harper@example.com",
+  "phone": "+1-555-227-0420",
+  "team": "Engineering",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-050",
+  "name": "Karen Doyle",
+  "email": "karen.doyle@example.com",
+  "phone": "+1-555-206-2972",
+  "team": "Finance",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-051",
+  "name": "Leo Marsh",
+  "email": "leo.marsh@example.com",
+  "phone": "+1-555-586-3656",
+  "team": "People",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-052",
+  "name": "Megan Price",
+  "email": "megan.price@example.com",
+  "phone": "+1-555-277-4343",
+  "team": "Research",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-053",
+  "name": "Nathan Ford",
+  "email": "nathan.ford@example.com",
+  "phone": "+1-555-912-0011",
+  "team": "Operations",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-054",
+  "name": "Olga Ivanova",
+  "email": "olga.ivanova@example.com",
+  "phone": "+1-555-225-8989",
+  "team": "Design",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-055",
+  "name": "Peter Holm",
+  "email": "peter.holm@example.com",
+  "phone": "+1-555-297-2250",
+  "team": "Finance",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-056",
+  "name": "Ruth Abrams",
+  "email": "ruth.abrams@example.com",
+  "phone": "+1-555-741-6116",
+  "team": "Legal",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-057",
+  "name": "Simon Clarke",
+  "email": "simon.clarke@example.com",
+  "phone": "+1-555-908-2756",
+  "team": "Sales",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-058",
+  "name": "Tessa Vos",
+  "email": "tessa.vos@example.com",
+  "phone": "+1-555-168-8291",
+  "team": "Finance",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-059",
+  "name": "Victor Hale",
+  "email": "victor.hale@example.com",
+  "phone": "+1-555-754-6145",
+  "team": "Sales",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-060",
+  "name": "Wendy Ortiz",
+  "email": "wendy.ortiz@example.com",
+  "phone": "+1-555-566-5807",
+  "team": "Legal",
+  "tricky_spelling": false
+ },
+ {
+  "id": "c-061",
+  "name": "Jon Smith",
+  "email": "jon.smith@example.com",
+  "phone": "+1-555-565-7004",
+  "team": "Finance",
+  "tricky_spelling": true
+ },
+ {
+  "id": "c-062",
+  "name": "John Smith",
+  "email": "john.smith@example.com",
+  "phone": "+1-555-787-2517",
+  "team": "Research",
+  "tricky_spelling": true
+ },
+ {
+  "id": "c-063",
+  "name": "Sean Murphy",
+  "email": "sean.murphy@example.com",
+  "phone": "+1-555-271-2145",
+  "team": "Research",
+  "tricky_spelling": true
+ },
+ {
+  "id": "c-064",
+  "name": "Shaun Murphy",
+  "email": "shaun.murphy@example.com",
+  "phone": "+1-555-845-1673",
+  "team": "Legal",
+  "tricky_spelling": true
+ },
+ {
+  "id": "c-065",
+  "name": "Steven Park",
+  "email": "steven.park@example.com",
+  "phone": "+1-555-410-4035",
+  "team": "Design",
+  "tricky_spelling": true
+ },
+ {
+  "id": "c-066",
+  "name": "Stephen Park",
+  "email": "stephen.park@example.com",
+  "phone": "+1-555-100-7085",
+  "team": "Legal",
+  "tricky_spelling": true
+ },
+ {
+  "id": "c-067",
+  "name": "Geoffrey Lin",
+  "email": "geoffrey.lin@example.com",
+  "phone": "+1-555-839-3938",
+  "team": "Design",
+  "tricky_spelling": true
+ },
+ {
+  "id": "c-068",
+  "name": "Jeffrey Lin",
+  "email": "jeffrey.lin@example.com",
+  "phone": "+1-555-540-8974",
+  "team": "Sales",
+  "tricky_spelling": true
+ },
+ {
+  "id": "c-069",
+  "name": "Caitlin Brooks",
+  "email": "caitlin.brooks@example.com",
+  "phone": "+1-555-174-9722",
+  "team": "Sales",
+  "tricky_spelling": true
+ },
+ {
+  "id": "c-070",
+  "name": "Kaitlyn Brooks",
+  "email": "kaitlyn.brooks@example.com",
+  "phone": "+1-555-871-0955",
+  "team": "Engineering",
+  "tricky_spelling": true
+ },
+ {
+  "id": "c-071",
+  "name": "Dmitri Volkov",
+  "email": "dmitri.volkov@example.com",
+  "phone": "+1-555-502-5822",
+  "team": "Design",
+  "tricky_spelling": true
+ },
+ {
+  "id": "c-072",
+  "name": "Dmitry Volkov",
+  "email": "dmitry.volkov@example.com",
+  "phone": "+1-555-385-8314",
+  "team": "Design",
+  "tricky_spelling": true
+ },
+ {
+  "id": "c-073",
+  "name": "Katherine Nguyen",
+  "email": "katherine.nguyen@example.com",
+  "phone": "+1-555-590-0394",
+  "team": "Finance",
+  "tricky_spelling": true
+ },
+ {
+  "id": "c-074",
+  "name": "Catherine Nguyen",
+  "email": "catherine.nguyen@example.com",
+  "phone": "+1-555-587-9288",
+  "team": "Legal",
+  "tricky_spelling": true
+ },
+ {
+  "id": "c-075",
+  "name": "Mohammed Iqbal",
+  "email": "mohammed.iqbal@example.com",
+  "phone": "+1-555-280-0950",
+  "team": "Operations",
+  "tricky_spelling": true
+ },
+ {
+  "id": "c-076",
+  "name": "Muhammad Iqbal",
+  "email": "muhammad.iqbal@example.com",
+  "phone": "+1-555-272-0555",
+  "team": "Design",
+  "tricky_spelling": true
+ },
+ {
+  "id": "c-077",
+  "name": "Ann Lee",
+  "email": "ann.lee@example.com",
+  "phone": "+1-555-172-5191",
+  "team": "People",
+  "tricky_spelling": true
+ },
+ {
+  "id": "c-078",
+  "name": "Anne Leigh",
+  "email": "anne.leigh@example.com",
+  "phone": "+1-555-889-6702",
+  "team": "Research",
+  "tricky_spelling": true
+ },
+ {
+  "id": "c-079",
+  "name": "Siobhan O'Neill",
+  "email": "siobhan.oneill@example.com",
+  "phone": "+1-555-345-6234",
+  "team": "People",
+  "tricky_spelling": true
+ },
+ {
+  "id": "c-080",
+  "name": "Aoife Byrne",
+  "email": "aoife.byrne@example.com",
+  "phone": "+1-555-141-2254",
+  "team": "Finance",
+  "tricky_spelling": true
+ },
+ {
+  "id": "c-081",
+  "name": "Niamh Kavanagh",
+  "email": "niamh.kavanagh@example.com",
+  "phone": "+1-555-561-0227",
+  "team": "Legal",
+  "tricky_spelling": true
+ },
+ {
+  "id": "c-082",
+  "name": "Saoirse Doyle",
+  "email": "saoirse.doyle@example.com",
+  "phone": "+1-555-519-4355",
+  "team": "Finance",
+  "tricky_spelling": true
+ },
+ {
+  "id": "c-083",
+  "name": "Eoghan Gallagher",
+  "email": "eoghan.gallagher@example.com",
+  "phone": "+1-555-315-2521",
+  "team": "Finance",
+  "tricky_spelling": true
+ },
+ {
+  "id": "c-084",
+  "name": "Padraig Walsh",
+  "email": "padraig.walsh@example.com",
+  "phone": "+1-555-939-9759",
+  "team": "Research",
+  "tricky_spelling": true
+ },
+ {
+  "id": "c-085",
+  "name": "Mairead McGrath",
+  "email": "mairead.mcgrath@example.com",
+  "phone": "+1-555-972-2362",
+  "team": "Support",
+  "tricky_spelling": true
+ },
+ {
+  "id": "c-086",
+  "name": "Krzysztof Nowak",
+  "email": "krzysztof.nowak@example.com",
+  "phone": "+1-555-408-4488",
+  "team": "Legal",
+  "tricky_spelling": true
+ },
+ {
+  "id": "c-087",
+  "name": "Wojciech Szczepanski",
+  "email": "wojciech.szczepanski@example.com",
+  "phone": "+1-555-106-2006",
+  "team": "Sales",
+  "tricky_spelling": true
+ },
+ {
+  "id": "c-088",
+  "name": "Ifeoma Nwachukwu",
+  "email": "ifeoma.nwachukwu@example.com",
+  "phone": "+1-555-857-2316",
+  "team": "Sales",
+  "tricky_spelling": true
+ },
+ {
+  "id": "c-089",
+  "name": "Leigh-Anne Porter",
+  "email": "leighanne.porter@example.com",
+  "phone": "+1-555-147-5542",
+  "team": "Engineering",
+  "tricky_spelling": true
+ },
+ {
+  "id": "c-090",
+  "name": "Rhys Llewellyn",
+  "email": "rhys.llewellyn@example.com",
+  "phone": "+1-555-687-1251",
+  "team": "Sales",
+  "tricky_spelling": true
+ }
+]

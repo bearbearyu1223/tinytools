@@ -1,0 +1,155 @@
+==========================================================================
+tinytools score (test, greedy)
+==========================================================================
+device        : mps (Apple arm64)
+torch         : 2.13.0
+platform      : Darwin 24.6.0 (arm64)
+device memory : 17.2 GB
+
+--------------------------------------------------------------------------
+Setup
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-0.5B-Instruct
+  tasks                              test split, seed 0
+    sha256 (first 16)                ef5f1ae004e76b72
+  tasks scored                       first 30 of each kind, by id
+  decoding                           greedy (argmax)
+  top_p / top_k / repetition penalty 1.0 / off / 1.0
+  max new tokens                     512
+  seed                               0 (+ crc32 of each task id)
+  right means                        execution match (exact beside it)
+
+--------------------------------------------------------------------------
+One task, whole: test-0013 (tricky arguments, create_calendar_event)
+--------------------------------------------------------------------------
+  The templated prompt, exactly as the model reads it (Qwen2.5's
+  chat template; long lines broken with a trailing \; unbroken copy
+  in outputs/r1-prompt.txt):
+
+    <|im_start|>system
+    You are Qwen, created by Alibaba Cloud. You are a helpful assistant.
+    The current time is 2026-03-11 09:30, Wednesday.
+
+    # Tools
+
+    You may call one or more functions to assist with the user query.
+
+    You are provided with function signatures within <tools></tools> XML \
+    tags:
+    <tools>
+    {"type": "function", "function": {"name": "get_calendar_event", \
+    "description": "Look up events on the user's calendar by date, by \
+    words in the title, or both. Give at least one.", "parameters": \
+    {"type": "object", "properties": {"date": {"type": "string", \
+    "description": "The day, as YYYY-MM-DD."}, "title": {"type": \
+    "string", "description": "Words that appear in the event's \
+    title."}}, "required": []}}}
+    {"type": "function", "function": {"name": "calculator", \
+    "description": "Evaluate an arithmetic expression and return the \
+    number. Use Python syntax: numbers, + - * / ** % and parentheses, \
+    e.g. \"(3 + 4) * 2\".", "parameters": {"type": "object", \
+    "properties": {"expression": {"type": "string", "description": "The \
+    arithmetic expression."}}, "required": ["expression"]}}}
+    {"type": "function", "function": {"name": "create_calendar_event", \
+    "description": "Add an event to the user's calendar.", "parameters": \
+    {"type": "object", "properties": {"title": {"type": "string", \
+    "description": "The event's title."}, "date": {"type": "string", \
+    "description": "The day, as YYYY-MM-DD."}, "start_time": {"type": \
+    "string", "description": "Start time, 24-hour HH:MM."}, \
+    "duration_minutes": {"type": "integer", "description": "Length in \
+    minutes. Default 60."}, "attendees": {"type": "array", "items": \
+    {"type": "string"}, "description": "Names of the people invited."}}, \
+    "required": ["title", "date", "start_time"]}}}
+    </tools>
+
+    For each function call, return a json object with function name and \
+    arguments within <tool_call></tool_call> XML tags:
+    <tool_call>
+    {"name": <function-name>, "arguments": <args-json-object>}
+    </tool_call><|im_end|>
+    <|im_start|>user
+    Add "Coffee chat" to my calendar on the 4th of next month at 2:30pm \
+    for three hours.<|im_end|>
+    <|im_start|>assistant
+
+
+  prompt tokens                      540
+    the tool list (<tools> block)    388
+    the whole tools section          460
+    tokens straddling those edges    1
+
+--------------------------------------------------------------------------
+The model's reply, parsed and run
+--------------------------------------------------------------------------
+  raw reply (up to the end-of-turn token):
+    <tool_call>
+    {"name": "create_calendar_event", "arguments": {"title": "Coffee \
+    chat", "date": "2026-03-14", "start_time": "14:30", \
+    "duration_minutes": 3}}
+    </tool_call>
+  parsed call:
+    {"name": "create_calendar_event", "arguments": {"title": "Coffee \
+    chat", "date": "2026-03-14", "start_time": "14:30", \
+    "duration_minutes": 3}}
+  the tool's result, fed back as the next turn:
+    <|im_start|>user
+    <tool_response>
+    {"created": {"id": "evt-079", "date": "2026-03-14", "start_time": \
+    "14:30", "duration_minutes": 3, "title": "Coffee chat", "attendees": \
+    []}}
+    </tool_response><|im_end|>
+  reference call:
+    {"name": "create_calendar_event", "arguments": {"title": "Coffee \
+    chat", "date": "2026-04-04", "start_time": "14:30", \
+    "duration_minutes": 180}}
+  outcome                            wrong arguments
+  exact match / execution match      no / no
+
+--------------------------------------------------------------------------
+Every reply, split five ways
+--------------------------------------------------------------------------
+  kind           n  no call  unparse  wrong fn  wrong arg  right  exact
+  -----------------------------------------------------------------------
+  choose+fill   30        1        1         0          4     24     23
+  tricky args   30        5        0         6         10      9      9
+  no tool fits  30        0        0        19          0     11     11
+  total         90        6        1        25         14     44     43
+  right = execution match; exact = exact match (the same replies).
+  On no-tool-fits tasks right is no call; a call is 'wrong fn'.
+
+  kind          right by execution  right by exact match
+  --------------------------------------------------------
+  choose+fill     24 of 30 (80.0%)      23 of 30 (76.7%)
+  tricky args      9 of 30 (30.0%)       9 of 30 (30.0%)
+  no tool fits    11 of 30 (36.7%)      11 of 30 (36.7%)
+  total           44 of 90 (48.9%)      43 of 90 (47.8%)
+
+--------------------------------------------------------------------------
+Controls, scored by the same checks
+--------------------------------------------------------------------------
+  reference answers right (both)     90 of 90 (100.0%)
+  never calling right                30 of 90 (33.3%)
+  reference answers: the harness can give full marks. never calling:
+  what declining every task scores (right on no-tool-fits only).
+
+--------------------------------------------------------------------------
+Execution match but not exact match
+--------------------------------------------------------------------------
+  replies                            1
+  test-0040  search_documents
+      ref: {"name": "search_documents", "arguments": {"query": \
+      "Interview rubric"}}
+      got: {"name": "search_documents", "arguments": {"query": \
+      "Interview Rubric"}}
+
+--------------------------------------------------------------------------
+Exact match but not execution match (a check: should be 0)
+--------------------------------------------------------------------------
+  replies                            0
+
+--------------------------------------------------------------------------
+Wall clock (varies run to run)
+--------------------------------------------------------------------------
+  pass    tasks  s/task  new tokens/task  hit token cap
+  -------------------------------------------------------
+  greedy     90    1.29               39              0

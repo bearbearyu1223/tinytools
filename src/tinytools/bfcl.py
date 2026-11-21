@@ -254,12 +254,20 @@ class Generated:
 
 
 def generate(tok, model, item: Item, cfg, seed: int) -> Generated:
+    return generate_text(tok, model, prompt_text(tok, item), item.id, cfg, seed)
+
+
+def generate_text(tok, model, prompt: str, item_id: str, cfg, seed: int) -> Generated:
+    """Generate from an already templated prompt; seeded by ``seed`` and the item's id.
+
+    The one generation path: ``bfcl-score`` and ``score`` (our tasks) both use it.
+    """
     from .device import sync
 
     device = next(model.parameters()).device
-    ids = tok(prompt_text(tok, item), return_tensors="pt", add_special_tokens=False)["input_ids"]
+    ids = tok(prompt, return_tensors="pt", add_special_tokens=False)["input_ids"]
     ids = ids.to(device)  # int64 stays int64: move only, no dtype change
-    torch.manual_seed(item_seed(seed, item.id))
+    torch.manual_seed(item_seed(seed, item_id))
     sync(device)
     t0 = time.perf_counter()
     with torch.no_grad():

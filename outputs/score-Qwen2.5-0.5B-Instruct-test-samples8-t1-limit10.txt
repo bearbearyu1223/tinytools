@@ -1,0 +1,103 @@
+==========================================================================
+tinytools score (test, samples8-t1)
+==========================================================================
+device        : mps (Apple arm64)
+torch         : 2.13.0
+platform      : Darwin 24.6.0 (arm64)
+device memory : 17.2 GB
+
+--------------------------------------------------------------------------
+Setup
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-0.5B-Instruct
+  tasks                              test split, seed 0
+    sha256 (first 16)                ef5f1ae004e76b72
+  tasks scored                       first 10 of each kind, by id
+  decoding                           8 samples, temperature 1
+  top_p / top_k / repetition penalty 1.0 / off / 1.0
+  max new tokens                     512
+  seed                               0 (+ crc32 of each task id)
+  right means                        execution match (exact beside it)
+
+--------------------------------------------------------------------------
+Every reply, split five ways (all samples)
+--------------------------------------------------------------------------
+  kind            n  no call  unparse  wrong fn  wrong arg  right  exact
+  ------------------------------------------------------------------------
+  choose+fill    80        6        3         9         11     51     50
+  tricky args    80       13        1        11         31     24     24
+  no tool fits   80        0        1        43          0     36     36
+  total         240       19        5        63         42    111    110
+  right = execution match; exact = exact match (the same replies).
+  On no-tool-fits tasks right is no call; a call is 'wrong fn'.
+
+  kind          right by execution  right by exact match
+  --------------------------------------------------------
+  choose+fill     51 of 80 (63.8%)      50 of 80 (62.5%)
+  tricky args     24 of 80 (30.0%)      24 of 80 (30.0%)
+  no tool fits    36 of 80 (45.0%)      36 of 80 (45.0%)
+  total         111 of 240 (46.2%)    110 of 240 (45.8%)
+
+--------------------------------------------------------------------------
+Controls, scored by the same checks
+--------------------------------------------------------------------------
+  reference answers right (both)     30 of 30 (100.0%)
+  never calling right                10 of 30 (33.3%)
+  reference answers: the harness can give full marks. never calling:
+  what declining every task scores (right on no-tool-fits only).
+
+--------------------------------------------------------------------------
+Execution match but not exact match
+--------------------------------------------------------------------------
+  replies                            1
+  test-0017 sample 2  search_documents
+      ref: {"name": "search_documents", "arguments": {"query": "Office \
+      floor plan"}}
+      got: {"name": "search_documents", "arguments": {"query": "office \
+      floor plan"}}
+
+--------------------------------------------------------------------------
+Exact match but not execution match (a check: should be 0)
+--------------------------------------------------------------------------
+  replies                            0
+
+--------------------------------------------------------------------------
+Groups of 8: how many samples are right per task
+--------------------------------------------------------------------------
+  kind          0  1  2  3  4  5  6  7  8
+  -----------------------------------------
+  choose+fill   0  1  1  1  0  2  2  1  2
+  tricky args   5  1  0  0  0  2  1  1  0
+  no tool fits  1  2  2  0  1  2  0  0  2
+  total         6  4  3  1  1  6  3  2  4
+
+--------------------------------------------------------------------------
+Groups with signal (some right, some wrong)
+--------------------------------------------------------------------------
+  kind          tasks  all wrong  mixed  all right  share  per 1k
+  -----------------------------------------------------------------
+  choose+fill      10          0      8          2  80.0%     100
+  tricky args      10          5      5          0  50.0%      62
+  no tool fits     10          1      7          2  70.0%      88
+  total            30          6     20          4  66.7%      83
+  share: mixed groups / tasks.
+  per 1k: mixed groups per 1,000 answers = (1000 / 8) x share.
+
+--------------------------------------------------------------------------
+Greedy right vs pass@8
+--------------------------------------------------------------------------
+  kind          tasks      greedy right             pass@8
+  ----------------------------------------------------------
+  choose+fill      10   8 of 10 (80.0%)  10 of 10 (100.0%)
+  tricky args      10   5 of 10 (50.0%)    5 of 10 (50.0%)
+  no tool fits     10   3 of 10 (30.0%)    9 of 10 (90.0%)
+  total            30  16 of 30 (53.3%)   24 of 30 (80.0%)
+  pass@8: tasks with at least one right answer in 8 samples.
+
+--------------------------------------------------------------------------
+Wall clock (varies run to run)
+--------------------------------------------------------------------------
+  pass         tasks  s/task  new tokens/task  hit token cap
+  ------------------------------------------------------------
+  greedy          30    1.26               38              0
+  samples8-t1     30    5.85              398              1

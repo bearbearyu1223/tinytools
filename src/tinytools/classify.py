@@ -29,6 +29,14 @@ WRONG_FUNCTION = "wrong function"
 WRONG_ARGUMENTS = "wrong arguments"
 RIGHT = "right"
 OUTCOMES = (NO_CALL, UNPARSEABLE, WRONG_FUNCTION, WRONG_ARGUMENTS, RIGHT)
+# Column headings for the 74-column tables. A new outcome added above without
+# one here gets its full label as the heading.
+SHORT = {NO_CALL: "no call", UNPARSEABLE: "unparse", WRONG_FUNCTION: "wrong fn",
+         WRONG_ARGUMENTS: "wrong arg", RIGHT: "right"}
+
+
+def short_label(outcome: str) -> str:
+    return SHORT.get(outcome, outcome)
 
 TAG = "<tool_call>"
 

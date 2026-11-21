@@ -1,0 +1,767 @@
+[
+ {
+  "id": "evt-001",
+  "date": "2026-02-23",
+  "start_time": "10:00",
+  "duration_minutes": 60,
+  "title": "Weekly planning",
+  "attendees": []
+ },
+ {
+  "id": "evt-002",
+  "date": "2026-02-23",
+  "start_time": "13:00",
+  "duration_minutes": 60,
+  "title": "Usability testing",
+  "attendees": [
+   "Hannah Weber"
+  ]
+ },
+ {
+  "id": "evt-003",
+  "date": "2026-02-24",
+  "start_time": "08:00",
+  "duration_minutes": 45,
+  "title": "Sprint retrospective",
+  "attendees": [
+   "Megan Price",
+   "Mia Lopez",
+   "Yara Haddad"
+  ]
+ },
+ {
+  "id": "evt-004",
+  "date": "2026-02-24",
+  "start_time": "12:00",
+  "duration_minutes": 60,
+  "title": "Marketing sync",
+  "attendees": [
+   "Nathan Ford",
+   "Noah Kim",
+   "Tara Singh"
+  ]
+ },
+ {
+  "id": "evt-005",
+  "date": "2026-02-24",
+  "start_time": "15:00",
+  "duration_minutes": 45,
+  "title": "Vendor call with Acme",
+  "attendees": [
+   "Hugo Lambert",
+   "Sofia Rossi"
+  ]
+ },
+ {
+  "id": "evt-006",
+  "date": "2026-02-25",
+  "start_time": "09:30",
+  "duration_minutes": 45,
+  "title": "Compliance check-in",
+  "attendees": [
+   "Ava Thompson"
+  ]
+ },
+ {
+  "id": "evt-007",
+  "date": "2026-02-25",
+  "start_time": "14:30",
+  "duration_minutes": 30,
+  "title": "Quarterly business review",
+  "attendees": [
+   "Ethan Wright"
+  ]
+ },
+ {
+  "id": "evt-008",
+  "date": "2026-02-26",
+  "start_time": "14:00",
+  "duration_minutes": 60,
+  "title": "Design review",
+  "attendees": []
+ },
+ {
+  "id": "evt-009",
+  "date": "2026-02-27",
+  "start_time": "08:30",
+  "duration_minutes": 90,
+  "title": "Investor update",
+  "attendees": []
+ },
+ {
+  "id": "evt-010",
+  "date": "2026-02-27",
+  "start_time": "11:30",
+  "duration_minutes": 45,
+  "title": "Mentoring session",
+  "attendees": [
+   "Grace Ito",
+   "Hannah Weber",
+   "Oscar Lindqvist"
+  ]
+ },
+ {
+  "id": "evt-011",
+  "date": "2026-03-02",
+  "start_time": "10:00",
+  "duration_minutes": 60,
+  "title": "Weekly planning",
+  "attendees": []
+ },
+ {
+  "id": "evt-012",
+  "date": "2026-03-03",
+  "start_time": "08:30",
+  "duration_minutes": 30,
+  "title": "Office move planning",
+  "attendees": []
+ },
+ {
+  "id": "evt-013",
+  "date": "2026-03-03",
+  "start_time": "11:00",
+  "duration_minutes": 90,
+  "title": "Car service",
+  "attendees": []
+ },
+ {
+  "id": "evt-014",
+  "date": "2026-03-04",
+  "start_time": "12:30",
+  "duration_minutes": 90,
+  "title": "Analytics office hours",
+  "attendees": [
+   "Quentin Dubois"
+  ]
+ },
+ {
+  "id": "evt-015",
+  "date": "2026-03-04",
+  "start_time": "15:00",
+  "duration_minutes": 60,
+  "title": "Roadmap workshop",
+  "attendees": [
+   "Karen Doyle",
+   "Rosa Jimenez"
+  ]
+ },
+ {
+  "id": "evt-016",
+  "date": "2026-03-05",
+  "start_time": "14:00",
+  "duration_minutes": 60,
+  "title": "Design review",
+  "attendees": []
+ },
+ {
+  "id": "evt-017",
+  "date": "2026-03-06",
+  "start_time": "09:30",
+  "duration_minutes": 90,
+  "title": "Interview: backend engineer",
+  "attendees": [
+   "Ava Thompson",
+   "Laura Bianchi",
+   "Sofia Rossi"
+  ]
+ },
+ {
+  "id": "evt-018",
+  "date": "2026-03-06",
+  "start_time": "16:00",
+  "duration_minutes": 30,
+  "title": "Security training",
+  "attendees": [
+   "Marco Conti"
+  ]
+ },
+ {
+  "id": "evt-019",
+  "date": "2026-03-09",
+  "start_time": "10:00",
+  "duration_minutes": 60,
+  "title": "Weekly planning",
+  "attendees": []
+ },
+ {
+  "id": "evt-020",
+  "date": "2026-03-09",
+  "start_time": "11:00",
+  "duration_minutes": 30,
+  "title": "Recruiting fair",
+  "attendees": [
+   "Quentin Dubois"
+  ]
+ },
+ {
+  "id": "evt-021",
+  "date": "2026-03-09",
+  "start_time": "13:30",
+  "duration_minutes": 90,
+  "title": "Accessibility audit",
+  "attendees": [
+   "David Chen",
+   "Felix Baumann"
+  ]
+ },
+ {
+  "id": "evt-022",
+  "date": "2026-03-09",
+  "start_time": "15:00",
+  "duration_minutes": 30,
+  "title": "Coffee with Ben Carter",
+  "attendees": [
+   "Megan Price",
+   "Quentin Dubois"
+  ]
+ },
+ {
+  "id": "evt-023",
+  "date": "2026-03-10",
+  "start_time": "13:00",
+  "duration_minutes": 30,
+  "title": "Data migration kickoff",
+  "attendees": [
+   "David Chen"
+  ]
+ },
+ {
+  "id": "evt-024",
+  "date": "2026-03-10",
+  "start_time": "13:30",
+  "duration_minutes": 60,
+  "title": "Dentist appointment",
+  "attendees": []
+ },
+ {
+  "id": "evt-025",
+  "date": "2026-03-11",
+  "start_time": "10:00",
+  "duration_minutes": 90,
+  "title": "Book club",
+  "attendees": [
+   "Paula Santos"
+  ]
+ },
+ {
+  "id": "evt-026",
+  "date": "2026-03-12",
+  "start_time": "14:00",
+  "duration_minutes": 60,
+  "title": "Design review",
+  "attendees": []
+ },
+ {
+  "id": "evt-027",
+  "date": "2026-03-12",
+  "start_time": "14:30",
+  "duration_minutes": 90,
+  "title": "Release party",
+  "attendees": [
+   "Daniel Cohen",
+   "Fiona Grant",
+   "Raj Patel"
+  ]
+ },
+ {
+  "id": "evt-028",
+  "date": "2026-03-13",
+  "start_time": "12:30",
+  "duration_minutes": 30,
+  "title": "Fire drill",
+  "attendees": []
+ },
+ {
+  "id": "evt-029",
+  "date": "2026-03-13",
+  "start_time": "14:00",
+  "duration_minutes": 45,
+  "title": "Partner onboarding",
+  "attendees": [
+   "Victor Hale"
+  ]
+ },
+ {
+  "id": "evt-030",
+  "date": "2026-03-16",
+  "start_time": "10:00",
+  "duration_minutes": 60,
+  "title": "Weekly planning",
+  "attendees": []
+ },
+ {
+  "id": "evt-031",
+  "date": "2026-03-17",
+  "start_time": "12:30",
+  "duration_minutes": 60,
+  "title": "Lunch with Priya Raman",
+  "attendees": [
+   "Daniel Cohen",
+   "Erik Nilsson",
+   "Fatima Zahra"
+  ]
+ },
+ {
+  "id": "evt-032",
+  "date": "2026-03-17",
+  "start_time": "15:00",
+  "duration_minutes": 45,
+  "title": "Budget review",
+  "attendees": [
+   "Irene Costa",
+   "Liam Walker",
+   "Peter Holm"
+  ]
+ },
+ {
+  "id": "evt-033",
+  "date": "2026-03-18",
+  "start_time": "13:30",
+  "duration_minutes": 30,
+  "title": "Webinar rehearsal",
+  "attendees": [
+   "Carlos Vega",
+   "Wendy Ortiz"
+  ]
+ },
+ {
+  "id": "evt-034",
+  "date": "2026-03-18",
+  "start_time": "16:00",
+  "duration_minutes": 60,
+  "title": "Hiring committee",
+  "attendees": [
+   "Priya Raman"
+  ]
+ },
+ {
+  "id": "evt-035",
+  "date": "2026-03-19",
+  "start_time": "11:00",
+  "duration_minutes": 30,
+  "title": "Haircut",
+  "attendees": [
+   "Julia Novak"
+  ]
+ },
+ {
+  "id": "evt-036",
+  "date": "2026-03-19",
+  "start_time": "14:00",
+  "duration_minutes": 60,
+  "title": "Design review",
+  "attendees": []
+ },
+ {
+  "id": "evt-037",
+  "date": "2026-03-20",
+  "start_time": "13:00",
+  "duration_minutes": 45,
+  "title": "Yoga class",
+  "attendees": [
+   "Victor Hale"
+  ]
+ },
+ {
+  "id": "evt-038",
+  "date": "2026-03-20",
+  "start_time": "13:30",
+  "duration_minutes": 90,
+  "title": "Product demo",
+  "attendees": [
+   "Rosa Jimenez"
+  ]
+ },
+ {
+  "id": "evt-039",
+  "date": "2026-03-20",
+  "start_time": "14:30",
+  "duration_minutes": 60,
+  "title": "Tax advisor",
+  "attendees": [
+   "Gina Russo",
+   "Hugo Lambert",
+   "Quentin Dubois"
+  ]
+ },
+ {
+  "id": "evt-040",
+  "date": "2026-03-23",
+  "start_time": "10:00",
+  "duration_minutes": 60,
+  "title": "Weekly planning",
+  "attendees": []
+ },
+ {
+  "id": "evt-041",
+  "date": "2026-03-24",
+  "start_time": "11:00",
+  "duration_minutes": 90,
+  "title": "Parent-teacher conference",
+  "attendees": [
+   "Jack Harper",
+   "Simon Clarke"
+  ]
+ },
+ {
+  "id": "evt-042",
+  "date": "2026-03-25",
+  "start_time": "11:00",
+  "duration_minutes": 45,
+  "title": "Board prep",
+  "attendees": [
+   "Kofi Asante",
+   "Maria Garcia",
+   "Nina Petrova"
+  ]
+ },
+ {
+  "id": "evt-043",
+  "date": "2026-03-26",
+  "start_time": "14:00",
+  "duration_minutes": 60,
+  "title": "Design review",
+  "attendees": []
+ },
+ {
+  "id": "evt-044",
+  "date": "2026-03-27",
+  "start_time": "12:00",
+  "duration_minutes": 30,
+  "title": "Piano lesson",
+  "attendees": [
+   "Kenji Watanabe",
+   "Laura Bianchi"
+  ]
+ },
+ {
+  "id": "evt-045",
+  "date": "2026-03-27",
+  "start_time": "16:30",
+  "duration_minutes": 45,
+  "title": "Team lunch",
+  "attendees": [
+   "Omar Farouk"
+  ]
+ },
+ {
+  "id": "evt-046",
+  "date": "2026-03-30",
+  "start_time": "10:00",
+  "duration_minutes": 60,
+  "title": "Weekly planning",
+  "attendees": []
+ },
+ {
+  "id": "evt-047",
+  "date": "2026-03-31",
+  "start_time": "08:30",
+  "duration_minutes": 30,
+  "title": "Performance review",
+  "attendees": [
+   "Carlos Vega"
+  ]
+ },
+ {
+  "id": "evt-048",
+  "date": "2026-04-01",
+  "start_time": "09:00",
+  "duration_minutes": 90,
+  "title": "All-hands",
+  "attendees": [
+   "Adam Fletcher",
+   "Irene Costa",
+   "Oscar Lindqvist"
+  ]
+ },
+ {
+  "id": "evt-049",
+  "date": "2026-04-01",
+  "start_time": "09:00",
+  "duration_minutes": 90,
+  "title": "Offsite planning",
+  "attendees": [
+   "Adam Fletcher",
+   "Daniel Cohen"
+  ]
+ },
+ {
+  "id": "evt-050",
+  "date": "2026-04-02",
+  "start_time": "14:00",
+  "duration_minutes": 60,
+  "title": "Design review",
+  "attendees": []
+ },
+ {
+  "id": "evt-051",
+  "date": "2026-04-03",
+  "start_time": "13:00",
+  "duration_minutes": 30,
+  "title": "Legal review",
+  "attendees": [
+   "Marco Conti"
+  ]
+ },
+ {
+  "id": "evt-052",
+  "date": "2026-04-03",
+  "start_time": "15:30",
+  "duration_minutes": 90,
+  "title": "Brand refresh workshop",
+  "attendees": [
+   "Lena Fischer"
+  ]
+ },
+ {
+  "id": "evt-053",
+  "date": "2026-04-03",
+  "start_time": "16:00",
+  "duration_minutes": 45,
+  "title": "Customer interview",
+  "attendees": [
+   "Grace Ito",
+   "Leo Marsh"
+  ]
+ },
+ {
+  "id": "evt-054",
+  "date": "2026-04-06",
+  "start_time": "10:00",
+  "duration_minutes": 60,
+  "title": "Weekly planning",
+  "attendees": []
+ },
+ {
+  "id": "evt-055",
+  "date": "2026-04-06",
+  "start_time": "12:30",
+  "duration_minutes": 45,
+  "title": "Gym session",
+  "attendees": []
+ },
+ {
+  "id": "evt-056",
+  "date": "2026-04-06",
+  "start_time": "13:30",
+  "duration_minutes": 45,
+  "title": "Wellness talk",
+  "attendees": [
+   "Maria Garcia"
+  ]
+ },
+ {
+  "id": "evt-057",
+  "date": "2026-04-06",
+  "start_time": "14:00",
+  "duration_minutes": 60,
+  "title": "Code freeze",
+  "attendees": []
+ },
+ {
+  "id": "evt-058",
+  "date": "2026-04-07",
+  "start_time": "11:00",
+  "duration_minutes": 60,
+  "title": "Architecture deep dive",
+  "attendees": []
+ },
+ {
+  "id": "evt-059",
+  "date": "2026-04-08",
+  "start_time": "10:00",
+  "duration_minutes": 60,
+  "title": "Intern demo day",
+  "attendees": [
+   "Olga Ivanova"
+  ]
+ },
+ {
+  "id": "evt-060",
+  "date": "2026-04-08",
+  "start_time": "11:30",
+  "duration_minutes": 45,
+  "title": "Pricing discussion",
+  "attendees": [
+   "Maria Garcia"
+  ]
+ },
+ {
+  "id": "evt-061",
+  "date": "2026-04-08",
+  "start_time": "12:00",
+  "duration_minutes": 60,
+  "title": "Supplier negotiation",
+  "attendees": [
+   "Erik Nilsson",
+   "Nathan Ford"
+  ]
+ },
+ {
+  "id": "evt-062",
+  "date": "2026-04-09",
+  "start_time": "14:00",
+  "duration_minutes": 60,
+  "title": "Design review",
+  "attendees": []
+ },
+ {
+  "id": "evt-063",
+  "date": "2026-04-10",
+  "start_time": "10:00",
+  "duration_minutes": 90,
+  "title": "Support escalation review",
+  "attendees": []
+ },
+ {
+  "id": "evt-064",
+  "date": "2026-04-10",
+  "start_time": "12:30",
+  "duration_minutes": 60,
+  "title": "Doctor's checkup",
+  "attendees": [
+   "Ava Thompson"
+  ]
+ },
+ {
+  "id": "evt-065",
+  "date": "2026-04-13",
+  "start_time": "10:00",
+  "duration_minutes": 60,
+  "title": "Weekly planning",
+  "attendees": []
+ },
+ {
+  "id": "evt-066",
+  "date": "2026-04-14",
+  "start_time": "12:00",
+  "duration_minutes": 60,
+  "title": "Farewell drinks",
+  "attendees": [
+   "Omar Farouk",
+   "Umar Sheikh"
+  ]
+ },
+ {
+  "id": "evt-067",
+  "date": "2026-04-15",
+  "start_time": "09:30",
+  "duration_minutes": 90,
+  "title": "Flight to Berlin",
+  "attendees": [
+   "Kofi Asante",
+   "Omar Farouk",
+   "Priya Raman"
+  ]
+ },
+ {
+  "id": "evt-068",
+  "date": "2026-04-15",
+  "start_time": "15:00",
+  "duration_minutes": 30,
+  "title": "Hackathon kickoff",
+  "attendees": [
+   "Victor Hale"
+  ]
+ },
+ {
+  "id": "evt-069",
+  "date": "2026-04-15",
+  "start_time": "16:00",
+  "duration_minutes": 90,
+  "title": "Interview: data scientist",
+  "attendees": [
+   "Mia Lopez",
+   "Nina Petrova",
+   "Samuel Osei"
+  ]
+ },
+ {
+  "id": "evt-070",
+  "date": "2026-04-16",
+  "start_time": "14:00",
+  "duration_minutes": 60,
+  "title": "Design review",
+  "attendees": []
+ },
+ {
+  "id": "evt-071",
+  "date": "2026-04-17",
+  "start_time": "13:30",
+  "duration_minutes": 30,
+  "title": "Charity run",
+  "attendees": [
+   "Zoe Adams"
+  ]
+ },
+ {
+  "id": "evt-072",
+  "date": "2026-04-20",
+  "start_time": "10:00",
+  "duration_minutes": 30,
+  "title": "Press briefing",
+  "attendees": [
+   "Erik Nilsson",
+   "Maria Garcia",
+   "Omar Farouk"
+  ]
+ },
+ {
+  "id": "evt-073",
+  "date": "2026-04-20",
+  "start_time": "10:00",
+  "duration_minutes": 60,
+  "title": "Weekly planning",
+  "attendees": []
+ },
+ {
+  "id": "evt-074",
+  "date": "2026-04-21",
+  "start_time": "12:00",
+  "duration_minutes": 60,
+  "title": "Conference keynote",
+  "attendees": [
+   "Olga Ivanova"
+  ]
+ },
+ {
+  "id": "evt-075",
+  "date": "2026-04-21",
+  "start_time": "14:00",
+  "duration_minutes": 30,
+  "title": "Expense report deadline",
+  "attendees": [
+   "Olga Ivanova"
+  ]
+ },
+ {
+  "id": "evt-076",
+  "date": "2026-04-22",
+  "start_time": "14:00",
+  "duration_minutes": 90,
+  "title": "Launch rehearsal",
+  "attendees": [
+   "Daniel Cohen",
+   "Victor Hale"
+  ]
+ },
+ {
+  "id": "evt-077",
+  "date": "2026-04-23",
+  "start_time": "14:00",
+  "duration_minutes": 60,
+  "title": "Design review",
+  "attendees": []
+ },
+ {
+  "id": "evt-078",
+  "date": "2026-04-24",
+  "start_time": "11:00",
+  "duration_minutes": 45,
+  "title": "Contract renewal call",
+  "attendees": [
+   "Adam Fletcher",
+   "Wendy Ortiz"
+  ]
+ }
+]
