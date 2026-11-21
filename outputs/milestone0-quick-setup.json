@@ -1,5 +1,6 @@
 {
   "command": "tinytools milestone0 --quick",
+  "deadline_epoch": null,
   "models": [
     "Qwen/Qwen2.5-0.5B-Instruct",
     "Qwen/Qwen2.5-0.5B"
@@ -48,8 +49,10 @@
       "ours_n": 3,
       "bfcl_right": 1,
       "bfcl_n": 4,
-      "mixed": 1,
-      "groups": 3
+      "mixed": 0,
+      "groups": 2,
+      "calls_right": 0,
+      "calls_n": 2
     },
     "Qwen/Qwen2.5-0.5B": {
       "model": "Qwen/Qwen2.5-0.5B",
@@ -58,7 +61,9 @@
       "bfcl_right": 0,
       "bfcl_n": 4,
       "mixed": 0,
-      "groups": 3
+      "groups": 2,
+      "calls_right": 0,
+      "calls_n": 2
     }
   },
   "skipped": {},
@@ -68,7 +73,7 @@
       "method": "LoRA r16",
       "trainable": 8798208,
       "total": 494032768,
-      "seconds_per_step": 1.5346286460007832,
+      "seconds_per_step": 0.7002815419982653,
       "peak_bytes": 2085529600,
       "losses": [
         1.597379446029663,
@@ -82,15 +87,34 @@
       "method": "full",
       "trainable": 494032768,
       "total": 494032768,
-      "seconds_per_step": 3.7435709579985996,
+      "seconds_per_step": 1.205720416499389,
       "peak_bytes": 6580297216,
       "losses": [
         1.597379446029663,
-        0.9879680275917053,
-        1.4727941751480103
+        0.9879690408706665,
+        1.472794532775879
       ],
       "note": ""
     }
   ],
+  "timings": [
+    {
+      "model": "Qwen/Qwen2.5-0.5B-Instruct",
+      "wall_s": 36.17041758399864,
+      "item_passes": 14,
+      "gen_s": 32.346130958991125,
+      "greedy_s": 12.471366000994749,
+      "greedy_steps": 396
+    },
+    {
+      "model": "Qwen/Qwen2.5-0.5B",
+      "wall_s": 176.01302483300242,
+      "item_passes": 11,
+      "gen_s": 174.30308662599418,
+      "greedy_s": 103.02797883499443,
+      "greedy_steps": 3631
+    }
+  ],
+  "stopped": null,
   "verdict": "no verdict: Qwen/Qwen2.5-1.5B-Instruct was not scored, and the rule reaches it"
 }

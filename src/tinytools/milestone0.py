@@ -22,6 +22,12 @@ base 3B, by the same rule; else stop and bring it to the author. 0.5B is scored
 as comparison rows only. Also: one model's greedy dev pass run twice (are the
 replies byte-identical?), and a training-step timing probe (LoRA vs full).
 
+With ``--deadline-epoch`` (the Lambda runner passes when its remote time limit fires),
+a model whose scoring can't finish before it (estimated from what was measured so far,
+conservatively) is not started: the rule section is printed from what was measured, with
+the verdict "incomplete" if the rule reaches an unscored model. SIGTERM (the time limit,
+or the runner stopping the job) does the same with whatever had been measured.
+
 Everything above the ``-- running`` line is model-free and unit-tested in
 ``tests/test_milestone0.py``.
 """
@@ -31,6 +37,7 @@ from __future__ import annotations
 import gc
 import json
 import math
+import signal
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -206,6 +213,62 @@ def skip_reason(model: Model, measured: dict[Model, Measured],
     return None
 
 
+# -- the deadline (pure) ---------------------------------------------------------------------
+
+SAFETY = 1.5  # an estimate is multiplied by this before it is compared with the time left
+DEADLINE_MARGIN_S = 120  # kept back before the deadline: printing the rule, writing records
+PROBE_ALLOW_S = 600  # the training-step probe: not started with less than this left
+
+
+@dataclass(frozen=True)
+class Timing:
+    """What scoring one model took: wall clock (loading included), the item-passes it
+    scored, and its greedy generation (seconds, decode steps) for a per-step rate."""
+
+    model: Model
+    wall_s: float
+    item_passes: int
+    gen_s: float  # all generation, every pass
+    greedy_s: float
+    greedy_steps: int  # new tokens of the greedy passes (one sequence: one step per token)
+
+
+def item_passes(model: Model, n_ours: int, n_bfcl: int, repeat_model: Model) -> int:
+    """Items a model's scoring generates for: ours greedy, ours sampled (one group of
+    8 per task), BFCL greedy, and ours greedy again for the repeat model."""
+    return 2 * n_ours + n_bfcl + (n_ours if model == repeat_model else 0)
+
+
+def estimate_seconds(model: Model, passes: int, timings: list[Timing],
+                     max_new_tokens: int) -> float | None:
+    """A conservative guess at how long scoring ``model`` takes. With a model of the same
+    kind measured: the slowest such model's seconds per item-pass. Otherwise (a base
+    model after instruct ones, whose replies run to the cap): every item at the token
+    cap at the slowest measured greedy seconds per step, plus the largest measured
+    loading and checking time. ``None``: nothing measured yet. Times :data:`SAFETY`."""
+    if not timings:
+        return None
+    same = [t for t in timings if t.model.kind == model.kind and t.item_passes]
+    if same:
+        return SAFETY * passes * max(t.wall_s / t.item_passes for t in same)
+    rates = [t.greedy_s / t.greedy_steps for t in timings if t.greedy_steps]
+    if not rates:
+        return None
+    overhead = max(max(0.0, t.wall_s - t.gen_s) for t in timings)
+    return SAFETY * (passes * max_new_tokens * max(rates) + overhead)
+
+
+def fits(now: float, deadline: float | None, need_s: float | None,
+         margin_s: float = DEADLINE_MARGIN_S) -> bool:
+    """Can work of ``need_s`` seconds start now and end ``margin_s`` before the deadline?
+    No deadline, or no estimate yet: yes (the first model always starts)."""
+    if deadline is None:
+        return True
+    if need_s is None:
+        return now + margin_s < deadline
+    return now + need_s + margin_s <= deadline
+
+
 def differing(first: list[tuple[str, str]], second: list[tuple[str, str]]) -> list[str]:
     """Ids whose reply differs between two passes of ``(id, reply)``, in order.
     The passes must cover the same ids in the same order."""
@@ -307,6 +370,7 @@ class ModelResult:
     sampled: list  # ours.Scored, 8 samples
     bfcl: list  # bfcl.CategoryResult per category, greedy
     measured: Measured
+    timing: Timing | None = None
 
 
 def needs_call(scored) -> bool:
@@ -414,6 +478,7 @@ def _score_model(model: Model, s: Settings, device, dev_tasks: list, setup: dict
                  repeat: dict) -> ModelResult:
     from . import bfcl, ours, progress
 
+    t0 = time.perf_counter()
     progress.status(f"loading {model.hf_id} on {device}")
     tok, lm = bfcl.load_model(model.hf_id, device)
     try:
@@ -427,6 +492,7 @@ def _score_model(model: Model, s: Settings, device, dev_tasks: list, setup: dict
             repeat["model"] = model
             repeat["first"] = [(x.task["id"], x.replies[0]) for x in greedy]
             repeat["second"] = [(x.task["id"], x.replies[0]) for x in again]
+            repeat["seconds"] = sum(x.seconds for x in again)
             repeat["outcomes_differ"] = sum(a.checks[0].outcome != b.checks[0].outcome
                                             for a, b in zip(greedy, again, strict=True))
         sampled = ours.score(tok, lm, dev_tasks, samples=SAMPLES, temperature=TEMPERATURE,
@@ -448,7 +514,17 @@ def _score_model(model: Model, s: Settings, device, dev_tasks: list, setup: dict
                  _ours_rows("greedy", greedy, setup)
                  + _ours_rows(f"samples{SAMPLES}-t{TEMPERATURE:g}", sampled, setup))
     _write_jsonl(out_dir / f"{stem}-bfcl-replies.jsonl", records)
-    return ModelResult(model, greedy, sampled, results, _measure(model, greedy, sampled, results))
+    again = repeat.get("model") == model
+    greedy_s = sum(x.seconds for x in greedy) + sum(c.seconds or 0 for c in results)
+    timing = Timing(model, time.perf_counter() - t0,
+                    2 * len(greedy) + (len(repeat["second"]) if again else 0)
+                    + sum(c.n for c in results),
+                    greedy_s + (repeat["seconds"] if again else 0.0)
+                    + sum(x.seconds for x in sampled),
+                    greedy_s, sum(x.new_tokens for x in greedy)
+                    + sum(c.new_tokens or 0 for c in results))
+    return ModelResult(model, greedy, sampled, results,
+                       _measure(model, greedy, sampled, results), timing)
 
 
 # -- the training-step probe ----------------------------------------------------------
@@ -558,8 +634,47 @@ def _time_steps(size: str, method: str, s: Settings, device, batches) -> StepTim
 # -- the report ---------------------------------------------------------------------------
 
 
+class Stopped(Exception):
+    """SIGTERM arrived while a model was being scored (or the probe ran)."""
+
+
+class _Sigterm:
+    """SIGTERM handler: always notes the request; raises :class:`Stopped` only inside
+    ``raising()`` (scoring, the probe), so a report line is never cut in half."""
+
+    def __init__(self) -> None:
+        self.requested = False
+        self.armed = False
+
+    def __call__(self, signum, frame) -> None:
+        self.requested = True
+        if self.armed:
+            self.armed = False
+            raise Stopped()
+
+    def raising(self):
+        from contextlib import contextmanager
+
+        @contextmanager
+        def armed():
+            if self.requested:
+                raise Stopped()
+            self.armed = True
+            try:
+                yield
+            finally:
+                self.armed = False
+        return armed()
+
+
+def _minutes(seconds: float) -> str:
+    return f"{max(0.0, seconds) / 60:.0f} min"
+
+
 def run(quick: bool, models: tuple[Model, ...] | None, root: Path,
-        base_when_needed: bool = False) -> None:
+        base_when_needed: bool = False, deadline: float | None = None) -> int:
+    """Score, print, record. Returns the exit code: 0; 1 if the deadline stopped the
+    scoring before the rule could decide; 143 after SIGTERM."""
     from . import bfcl, ours, progress, tasks
     from .device import dtype_name, get_device, preferred_dtype, set_determinism
     from .report import Report
@@ -578,7 +693,9 @@ def run(quick: bool, models: tuple[Model, ...] | None, root: Path,
     versions = _versions()
     setup = {"dtype": dtype, "device": device.type}
     record = {"command": "tinytools milestone0" + (" --quick" if quick else "")
-              + (" --base-when-needed" if base_when_needed else ""),
+              + (" --base-when-needed" if base_when_needed else "")
+              + (" --deadline-epoch ..." if deadline is not None else ""),
+              "deadline_epoch": deadline,
               "models": [m.hf_id for m in s.models], "device": device.type, "dtype": dtype,
               "determinism": determinism, "seeds": {"generation": SEED, "probe": SEED},
               "samples": SAMPLES, "temperature": TEMPERATURE,
@@ -611,6 +728,11 @@ def run(quick: bool, models: tuple[Model, ...] | None, root: Path,
     rep.kv("max new tokens", bfcl.MAX_NEW_TOKENS)
     rep.kv("stop at", "the model's eos, and <|im_end|>")
     rep.kv("seed", f"{SEED} (+ crc32 of each item id)")
+    rep.kv("deadline", "none" if deadline is None else
+           time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(deadline)))
+    if deadline is not None:
+        rep.note("A model whose scoring can't finish by then (a conservative estimate")
+        rep.note("from what is measured) is not started.")
     rep.kv("dtype", dtype)
     rep.kv("determinism", determinism)
     for name, v in versions.items():
@@ -623,24 +745,84 @@ def run(quick: bool, models: tuple[Model, ...] | None, root: Path,
     # the probe runs once the candidates (or, in --quick, the first model) are scored
     probe_after = next((m for m in reversed(order) if m in CANDIDATES), order[0])
     skipped: dict[Model, str] = {}
-    for m in order:
-        why = skip_reason(m, {k: r.measured for k, r in results.items()}, base_when_needed)
-        if why:
-            skipped[m] = why
-            progress.status(f"{m.hf_id}: not scored ({why})")
-        else:
-            results[m] = _score_model(m, s, device, dev_tasks, setup, out_dir, repeat)
-            _print_model(rep, results[m])
-            if m == s.repeat_model:
-                _print_repeat(rep, repeat)
-        if m == probe_after:
-            probe = _probe(rep, s, device, root)
-        # after each model, so a run stopped by its time limit still leaves the numbers
+    stopped: str | None = None  # why scoring ended early
+    term = _Sigterm()
+    try:
+        old_term = signal.signal(signal.SIGTERM, term)
+    except ValueError:  # not the main thread
+        old_term = None
+
+    def save() -> None:
+        # after each model, so a run stopped early still leaves the numbers
         record["measured"] = {k.hf_id: asdict(r.measured) | {"model": k.hf_id}
                               for k, r in results.items()}
         record["skipped"] = {k.hf_id: why for k, why in skipped.items()}
         record["probe_results"] = [asdict(t) for t in probe]
+        record["timings"] = [asdict(r.timing) | {"model": k.hf_id}
+                             for k, r in results.items() if r.timing]
+        record["stopped"] = stopped
         setup_path.write_text(json.dumps(record, indent=2) + "\n")
+
+    for idx, m in enumerate(order):
+        current = m
+        try:
+            if term.requested:
+                raise Stopped()
+            measured_now = {x: r.measured for x, r in results.items()}
+            why = skip_reason(m, measured_now, base_when_needed)
+            if not why and deadline is not None:
+                timings = [r.timing for r in results.values() if r.timing]
+                n_bfcl = next((sum(c.n for c in r.bfcl) for r in results.values()), None)
+                need = None if n_bfcl is None else estimate_seconds(
+                    m, item_passes(m, len(dev_tasks), n_bfcl, s.repeat_model), timings,
+                    bfcl.MAX_NEW_TOKENS)
+                if not fits(time.time(), deadline, need):
+                    left = deadline - time.time()
+                    needs = f"~{_minutes(need)}" if need is not None else "unknown"
+                    stopped = (f"the deadline: {m.label} would need {needs} (estimate), "
+                               f"{_minutes(left)} were left")
+                    progress.status(f"stopping before {m.hf_id}: {stopped}")
+                    for rest in order[idx:]:
+                        skipped[rest] = (
+                            f"not started: the deadline (needs {needs}, {_minutes(left)} "
+                            "left)" if rest == m
+                            else skip_reason(rest, measured_now, base_when_needed)
+                            or "not started: the deadline")
+                    save()
+                    break
+            if why:
+                skipped[m] = why
+                progress.status(f"{m.hf_id}: not scored ({why})")
+            else:
+                with term.raising():
+                    results[m] = _score_model(m, s, device, dev_tasks, setup, out_dir, repeat)
+                _print_model(rep, results[m])
+                if m == s.repeat_model:
+                    _print_repeat(rep, repeat)
+            if m == probe_after:
+                current = None
+                if fits(time.time(), deadline, PROBE_ALLOW_S):
+                    with term.raising():
+                        probe = _probe(rep, s, device, root)
+                else:
+                    rep.section("Training step timing: LoRA vs full fine-tuning")
+                    rep.note(f"(skipped: less than {PROBE_ALLOW_S // 60} minutes were left before "
+                             "the deadline)")
+            save()
+        except Stopped:
+            stopped = "SIGTERM (the time limit, or the run was stopped)"
+            progress.status("stopped by SIGTERM; printing what was measured")
+            if current is None:
+                rep.note("(the probe was stopped by SIGTERM)")
+            for rest in order[idx:]:
+                if rest not in results and rest not in skipped:
+                    skipped[rest] = ("stopped by SIGTERM while being scored" if rest == current
+                                     else "not started: SIGTERM")
+            break
+    try:  # what's left takes a second; the remote timeout's KILL comes 60 s after its TERM
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    except ValueError:
+        pass
 
     if skipped:
         rep.section("Not scored")
@@ -648,11 +830,20 @@ def run(quick: bool, models: tuple[Model, ...] | None, root: Path,
             rep.kv(m.label, why if len(why) <= 37 else "")
             if len(why) > 37:
                 rep.note("  " + why)
-    _print_rule(rep, {m: r.measured for m, r in results.items()}, quick)
+    _print_rule(rep, {m: r.measured for m, r in results.items()}, quick, stopped)
     rep.close()
-    record["verdict"] = verdict({m: r.measured for m, r in results.items()}).text
-    setup_path.write_text(json.dumps(record, indent=2) + "\n")
+    v = verdict({m: r.measured for m, r in results.items()})
+    record["verdict"] = v.text
+    save()
     progress.status(f"setup and results written to {setup_path.relative_to(root)}")
+    if old_term is not None:
+        try:
+            signal.signal(signal.SIGTERM, old_term)
+        except ValueError:
+            pass
+    if term.requested:
+        return 128 + signal.SIGTERM
+    return 1 if stopped and v.outcome == "incomplete" else 0
 
 
 def _print_repeat(rep, repeat: dict) -> None:
@@ -746,7 +937,8 @@ def criteria(m: Measured) -> list[tuple[str, str, int, int, str, bool]]:
     ]
 
 
-def _print_rule(rep, measured: dict[Model, Measured], quick: bool) -> None:
+def _print_rule(rep, measured: dict[Model, Measured], quick: bool,
+                stopped: str | None = None) -> None:
     from .ours import pct
 
     rep.section("The rule (fixed before these numbers)")
@@ -778,6 +970,11 @@ def _print_rule(rep, measured: dict[Model, Measured], quick: bool) -> None:
     rep.blank()
     import textwrap
 
+    if stopped:
+        for line in textwrap.wrap(f"Scoring stopped early, by {stopped}; the rule reads "
+                                  "only what was measured.", 70):
+            rep.note(line)
+        rep.blank()
     rep.kv("verdict", v.outcome)
     for line in textwrap.wrap(v.text, 68):
         rep.note("  " + line)

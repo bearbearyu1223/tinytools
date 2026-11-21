@@ -22,6 +22,7 @@ Setup
   max new tokens                     512
   stop at                            the model's eos, and <|im_end|>
   seed                               0 (+ crc32 of each item id)
+  deadline                           none
   dtype                              float32
   determinism                        not set on mps (the CUDA flags only)
   torch                              2.13.0
@@ -79,9 +80,9 @@ Setup
   Wall clock (varies run to run)
   pass         items  s/item  new tokens/item  hit token cap
   ------------------------------------------------------------
-  ours greedy      3    3.24               48              0
-  ours x8          3   11.23              423              0
-  bfcl greedy      5    3.09               51              0
+  ours greedy      3    1.58               48              0
+  ours x8          3    5.09              423              0
+  bfcl greedy      5    1.55               51              0
 
 --------------------------------------------------------------------------
 The same greedy pass twice
@@ -112,8 +113,8 @@ Training step timing: LoRA vs full fine-tuning
 
   size    method  trainable  s/step  GB now*  loss, step 1
   ----------------------------------------------------------
-  0.5B  LoRA r16       8.8M   1.535      2.1         1.597
-  0.5B      full     494.0M   3.744      6.6         1.597
+  0.5B  LoRA r16       8.8M   0.700      2.1         1.597
+  0.5B      full     494.0M   1.206      6.6         1.597
   * MPS has no peak counter: memory allocated after the last step,
     a lower bound on the peak.
 
@@ -121,8 +122,8 @@ Training step timing: LoRA vs full fine-tuning
   shape (4252 steps of 2); arithmetic, not a measurement:
   size    method  hours per epoch
   ---------------------------------
-  0.5B  LoRA r16             1.81
-  0.5B      full             4.42
+  0.5B  LoRA r16             0.83
+  0.5B      full             1.42
 
 --------------------------------------------------------------------------
 0.5B base (comparison): Qwen/Qwen2.5-0.5B
@@ -171,38 +172,52 @@ Training step timing: LoRA vs full fine-tuning
   Wall clock (varies run to run)
   pass         items  s/item  new tokens/item  hit token cap
   ------------------------------------------------------------
-  ours greedy      3   36.25              512              3
-  ours x8          3   59.12             2332              9
-  bfcl greedy      5   21.56              419              4
+  ours greedy      3   14.72              512              3
+  ours x8          3   23.76             2332              9
+  bfcl greedy      5   11.78              419              4
 
 --------------------------------------------------------------------------
 The rule (fixed before these numbers)
 --------------------------------------------------------------------------
   (a) our dev tasks, greedy, right by execution: at most 70%
   (b) BFCL dev slice, call categories, right: at most 80%
-  (c) our dev tasks, 8 samples at T=1, mixed groups: at least 10%
-  Pick the smaller of 1.5B / 3B instruct meeting all three; else
+  (c) dev tasks that need a call, 8 samples at T=1, mixed
+      groups: at least 10%
+  (d) dev tasks that need a call, greedy, right by execution: at
+      least 20%
+  Tasks that need a call: choose+fill and tricky arguments (not
+  'no tool fits', where declining is right).
+  Pick the smaller of 1.5B / 3B instruct meeting all four; else
   base 1.5B, then base 3B; else stop and bring it to the author.
 
-  model                role  (a) our dev tasks, greedy right  met
-  -----------------------------------------------------------------
-  0.5B instruct  comparison                    0 of 3 (0.0%)  yes
-  0.5B base      comparison                   1 of 3 (33.3%)  yes
+  (a) our dev tasks, greedy, right by execution
+  model                role           count   needs  met
+  --------------------------------------------------------
+  0.5B instruct  comparison   0 of 3 (0.0%)  <= 70%  met
+  0.5B base      comparison  1 of 3 (33.3%)  <= 70%  met
 
-  model                role  (b) BFCL dev calls, greedy right  met
-  ------------------------------------------------------------------
-  0.5B instruct  comparison                    1 of 4 (25.0%)  yes
-  0.5B base      comparison                     0 of 4 (0.0%)  yes
+  (b) BFCL dev slice, call categories, greedy right
+  model                role           count   needs  met
+  --------------------------------------------------------
+  0.5B instruct  comparison  1 of 4 (25.0%)  <= 80%  met
+  0.5B base      comparison   0 of 4 (0.0%)  <= 80%  met
 
-  model                role  (c) mixed groups of 8  met
-  -------------------------------------------------------
-  0.5B instruct  comparison         1 of 3 (33.3%)  yes
-  0.5B base      comparison          0 of 3 (0.0%)   no
+  (c) call-needing dev tasks, mixed groups of 8 at T=1
+  model                role          count   needs      met
+  -----------------------------------------------------------
+  0.5B instruct  comparison  0 of 2 (0.0%)  >= 10%  not met
+  0.5B base      comparison  0 of 2 (0.0%)  >= 10%  not met
 
-  model                role  (a)  (b)  (c)  qualifies
-  -----------------------------------------------------
-  0.5B instruct  comparison  yes  yes  yes        yes
-  0.5B base      comparison  yes  yes   no         no
+  (d) call-needing dev tasks, greedy, right by execution
+  model                role          count   needs      met
+  -----------------------------------------------------------
+  0.5B instruct  comparison  0 of 2 (0.0%)  >= 20%  not met
+  0.5B base      comparison  0 of 2 (0.0%)  >= 20%  not met
+
+  model                role  (a)  (b)  (c)  (d)  qualifies
+  ----------------------------------------------------------
+  0.5B instruct  comparison  met  met  not  not         no
+  0.5B base      comparison  met  met  not  not         no
 
   verdict                            incomplete
     no verdict: Qwen/Qwen2.5-1.5B-Instruct was not scored, and the rule

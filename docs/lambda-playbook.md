@@ -46,8 +46,8 @@ while it terminates, and the whole flow is tested against a fake API.
    the API key.
 6. **Numbers in a post come from fetched captures, never from a terminal scrollback.**
 
-Exit codes of `run`: **0** done and terminated; **1** the run failed, its instance confirmed
-terminated; **2** refused before launching (nothing started); **3** termination not confirmed,
+Exit codes of `run`: **0** done and terminated; **1** the run failed (or succeeded but a
+`fetch` pattern matched nothing it wrote), its instance confirmed terminated; **2** refused before launching (nothing started); **3** termination not confirmed,
 or another `tinytools-*` instance still up (an instance may be billing). `down` exits 3 too
 when it can't confirm.
 
@@ -123,11 +123,11 @@ approve; or an instance named `tinytools-*` is already up.
 
 | step | what happens |
 |---|---|
-| up | launch one instance of the type, named `tinytools-<exp>-<stamp>` and tagged `tinytools-run=<run>-<random>` (if Lambda refuses the tag with a 4xx, launched again without it); the ledger gets a row at the worst-case cost *before* the launch call; wait until it is active (a 404 just after the launch means "not listed yet"; 20 minutes at most), then until SSH answers (10 minutes at most) |
-| setup | copy the repo at the recorded commit (`git archive`: tracked files only) with rsync; install uv if missing; `uv sync --frozen` (torch from the CUDA 12.6 index on Linux); print GPU, driver and versions; fail if torch can't see the GPU |
-| run | the commands, in order, stopping at the first that fails, detached on the instance (`nohup setsid`, so a dropped SSH connection doesn't stop them) under a remote `timeout`; `job.sh` touches `.run/start` first. The laptop polls every 15 s (each poll also checks that `job.sh` is alive: one that died without an exit code ends the run), asks Lambda for the instance's status every 5 minutes (`unhealthy`, `preempted`, `terminated` or gone ends the run), streams the output to the terminal and `runs/<date>-<exp>/log.txt`, and keeps the Mac awake with `caffeinate -i -s` (in its own session, so Ctrl-C doesn't end it) |
-| fetch | copy the `fetch` files **written during the run** (newer than `.run/start`) into `runs/<date>-<exp>/` (same relative paths), record each one's sha256 and size; patterns that matched nothing written are listed. A committed file the commands didn't rewrite is not fetched. Fetching takes at most 7 minutes, and never the last 5 minutes before the hard limit (kept for terminating) |
-| down | terminate through the API until Lambda reports the instance `terminated` or `preempted`: retried after every failure, not sent while Lambda says it can't (`actions.terminate.available` false, `vm-has-not-launched`, while it boots), re-sent every 60 s after a call that was accepted but didn't take; up to 2 hours, then exit 3 |
+| up | launch one instance of the type, named `tinytools-<exp>-<stamp>` and tagged `tinytools-run=<run>-<random>` (if Lambda refuses the tag, a 4xx with error code `global/invalid-parameters` whose message names the `tags` field, launched again without it; any other refusal is final); the ledger gets a row at the worst-case cost *before* the launch call; wait until it is active (a 404 just after the launch means "not listed yet"; 20 minutes at most), then until SSH answers (10 minutes at most) |
+| setup | copy the repo at the recorded commit (`git archive`: tracked files only) with rsync; install uv if missing; `uv sync --frozen` (torch from the CUDA 12.6 index on Linux); print GPU, driver and versions; fail if torch can't see the GPU. Copying and the setup script together get 25 minutes (`SETUP_TIMEOUT_S`); past that the run fails and the instance is terminated |
+| run | the commands, in order, stopping at the first that fails, detached on the instance (`nohup setsid`, so a dropped SSH connection doesn't stop them) under a remote `timeout`; `job.sh` touches `.run/start` first and exports `TINYTOOLS_DEADLINE_EPOCH`, the Unix time the remote `timeout` fires, for commands that can stop themselves in time (`milestone0 --deadline-epoch`). The laptop polls every 15 s (each poll also checks that `job.sh` is alive: one that died without an exit code ends the run; polls that fail for 10 minutes in a row, SSH gone, end the run), asks Lambda for the instance's status every 5 minutes (`unhealthy`, `preempted`, `terminated` or gone ends the run), streams the output to the terminal and `runs/<date>-<exp>/log.txt`, and keeps the Mac awake with `caffeinate -i -s` (in its own session, so Ctrl-C doesn't end it) |
+| fetch | copy the `fetch` files **written during the run** (newer than `.run/start`) into `runs/<date>-<exp>/` (same relative paths), record each one's sha256 and size; patterns that matched nothing written are listed, and make `run` exit 1 even when every command succeeded. A committed file the commands didn't rewrite is not fetched. Fetching takes at most 7 minutes, and never the last 5 minutes before the hard limit (kept for terminating) |
+| down | terminate through the API until Lambda reports the instance `terminated` or `preempted`: retried after every failure, not sent while Lambda says it can't (`actions.terminate.available` false, `vm-has-not-launched`, while it boots), re-sent every 60 s after a call that was accepted but didn't take. An id Lambda named in terminate's answer counts as seen, so a later 404 for it means it is gone. Up to 2 hours; if still not confirmed, the final check lists the account and, if this run's instance is still up, makes a second attempt of up to 2 hours (so up to 4 hours in all: **the laptop must stay awake and online throughout**); then exit 3 |
 
 `down <id>` and `list` also work on their own, for recovery.
 
@@ -158,16 +158,20 @@ fake API (`tests/test_lambda_run.py`, `tests/test_lambda_spend.py`).
 | a command exits non-zero | later commands don't run; fetch, terminate | `failed: a command exited N` | 1 |
 | setup fails, or anything raises | the exception is caught; fetch, terminate | `failed: <error>` | 1 |
 | Ctrl-C (or SIGTERM / SIGHUP) | stop the remote job, fetch, terminate; further Ctrl-C ignored | `interrupted (...)` | 1 |
-| the remote `timeout` fires | the job exits 124; fetch, terminate | `time limit` | 1 |
+| the remote `timeout` fires | the job exits 124 (137 if `--kill-after` had to KILL); fetch, terminate | `time limit` | 1 |
+| a command is SIGKILLed before the limit (the OOM killer) | exit 137 before the remote seconds have passed; fetch, terminate | `killed (SIGKILL, e.g. out of memory)` | 1 |
 | the remote `timeout` doesn't fire | the laptop's deadline passes; stop the job, fetch, terminate | `time limit` | 1 |
 | `job.sh` dies with no exit code | the next poll notices; stop what's left, fetch, terminate | `failed: ... ended without an exit code` | 1 |
 | the instance turns `unhealthy`, `preempted` or is gone | the status check notices; terminate (a preempted one is already ended) | `failed: ... instance status is ...` | 1 |
 | SSH never answers | after 10 minutes, terminate | `failed: ... SSH did not answer ...` | 1 |
+| SSH stops answering mid-job | polls fail 10 minutes in a row: stop (best effort), fetch, terminate | `failed: ... stopped answering SSH ...` | 1 |
+| setup takes over 25 minutes | the copy or the setup script is cut off; terminate | `failed: ... setup did not finish within 25 minutes ...` | 1 |
+| the commands succeed but a `fetch` pattern matched nothing they wrote | fetch the rest, terminate; the patterns are named | `ok` (`not_found` lists them) | 1 |
 | terminate called while it boots | wait until Lambda allows it, then terminate | as above | 1 |
 | the launch is refused (4xx) | nothing started; no lookup; cost 0 | `failed: <error>` | 1 |
-| the launch call fails (5xx) or its answer is lost | list every ~10 s for 2 minutes, looking for the run's name or tag; terminate it if found; the final check looks once more | `failed: <error>` | 1 |
+| the launch call fails (5xx) or its answer is lost, or Ctrl-C / SIGTERM / SIGHUP arrives during it | the launch counts as uncertain from before the request until a definite answer; list every ~10 s for 2 minutes, looking for the run's name or tag; terminate it if found; the final check looks once more | `failed: <error>` or `interrupted (...)` | 1; 3 if no list ever answered (charged the worst case) |
 | the terminate call fails | retried until confirmed (a loud line after 20 failures) | - | - |
-| termination isn't confirmed after 2 hours | `NOT CONFIRMED` printed; the run is charged its worst case | `terminated: false` | 3 |
+| termination isn't confirmed after 2 hours | `NOT CONFIRMED` printed; the final check lists, and if the instance is still up tries again for up to 2 more hours (keep the laptop awake); then the run is charged its worst case | `terminated: false` | 3 |
 
 **Not covered: the laptop itself stopping** (power loss, `kill -9`, the lid closed on
 battery, the network gone for good). Then nothing terminates the instance: the remote
@@ -245,9 +249,17 @@ only if the rule reaches it, and never 0.5B base.)
 The author chose `--base-when-needed` with `max_hours = 4` and `cap_usd = 20`
 (2026-11-21). `expected_hours = 3.1` is the middle row at 25 ms/step. The worst case is
 4 h x the live price: $17.16 at $4.29/h, so `estimate` refuses above $5.00/h. If both base
-models are needed the work doesn't fit: the commands stop at the limit with base 3B unscored,
-the verdict reads "incomplete" (the rule can't skip a model it reaches), and the next step is
-the author's.
+models are needed the work doesn't fit. `milestone0` is given the deadline
+(`--deadline-epoch "$TINYTOOLS_DEADLINE_EPOCH"`, when the remote `timeout` fires) and, before
+each model, estimates its time conservatively from what was measured so far (the slowest
+seconds per item of a model of the same kind, or, for the first base model, every item at
+the 512-token cap at the slowest measured seconds per step, plus loading; x 1.5, and 2
+minutes kept for writing). A model that can't finish is not started: the rule section is
+printed from what was measured, with the verdict "incomplete" if the rule reaches the
+unscored model (it can't skip one), and `milestone0` exits 1 (so `run` exits 1, with every
+file fetched). SIGTERM (the time limit, or the run stopped) does the same with whatever was
+measured, and exits 143. The training probe is not started with under 10 minutes left. The
+next step is then the author's.
 
 ## The model rule Milestone 0 prints
 

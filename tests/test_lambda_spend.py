@@ -38,13 +38,18 @@ def write_exp(repo: Path, commands: list[str], *, name: str = "demo", post: int 
     _git(repo, "commit", "-qm", "experiment")
 
 
+# Commands that write a file for each fetch pattern (a pattern that matches nothing
+# written makes the run exit 1)
+WRITES = ["mkdir -p outputs", "echo hi > outputs/demo.txt", "echo '{}' > outputs/demo-a.jsonl"]
+
+
 @pytest.fixture
 def repo(tmp_path):
     r = tmp_path / "repo"
     r.mkdir()
     _git(r, "init", "-q")
     (r / "README.md").write_text("demo repo\n")
-    write_exp(r, ["echo hi"])
+    write_exp(r, WRITES)
     return r
 
 
@@ -163,13 +168,30 @@ def test_terminate_is_resent_until_it_takes():
 
 def test_a_404_for_an_instance_never_seen_is_not_taken_as_gone():
     """Just after a launch Lambda may not list the instance yet: a 404 then is not proof
-    it is gone. The id is terminated anyway, and confirmed once it shows."""
+    it is gone. The id is terminated anyway, and confirmed once it shows. (Here
+    terminate's answer names no instance; an id it names counts as seen: next test.)"""
     with FakeLambda(KEY, boot_polls=1, term_polls=1) as fake:
         iid = fake._create({"name": "tinytools-demo-x", "region_name": "us-east-1",
                             "instance_type_name": H100}, hidden=3)
-        assert lr.terminate_and_confirm(lr.make_api(env_for(fake.url)), [iid], lambda m: None,
-                                        0.01, 5)
+        api = lr.make_api(env_for(fake.url))
+        real = api.terminate
+        api.terminate = lambda ids: (real(ids), [])[1]
+        assert lr.terminate_and_confirm(api, [iid], lambda m: None, 0.01, 5)
         assert fake.statuses() == ["terminated"]
+
+
+def test_an_id_named_in_terminates_answer_is_gone_at_its_next_404():
+    """Lambda's terminate answer lists the Instance objects it is terminating: such an
+    id has been shown, so a 404 afterwards means it has left the API (round 2, R2-2)."""
+    with FakeLambda(KEY, boot_polls=1, term_polls=10**9) as fake:
+        iid = fake._create({"name": "tinytools-demo-x", "region_name": "us-east-1",
+                            "instance_type_name": H100}, hidden=10**6)
+        said = []
+        t0 = time.time()
+        assert lr.terminate_and_confirm(lr.make_api(env_for(fake.url)), [iid], said.append,
+                                        0.01, 30)
+        assert time.time() - t0 < 5
+        assert fake.count(*TERMINATE) == 1 and said[-1].startswith("terminated: Lambda confirms")
 
 
 # -- 3. lost launches ------------------------------------------------------------------------
@@ -252,8 +274,10 @@ def test_fetch_takes_rewritten_files_and_leaves_untouched_committed_ones(repo, t
     _git(repo, "commit", "-qm", "Mac captures")
     write_exp(repo, ["echo from-the-run > outputs/demo.txt"])
     with FakeLambda(KEY, boot_polls=1, term_polls=1) as fake:
-        runner, _ = make_runner(repo, fake, tmp_path)
-        assert runner.run() == lr.EXIT_OK
+        runner, out = make_runner(repo, fake, tmp_path)
+        # the commands succeeded, but demo-*.jsonl matched nothing written: exit 1
+        assert runner.run() == lr.EXIT_FAILED
+        assert "nothing they wrote matched outputs/demo-*.jsonl" in out.getvalue()
     rj = run_json(repo)
     assert [f["path"] for f in rj["fetched"]] == ["outputs/demo.txt"]
     assert rj["not_found"] == ["outputs/demo-*.jsonl"]

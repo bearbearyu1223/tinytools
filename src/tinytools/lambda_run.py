@@ -77,7 +77,9 @@ RESERVE_S = 600  # kept back from max_hours for stop + fetch + terminate
 TERMINATE_ALLOW_S = 300  # of the reserve, kept for terminate + confirm (fetch gets the rest)
 REMOTE_MARGIN_S = 30  # the remote `timeout` fires this long before the laptop's deadline
 BOOT_TIMEOUT_S = 20 * 60
-SSH_WAIT_S = 10 * 60  # SSH must answer within this of the instance going active
+SSH_WAIT_S = 10 * 60  # SSH must answer within this of the instance going active, and
+# the job's polls may fail for at most this long in a row
+SETUP_TIMEOUT_S = 25 * 60  # copying the repo and the setup script, together
 LOST_LAUNCH_S = 120  # after a launch whose answer was lost: how long to look for it
 STATUS_CHECK_S = 300  # while the commands run: how often to ask Lambda for the instance
 POLL_S = 15
@@ -92,7 +94,10 @@ RATE_WAIT_S = 1.0
 RATE_WAIT_MAX_S = 15.0
 API_MIN_INTERVAL_S = 1.0  # Lambda allows 1 request per second
 POST_CAP_USD = 50.0  # the plan's cap per post, summed over the post's experiments
-TIMED_OUT = (124, 137)  # GNU timeout: TERM sent (124), or KILL after --kill-after (137)
+# GNU timeout exits 124 when it sent TERM, 137 when it sent KILL after --kill-after; 137 is
+# also bash's code for a command SIGKILLed by anyone (the OOM killer): see exit_status
+KILLED = 137
+DEADLINE_ENV = "TINYTOOLS_DEADLINE_EPOCH"  # job.sh: when the remote `timeout` fires (epoch s)
 DIED = "died"  # poll(): the job is gone and left no exit code
 EXIT_OK, EXIT_FAILED, EXIT_REFUSED, EXIT_UNCONFIRMED = 0, 1, 2, 3
 LEDGER_FIELDS = ("run", "experiment", "post", "commit", "instance_type", "price_usd_per_hour",
@@ -265,9 +270,34 @@ class ApiError(RuntimeError):
     error, a cut-off body, an unreadable reply): then the request may or may not have
     taken effect."""
 
-    def __init__(self, status: int | None, message: str) -> None:
+    def __init__(self, status: int | None, message: str, code: str = "",
+                 api_message: str = "") -> None:
         super().__init__(message)
         self.status = status
+        self.code = code  # the API's error.code, e.g. "global/invalid-parameters"
+        self.api_message = api_message  # the API's error.message
+
+
+def _error_fields(body: bytes) -> tuple[str, str]:
+    """The API's ``error.code`` and ``error.message`` ("" when the body has none)."""
+    try:
+        err = json.loads(body).get("error")
+    except (ValueError, AttributeError):
+        return "", ""
+    if not isinstance(err, dict):
+        return "", ""
+    return str(err.get("code") or ""), str(err.get("message") or "")
+
+
+TAG_FIELD = re.compile(r"\btags\b")
+
+
+def refuses_tags(e: ApiError) -> bool:
+    """Lambda refused the launch for its ``tags`` field: a 4xx whose error code is
+    ``global/invalid-parameters`` and whose message names the field (not any message
+    that happens to contain "tag")."""
+    return (definite_refusal(e) and e.code == "global/invalid-parameters"
+            and TAG_FIELD.search(e.api_message) is not None)
 
 
 def definite_refusal(e: ApiError) -> bool:
@@ -379,8 +409,10 @@ class LambdaAPI:
                     wait = self.rate_wait * 2 ** attempt
                 time.sleep(min(RATE_WAIT_MAX_S * self.rate_wait / RATE_WAIT_S, wait))
                 continue
+            code, msg = _error_fields(payload)
             raise ApiError(status, self.redact(
-                f"{method} {path}: HTTP {status}: {_error_text(payload, headers)}"))
+                f"{method} {path}: HTTP {status}: {_error_text(payload, headers)}"),
+                code=code, api_message=self.redact(msg))
         raise AssertionError("unreachable")
 
     def instance_types(self) -> dict:
@@ -592,12 +624,14 @@ SETUP_MARK = "TINYTOOLS_SETUP_JSON "
 # its session id, and stop() signals the whole session (GNU timeout moves itself and the
 # commands into a process group of their own, but not out of the session). .run/start is
 # the marker fetch compares against: only files newer than it are this run's. $1 is the
-# hard limit in seconds; `timeout` stops the work then (it does not stop the bill).
+# hard limit in seconds; `timeout` stops the work then (it does not stop the bill). The
+# commands see when that is as $TINYTOOLS_DEADLINE_EPOCH (milestone0 --deadline-epoch).
 JOB_SCRIPT = """#!/usr/bin/env bash
 cd "$(dirname "$0")/.."
 echo $$ > .run/pid
 touch .run/start
 export PATH="$HOME/.local/bin:$PATH"
+export TINYTOOLS_DEADLINE_EPOCH=$(( $(date +%s) + $1 ))
 timeout --signal=TERM --kill-after=60 "$1" bash .run/commands.sh
 echo $? > .run/exit.tmp && mv .run/exit.tmp .run/exit
 """
@@ -641,6 +675,23 @@ def run_dir_name(day: str, experiment: str, existing: set[str]) -> str:
     while f"{base}-{k}" in existing:
         k += 1
     return f"{base}-{k}"
+
+
+KILLED_STATUS = "killed (SIGKILL, e.g. out of memory)"
+
+
+def exit_status(code: int, elapsed_s: float, limit_s: float) -> str:
+    """run.json's status for the commands' exit code. 124 is GNU timeout's own. 137 is
+    also what bash returns for a command SIGKILLed by anyone (the kernel's OOM killer),
+    so it counts as the time limit only once the remote limit has passed (``timeout``
+    sends its KILL ``--kill-after`` seconds after it); before that it was killed."""
+    if code == 0:
+        return "ok"
+    if code == 124 or (code == KILLED and elapsed_s >= limit_s):
+        return "time limit"
+    if code == KILLED:
+        return KILLED_STATUS
+    return f"failed: a command exited {code}"
 
 
 def remote_seconds(deadline: float, now: float, margin: float) -> int:
@@ -813,8 +864,9 @@ class Runner:
                  confirm_s: float = CONFIRM_S, resend_s: float = RESEND_S,
                  ssh_wait_s: float = SSH_WAIT_S, boot_timeout_s: float = BOOT_TIMEOUT_S,
                  lost_launch_s: float = LOST_LAUNCH_S, status_check_s: float = STATUS_CHECK_S,
-                 stop_wait_s: float = STOP_WAIT_S, keep_awake: bool = True,
-                 stream=None, ask: Callable[[str], str] | None = None) -> None:
+                 stop_wait_s: float = STOP_WAIT_S, setup_timeout_s: float = SETUP_TIMEOUT_S,
+                 keep_awake: bool = True, stream=None,
+                 ask: Callable[[str], str] | None = None) -> None:
         self.root, self.exp, self.exp_path, self.api, self.env = root, exp, exp_path, api, env
         self.remote_factory = remote_factory
         self.approve = approve
@@ -824,6 +876,7 @@ class Runner:
         self.resend_s, self.ssh_wait_s, self.boot_timeout_s = resend_s, ssh_wait_s, boot_timeout_s
         self.lost_launch_s, self.status_check_s = lost_launch_s, status_check_s
         self.stop_wait_s = stop_wait_s
+        self.setup_timeout_s = setup_timeout_s
         self.keep_awake = keep_awake
         self.stream = stream or sys.stderr
         self.ask = ask
@@ -931,6 +984,10 @@ class Runner:
             self.say("EXIT 3: termination is not confirmed; an instance may be billing. Run "
                      "`scripts/lambda.sh list` and `down` it, or use the dashboard, NOW")
             return EXIT_UNCONFIRMED
+        if st.status == "ok" and st.missing:
+            self.say(f"EXIT 1: the commands succeeded, but nothing they wrote matched "
+                     f"{', '.join(st.missing)}")
+            return EXIT_FAILED
         return EXIT_OK if st.status == "ok" else EXIT_FAILED
 
     def _handlers(self) -> dict:
@@ -1034,13 +1091,17 @@ class Runner:
         self._record()
         self.say(f"launching {self.exp.instance_type} in {region} as {st.instance_name}")
         st.launch_attempted = True
+        # Uncertain from before the POST until a definite answer: Ctrl-C, SIGTERM/SIGHUP
+        # (or anything else) mid-request leaves it set, so the cleanup looks for the
+        # instance and an unconfirmed lookup exits 3, never 1.
+        st.launch_uncertain = True
         key_name = self.env.get("LAMBDA_SSH_KEY_NAME", "")
         try:
             try:
                 st.instance_id = self.api.launch(self.exp.instance_type, region, key_name,
                                                  st.instance_name, st.tag)
             except ApiError as e:
-                if not (definite_refusal(e) and "tag" in str(e).lower()):
+                if not refuses_tags(e):
                     raise
                 self.say(f"the launch refused the run tag ({e}); launching again without it "
                          "(the run's instance is then found by its name only)")
@@ -1050,9 +1111,9 @@ class Runner:
         except ApiError as e:
             if definite_refusal(e):
                 st.launch_refused = True
-            else:
-                st.launch_uncertain = True
+                st.launch_uncertain = False
             raise
+        st.launch_uncertain = False
         st.existed = True
         st.status = "running"
         self._record()
@@ -1095,6 +1156,7 @@ class Runner:
     def _setup(self) -> None:
         st = self.state
         st.status = "setup"
+        setup_end = time.time() + self.setup_timeout_s
         with tempfile.TemporaryDirectory() as tmp:
             tree = Path(tmp) / "tree"
             tree.mkdir()
@@ -1103,14 +1165,34 @@ class Runner:
             (tree / ".run" / "job.sh").write_text(JOB_SCRIPT)
             (tree / ".run" / "commands.sh").write_text(commands_script(self.exp.commands))
             self.say(f"copying the repo at {self.commit[:12]} (tracked files only)")
-            self.remote.push(tree, timeout=max(1, self.deadline - time.time()))
+            self._setup_step("copying the repo", setup_end,
+                             lambda t: self.remote.push(tree, timeout=t))
         self.say("setup: uv, uv sync, GPU and versions")
-        code, out = self.remote.run(self.setup_script, timeout=max(1, self.deadline - time.time()))
+        code, out = self._setup_step("the setup script", setup_end,
+                                     lambda t: self.remote.run(self.setup_script, timeout=t))
         self._job_output(out.encode())
         st.versions = parse_setup(out)
         self._record()
         if code:
             raise RuntimeError(f"setup failed (exit {code})")
+
+    def _setup_step(self, what: str, setup_end: float, fn: Callable[[float], object]):
+        """``fn(timeout)``, the timeout being what is left of setup's own limit (and never
+        past the deadline); running out is a failure that says which limit it was."""
+        own = setup_end <= self.deadline
+        left = min(setup_end, self.deadline) - time.time()
+        if left <= 0:
+            if own:
+                raise RuntimeError(f"setup did not finish within {self.setup_timeout_s / 60:g} "
+                                   f"minutes (before {what})")
+            raise TimeLimit()
+        try:
+            return fn(max(1.0, left))
+        except subprocess.TimeoutExpired:
+            if own:
+                raise RuntimeError(f"setup did not finish within {self.setup_timeout_s / 60:g} "
+                                   f"minutes ({what} timed out)") from None
+            raise TimeLimit() from None
 
     def _check_instance(self) -> None:
         """Between polls: is the instance still up and healthy? An API error is only noted."""
@@ -1128,17 +1210,24 @@ class Runner:
         secs = remote_seconds(self.deadline, time.time(), self.margin_s)
         st.status = "running commands"
         self.say(f"starting the commands; remote hard limit {secs} s")
+        t_start = time.time()  # before the remote job starts: its elapsed time is at most ours
         self.remote.start(secs)
         offset, failures = 0, 0
+        failing_since: float | None = None
         last_check = time.time()
         while True:
             self._check_deadline()
             try:
                 chunk, code = self.remote.poll(offset)
-                failures = 0
-            except Exception as e:  # noqa: BLE001 - a network blip; keep trying until the deadline
+                failures, failing_since = 0, None
+            except Exception as e:  # noqa: BLE001 - a network blip; keep trying a while
                 failures += 1
+                failing_since = failing_since or time.time()
                 self.say(f"poll failed ({failures} in a row): {type(e).__name__}")
+                if time.time() - failing_since > self.ssh_wait_s:
+                    raise RuntimeError(
+                        f"the instance stopped answering SSH: polls failed for "
+                        f"{self.ssh_wait_s / 60:g} minutes in a row ({failures} polls)") from None
                 chunk, code = b"", None
             if chunk:
                 offset += len(chunk)
@@ -1148,8 +1237,7 @@ class Runner:
                                    "(killed, or the instance restarted)")
             if code is not None:
                 st.remote_exit = code
-                st.status = ("ok" if code == 0 else "time limit" if code in TIMED_OUT
-                             else f"failed: a command exited {code}")
+                st.status = exit_status(code, time.time() - t_start, secs)
                 self.say(f"commands finished: exit {code}")
                 return
             if time.time() - last_check >= self.status_check_s:
@@ -1197,6 +1285,9 @@ class Runner:
             clean = self._final_check()
         except Exception as e:  # noqa: BLE001
             self.say(f"final check raised {type(e).__name__}: {e}")
+        if clean is None and st.launch_uncertain and not st.existed:
+            # a launch whose answer never came, and no list since: it may be up and billing
+            st.terminated = False
         self._guard("writing run.json / ledger", self._record)
         if self._caffeinate is not None:
             self._guard("stopping caffeinate", self._caffeinate.terminate)
@@ -1358,6 +1449,7 @@ def terminate_and_confirm(api: LambdaAPI, ids: list[str], say: Callable[[str], N
         if sendable and (last_sent is None or now - last_sent >= resend_s):
             try:
                 accepted = api.terminate(sendable)
+                seen.update(accepted)  # Lambda named them: a 404 from now on means gone
                 say(f"terminate {'re-sent' if last_sent else 'requested'} for "
                     f"{', '.join(sendable)}"
                     + ("" if set(sendable) <= set(accepted) else

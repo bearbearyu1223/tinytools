@@ -54,7 +54,9 @@ def test_the_milestone0_experiment_parses():
     assert e.instance_type == "gpu_1x_h100_sxm5"
     assert e.expected_hours <= e.max_hours
     assert e.setup_record == "outputs/milestone0-setup.json"
-    assert e.commands[-1] == "uv run tinytools milestone0 --base-when-needed"
+    assert e.commands[-1] == ("uv run tinytools milestone0 --base-when-needed "
+                              '--deadline-epoch "$TINYTOOLS_DEADLINE_EPOCH"')
+    assert lr.DEADLINE_ENV == "TINYTOOLS_DEADLINE_EPOCH" and lr.DEADLINE_ENV in lr.JOB_SCRIPT
     assert (e.post, e.max_hours, e.cap_usd) == (9, 4.0, 20.0)
     for cents, ok in ((429, True), (500, True), (501, False)):  # worst $17.16 at $4.29/h
         types = {H100: {"instance_type": {"price_cents_per_hour": cents},
@@ -178,13 +180,19 @@ def write_exp(repo: Path, commands: list[str], *, max_hours: float = 1.0,
     _git(repo, "commit", "-qm", "experiment")
 
 
+# Commands that write a file for each fetch pattern (a pattern that matches nothing
+# written makes the run exit 1)
+WRITES = ["mkdir -p outputs", "echo hi > outputs/demo.txt", "echo '{}' > outputs/demo-a.jsonl",
+          "echo '{}' > outputs/demo-setup.json"]
+
+
 @pytest.fixture
 def repo(tmp_path):
     r = tmp_path / "repo"
     r.mkdir()
     _git(r, "init", "-q")
     (r / "README.md").write_text("demo repo\n")
-    write_exp(r, ["echo hi"])
+    write_exp(r, WRITES)
     return r
 
 
@@ -462,7 +470,8 @@ def test_the_ssh_remote_end_to_end_through_a_fake_ssh(repo, fake, tmp_path, shim
     home = tmp_path / "home"
     fake_ssh(shim, home)
     write_exp(repo, ["mkdir -p outputs", "echo from-the-instance > outputs/demo.txt",
-                     "echo '{}' > outputs/demo-a.jsonl", "sleep 1", "echo done"])
+                     "echo '{}' > outputs/demo-a.jsonl", "echo '{}' > outputs/demo-setup.json",
+                     "sleep 1", "echo done"])
     env = env_for(fake)
     exp, path = lr.load_experiment(repo, "demo")
     out = io.StringIO()
@@ -477,8 +486,9 @@ def test_the_ssh_remote_end_to_end_through_a_fake_ssh(repo, fake, tmp_path, shim
     assert (home / "tinytools" / "README.md").exists()  # pushed by rsync
     assert "+ echo done" in (run_dir / "log.txt").read_text()
     rj = run_json(repo)
-    assert [f["path"] for f in rj["fetched"]] == ["outputs/demo-a.jsonl", "outputs/demo.txt"]
-    assert rj["not_found"] == ["outputs/demo-setup.json"]
+    assert [f["path"] for f in rj["fetched"]] == ["outputs/demo-a.jsonl", "outputs/demo-setup.json",
+                                                  "outputs/demo.txt"]
+    assert rj["not_found"] == []
     assert fake.statuses() == ["terminated"]
 
 

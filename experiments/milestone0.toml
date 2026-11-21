@@ -8,8 +8,14 @@
 # ~18 min of boot, setup, loading and teardown. With --base-when-needed, at 25 ms/step:
 # 1.3 h if an instruct model qualifies, 3.1 h if base 1.5B is needed (3.7 h at 30 ms),
 # 4.9 h if both base models are. expected_hours is the middle case. The last case does
-# not fit max_hours: the commands stop at the limit with base 3B unscored and the verdict
-# "incomplete" (the rule can't skip a model it reaches); then bring it to the author.
+# not fit max_hours. milestone0 is given the deadline ($TINYTOOLS_DEADLINE_EPOCH: when the
+# runner's remote time limit fires, max_hours less the 10-minute reserve and 30 s, from
+# when the commands start): before each model it estimates, conservatively, from the
+# seconds per item measured so far, and does not start one that can't finish; it then
+# prints the rule from what was measured, the verdict "incomplete" if the rule reaches an
+# unscored model (it can't skip one), and exits 1. If SIGTERM comes first (the time
+# limit, or the run stopped), it prints the same from what was measured. Then bring it
+# to the author.
 # Worst case: max_hours x the live price ($17.16 at $4.29/h; refused above $5.00/h).
 name = "milestone0"
 post = 9
@@ -20,7 +26,7 @@ cap_usd = 20                         # refuse to launch past this total for the 
 commands = [
   "uv run tinytools toolace-convert",       # data/ is not in git: the SFT rows the probe needs
   "uv run tinytools sft-data --seeds 1",
-  "uv run tinytools milestone0 --base-when-needed",
+  'uv run tinytools milestone0 --base-when-needed --deadline-epoch "$TINYTOOLS_DEADLINE_EPOCH"',
 ]
 # Only files these commands write (fetch also skips any not written during the run).
 fetch = [

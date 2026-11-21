@@ -1308,7 +1308,12 @@ def cmd_milestone0(args) -> None:
         models = milestone0.parse_models(args.models) if args.models else None
     except ValueError as e:
         sys.exit(str(e))
-    milestone0.run(args.quick, models, ROOT, base_when_needed=args.base_when_needed)
+    code = milestone0.run(args.quick, models, ROOT, base_when_needed=args.base_when_needed,
+                          deadline=args.deadline_epoch)
+    if code:
+        progress.status("scoring stopped early: " + ("SIGTERM" if code > 128 else "the deadline,"
+                                                     " before the rule could decide"))
+        sys.exit(code)
 
 
 # -- entry point -------------------------------------------------------------------
@@ -1403,6 +1408,11 @@ def main(argv: list[str] | None = None) -> None:
                    help="score a base model only if the rule reaches it (no instruct "
                         "candidate qualifies), and 0.5B base not at all; base replies run to "
                         "the token cap, so this is most of the run's time")
+    s.add_argument("--deadline-epoch", type=float, default=None,
+                   help="Unix time by which scoring must end (the Lambda runner sets "
+                        "$TINYTOOLS_DEADLINE_EPOCH to when its time limit fires): a model that "
+                        "can't finish by then is not started, and the rule is printed from "
+                        "what was measured")
     s.set_defaults(fn=cmd_milestone0)
 
     args = p.parse_args(argv)
