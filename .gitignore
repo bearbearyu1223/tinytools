@@ -10,3 +10,6 @@ outputs/*.err
 
 # rendered figures (tinytools figures)
 /figures/
+
+# code-reviewer findings as failing tests (series convention: kept out of git)
+/tests/review/
