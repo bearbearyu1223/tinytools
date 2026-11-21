@@ -51,16 +51,16 @@ def test_parse_experiment_reads_a_good_file():
 
 def test_the_milestone0_experiment_parses():
     e = lr.parse_experiment((ROOT / "experiments" / "milestone0.toml").read_text(), "milestone0")
-    assert e.instance_type == "gpu_1x_h100_sxm5"
+    assert e.instance_type == "gpu_1x_a100_sxm4"  # the author, 2026-11-21: an A100
     assert e.expected_hours <= e.max_hours
     assert e.setup_record == "outputs/milestone0-setup.json"
     assert e.commands[-1] == ("uv run tinytools milestone0 --base-when-needed "
                               '--deadline-epoch "$TINYTOOLS_DEADLINE_EPOCH"')
     assert lr.DEADLINE_ENV == "TINYTOOLS_DEADLINE_EPOCH" and lr.DEADLINE_ENV in lr.JOB_SCRIPT
-    assert (e.post, e.max_hours, e.cap_usd) == (9, 4.0, 20.0)
-    for cents, ok in ((429, True), (500, True), (501, False)):  # worst $17.16 at $4.29/h
-        types = {H100: {"instance_type": {"price_cents_per_hour": cents},
-                        "regions_with_capacity_available": [{"name": "us-east-1"}]}}
+    assert (e.post, e.max_hours, e.cap_usd) == (9, 4.0, 10.0)
+    for cents, ok in ((199, True), (250, True), (251, False)):  # worst $7.96 at $1.99/h
+        types = {e.instance_type: {"instance_type": {"price_cents_per_hour": cents},
+                                   "regions_with_capacity_available": [{"name": "us-east-1"}]}}
         assert lr.make_estimate(e, types, []).within_cap is ok
     # the fetch globs match this run's outputs, not the committed Mac --quick captures
     committed = subprocess.run(["git", "-C", str(ROOT), "ls-files", "outputs"],

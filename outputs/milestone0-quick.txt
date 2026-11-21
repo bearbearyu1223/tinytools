@@ -21,7 +21,13 @@ Setup
   top_p / top_k / repetition penalty 1.0 / off / 1.0
   max new tokens                     512
   stop at                            the model's eos, and <|im_end|>
-  seed                               0 (+ crc32 of each item id)
+  seed                               0 (+ item id and sample number)
+  engine                             batched, sorted by length
+    batch size, greedy               8 sequences
+    batch size, 8 samples            8 sequences (1 item x 8)
+  Left padding with the attention mask; a reply ends at the model's
+  eos or <|im_end|>. Seconds per item: the batch's seconds x the
+  item's share of its rows.
   deadline                           none
   dtype                              float32
   determinism                        not set on mps (the CUDA flags only)
@@ -73,16 +79,16 @@ Setup
   kind          tasks  all wrong  mixed  all right   share  per 1k
   ------------------------------------------------------------------
   choose+fill       1          1      0          0    0.0%     0.0
-  tricky args       1          1      0          0    0.0%     0.0
+  tricky args       1          0      1          0  100.0%   125.0
   no tool fits      1          0      1          0  100.0%   125.0
-  total             3          2      1          0   33.3%    41.7
+  total             3          1      2          0   66.7%    83.3
 
   Wall clock (varies run to run)
   pass         items  s/item  new tokens/item  hit token cap
   ------------------------------------------------------------
-  ours greedy      3    1.58               48              0
-  ours x8          3    5.09              423              0
-  bfcl greedy      5    1.55               51              0
+  ours greedy      3    1.52               48              0
+  ours x8          3    4.74              452              0
+  bfcl greedy      5    1.58               51              0
 
 --------------------------------------------------------------------------
 The same greedy pass twice
@@ -113,8 +119,8 @@ Training step timing: LoRA vs full fine-tuning
 
   size    method  trainable  s/step  GB now*  loss, step 1
   ----------------------------------------------------------
-  0.5B  LoRA r16       8.8M   0.700      2.1         1.597
-  0.5B      full     494.0M   1.206      6.6         1.597
+  0.5B  LoRA r16       8.8M   0.706      2.1         1.597
+  0.5B      full     494.0M   1.202      6.6         1.597
   * MPS has no peak counter: memory allocated after the last step,
     a lower bound on the peak.
 
@@ -172,9 +178,9 @@ Training step timing: LoRA vs full fine-tuning
   Wall clock (varies run to run)
   pass         items  s/item  new tokens/item  hit token cap
   ------------------------------------------------------------
-  ours greedy      3   14.72              512              3
-  ours x8          3   23.76             2332              9
-  bfcl greedy      5   11.78              419              4
+  ours greedy      3   10.17              512              3
+  ours x8          3   24.14             1429              5
+  bfcl greedy      5   13.84              419              4
 
 --------------------------------------------------------------------------
 The rule (fixed before these numbers)
@@ -203,10 +209,10 @@ The rule (fixed before these numbers)
   0.5B base      comparison   0 of 4 (0.0%)  <= 80%  met
 
   (c) call-needing dev tasks, mixed groups of 8 at T=1
-  model                role          count   needs      met
-  -----------------------------------------------------------
-  0.5B instruct  comparison  0 of 2 (0.0%)  >= 10%  not met
-  0.5B base      comparison  0 of 2 (0.0%)  >= 10%  not met
+  model                role           count   needs      met
+  ------------------------------------------------------------
+  0.5B instruct  comparison  1 of 2 (50.0%)  >= 10%      met
+  0.5B base      comparison   0 of 2 (0.0%)  >= 10%  not met
 
   (d) call-needing dev tasks, greedy, right by execution
   model                role          count   needs      met
@@ -216,7 +222,7 @@ The rule (fixed before these numbers)
 
   model                role  (a)  (b)  (c)  (d)  qualifies
   ----------------------------------------------------------
-  0.5B instruct  comparison  met  met  not  not         no
+  0.5B instruct  comparison  met  met  met  not         no
   0.5B base      comparison  met  met  not  not         no
 
   verdict                            incomplete

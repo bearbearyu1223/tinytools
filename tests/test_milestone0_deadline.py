@@ -43,6 +43,21 @@ def test_a_base_model_after_instruct_ones_is_costed_at_the_token_cap():
     assert m0.estimate_seconds(m0.B3, 524, [*ts, tb], CAP) == pytest.approx(1.5 * 5000.0)
 
 
+def test_batch_count():
+    # 200 tasks at 64: 4 greedy batches; 8 per batch sampled: 25; BFCL 40/20/20/20/24: 5
+    assert m0.batch_count(200, [40, 20, 20, 20, 24], 64, 8, again=False) == 34
+    assert m0.batch_count(200, [40, 20, 20, 20, 24], 64, 8, again=True) == 38
+    # batch 1: one batch per item-pass, as item_passes counts them
+    assert m0.batch_count(200, [124], 1, 8, again=False) == m0.item_passes(
+        m0.I3, 200, 124, m0.I15)
+
+
+def test_a_base_model_is_costed_per_batch_with_the_batched_engine():
+    ts = [timing(m0.I15, wall=100.0, gen=90.0, greedy_s=20.0, steps=1000)]  # 20 ms/step
+    assert m0.estimate_seconds(m0.B15, 524, ts, CAP, batches=34) == pytest.approx(
+        1.5 * (34 * 512 * 0.020 + 10.0))
+
+
 def test_fits():
     assert m0.fits(0, None, 10**9)  # no deadline
     assert m0.fits(0, 1000, None)  # nothing measured: the first model starts
@@ -62,7 +77,7 @@ def stub(monkeypatch, seconds_per_model, on_score=None):
     (I15 and I3 fail (a); bases would qualify)."""
     scored = []
 
-    def score(model, s, device, dev_tasks, setup, out_dir, repeat):
+    def score(model, s, device, dev_tasks, setup, out_dir, repeat, batch):
         scored.append(model)
         if on_score:
             on_score(model)
@@ -83,8 +98,9 @@ def test_the_deadline_stops_before_a_model_that_cant_finish(monkeypatch, tmp_pat
     # 19 min left (the stubs take no real time): 1.5B instruct starts unestimated; 3B
     # instruct needs 1.5 x 400 item-passes x 600/524 s = ~11.5 min, + 2 min margin: starts;
     # base 1.5B is costed at the token cap: 1.5 x (400 x 512 x 2 ms + 510 s) = ~23 min: not
+    # (at batch size 1, every one of the 400 item-passes is its own batch)
     deadline = time.time() + 19 * 60
-    code = m0.run(False, None, tmp_path, base_when_needed=True, deadline=deadline)
+    code = m0.run(False, None, tmp_path, base_when_needed=True, deadline=deadline, gen_batch=1)
     out = capsys.readouterr().out
     assert scored == [m0.I15, m0.I3]
     assert code == 1  # the rule reaches base 1.5B, unscored

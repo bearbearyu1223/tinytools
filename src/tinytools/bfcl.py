@@ -11,10 +11,10 @@ What comes from bfcl-eval (imported, not reimplemented):
   ``_evaluate_single_relevance_entry``: the functions ``bfcl evaluate`` runs
   per item, which call ``ast_checker``).
 
-What is ours: generation with Hugging Face transformers on the local device
-(bfcl-eval drives a vLLM/SGLang server, which doesn't run on a Mac), the prompt
-built with the model's own chat template, and the outcome split
-(:mod:`tinytools.classify`).
+What is ours: generation with Hugging Face transformers models on the local
+device, through the batched engine (:mod:`tinytools.engine`; bfcl-eval drives a
+vLLM/SGLang server, which doesn't run on a Mac), the prompt built with the model's
+own chat template, and the outcome split (:mod:`tinytools.classify`).
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ os.environ.setdefault("BFCL_PROJECT_ROOT", str(ROOT / "bfcl_project"))
 import torch  # noqa: E402
 
 from .classify import OUTCOMES, classify, is_right  # noqa: E402
+from .engine import Generated  # noqa: E402
 
 # Our names -> bfcl-eval's (V4 renamed "simple" to "simple_python").
 CATEGORIES = {
@@ -282,8 +283,11 @@ def stop_ids(model_eos, end_of_turn: int | None) -> list[int]:
     return ids
 
 
+# -- the one-at-a-time engine (replaced; kept for engine-check only) --------------------
+
+
 def generation_config(tok, model, samples: int, temperature: float):
-    """Decoding exactly as stated: greedy, or plain temperature sampling.
+    """The replaced engine's decoding: greedy, or plain temperature sampling.
 
     Qwen2.5-Instruct's own generation_config.json sets repetition_penalty 1.1,
     top_p 0.8 and top_k 20, which ``generate`` would apply silently; this
@@ -306,22 +310,10 @@ def generation_config(tok, model, samples: int, temperature: float):
                             num_return_sequences=samples, **common)
 
 
-@dataclass
-class Generated:
-    texts: list[str]
-    new_tokens: list[int]
-    capped: list[bool]
-    seconds: float
-
-
-def generate(tok, model, item: Item, cfg, seed: int) -> Generated:
-    return generate_text(tok, model, prompt_text(tok, item), item.id, cfg, seed)
-
-
 def generate_text(tok, model, prompt: str, item_id: str, cfg, seed: int) -> Generated:
-    """Generate from an already templated prompt; seeded by ``seed`` and the item's id.
-
-    The one generation path: ``bfcl-score`` and ``score`` (our tasks) both use it.
+    """The replaced engine: Hugging Face ``generate`` on one templated prompt, seeded
+    with ``torch.manual_seed(seed + crc32(item id))``. Every capture before the batched
+    engine came from here; now only ``engine-check`` calls it, to compare the two.
     """
     from .device import sync
 
@@ -383,14 +375,23 @@ class CategoryResult:
 
 
 def score(tok, model, items: list[Item], *, samples: int, temperature: float, seed: int,
-          on_item=None, records: list | None = None, setup: dict | None = None) -> CategoryResult:
-    """Generate and judge every item. ``records`` collects one dict per reply (with
-    ``setup``'s fields, e.g. dtype and device, so ``bfcl-rescore`` can print them)."""
+          batch_size: int, on_item=None, records: list | None = None,
+          setup: dict | None = None, stats: list | None = None) -> CategoryResult:
+    """Generate (the batched engine) and judge every item. ``records`` collects one dict
+    per reply (with ``setup``'s fields, e.g. dtype, device and engine, so
+    ``bfcl-rescore`` can print them). ``on_item(k)``: k items generated so far.
+    ``stats`` collects one ``engine.BatchStat`` per batch."""
+    from .engine import generate as generate_batched
+
     h = handler()
-    cfg = generation_config(tok, model, samples, temperature)
     res = CategoryResult(items[0].category if items else "")
-    for k, item in enumerate(items, start=1):
-        g = generate(tok, model, item, cfg, seed)
+    run = generate_batched(tok, model, [it.id for it in items],
+                           [prompt_text(tok, it) for it in items], samples=samples,
+                           temperature=temperature, seed=seed, batch_size=batch_size,
+                           max_new_tokens=MAX_NEW_TOKENS, on_done=on_item)
+    if stats is not None:
+        stats.extend(run.batches)
+    for item, g in zip(items, run.items, strict=True):
         res.seconds += g.seconds
         res.new_tokens += sum(g.new_tokens)
         right = 0
@@ -406,8 +407,6 @@ def score(tok, model, items: list[Item], *, samples: int, temperature: float, se
                                 "task_seconds": g.seconds, **(setup or {})})
         res.right_per_task.append(right)
         res.add_oracle(h, item)
-        if on_item:
-            on_item(k)
     return res
 
 

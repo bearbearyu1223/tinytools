@@ -12,6 +12,8 @@
     "generation": 0,
     "probe": 0
   },
+  "engine": "batched",
+  "batch_size": 8,
   "samples": 8,
   "temperature": 1.0,
   "max_new_tokens": 512,
@@ -40,7 +42,8 @@
     "lora_rank": 16,
     "lora_alpha": 32.0,
     "lr": 1e-05,
-    "base_when_needed": false
+    "base_when_needed": false,
+    "gen_batch": null
   },
   "measured": {
     "Qwen/Qwen2.5-0.5B-Instruct": {
@@ -49,7 +52,7 @@
       "ours_n": 3,
       "bfcl_right": 1,
       "bfcl_n": 4,
-      "mixed": 0,
+      "mixed": 1,
       "groups": 2,
       "calls_right": 0,
       "calls_n": 2
@@ -73,12 +76,12 @@
       "method": "LoRA r16",
       "trainable": 8798208,
       "total": 494032768,
-      "seconds_per_step": 0.7002815419982653,
+      "seconds_per_step": 0.705878542001301,
       "peak_bytes": 2085529600,
       "losses": [
         1.597379446029663,
-        0.797967255115509,
-        1.652174472808838
+        0.7980685830116272,
+        1.6525245904922485
       ],
       "note": ""
     },
@@ -87,12 +90,12 @@
       "method": "full",
       "trainable": 494032768,
       "total": 494032768,
-      "seconds_per_step": 1.205720416499389,
+      "seconds_per_step": 1.202384312498907,
       "peak_bytes": 6580297216,
       "losses": [
         1.597379446029663,
-        0.9879690408706665,
-        1.472794532775879
+        0.9879683256149292,
+        1.4727946519851685
       ],
       "note": ""
     }
@@ -100,19 +103,19 @@
   "timings": [
     {
       "model": "Qwen/Qwen2.5-0.5B-Instruct",
-      "wall_s": 36.17041758399864,
+      "wall_s": 35.10862833399733,
       "item_passes": 14,
-      "gen_s": 32.346130958991125,
-      "greedy_s": 12.471366000994749,
-      "greedy_steps": 396
+      "gen_s": 30.487855956984276,
+      "greedy_s": 12.45501058298396,
+      "greedy_steps": 326
     },
     {
       "model": "Qwen/Qwen2.5-0.5B",
-      "wall_s": 176.01302483300242,
+      "wall_s": 174.63337029199465,
       "item_passes": 11,
-      "gen_s": 174.30308662599418,
-      "greedy_s": 103.02797883499443,
-      "greedy_steps": 3631
+      "gen_s": 172.14643133299978,
+      "greedy_s": 99.71714916700148,
+      "greedy_steps": 2608
     }
   ],
   "stopped": null,

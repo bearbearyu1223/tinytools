@@ -14,6 +14,7 @@ Commands (``tinytools <command> --help`` for each one's flags):
     sft-data        the SFT sets: ToolACE truncated (real), random-call per seed (control)
     figures         the post's figures, parsed from the captures, into figures/
     milestone0      six models on the dev split, the model rule's verdict, LoRA vs full timing
+    engine-check    the batched engine against the one-at-a-time engine it replaced
 
 Every command prints a report on stdout (progress goes to stderr) and saves the
 same report under outputs/, so ``tinytools bfcl-score > x.txt`` captures only
@@ -233,7 +234,7 @@ def parse_bfcl_replies_name(name: str) -> dict | None:
 
 def _bfcl_setup(rep: Report, *, model: str, split: str, limit: int | None, sampling: bool,
                 samples: int, temperature: float, seed: int, dtype: str,
-                determinism: str) -> None:
+                determinism: str, engine: tuple[str, int] | None) -> None:
     from . import bfcl
 
     rep.header()
@@ -255,7 +256,32 @@ def _bfcl_setup(rep: Report, *, model: str, split: str, limit: int | None, sampl
     rep.kv("max new tokens", bfcl.MAX_NEW_TOKENS)
     rep.kv("dtype", dtype)
     rep.kv("determinism", determinism)
-    rep.kv("seed", f"{seed} (+ crc32 of each item id)")
+    _seed_and_engine(rep, seed, engine, samples, "item")
+
+
+def _seed_and_engine(rep: Report, seed: int, engine: tuple[str, int] | None, samples: int,
+                     noun: str) -> None:
+    """The seed line, and the engine lines of a batched capture. ``engine`` is
+    (name, batch size), or ``None`` for a capture of the one-at-a-time engine, whose
+    Setup is printed as it always was."""
+    from .engine import print_setup
+
+    if engine is None:
+        rep.kv("seed", f"{seed} (+ crc32 of each {noun} id)")
+        return
+    rep.kv("seed", f"{seed} (+ {noun} id and sample number)")
+    if samples > 1:
+        rep.note("Each reply draws from its own generator, seeded with the seed,")
+        rep.note(f"its {noun} id and sample number: its draws don't depend on its batch.")
+    print_setup(rep, engine[1], (samples,))
+
+
+def _batch_size(args, device) -> int:
+    from .engine import default_batch_size
+
+    if args.batch_size is not None and args.batch_size < 1:
+        sys.exit("--batch-size must be at least 1")
+    return args.batch_size or default_batch_size(device.type)
 
 
 def _check_sampling(samples: int, temperature: float) -> None:
@@ -393,10 +419,13 @@ def cmd_bfcl_score(args) -> None:
     device = get_device()
     determinism = set_determinism(device)
     dtype = dtype_name(preferred_dtype(device))
+    batch = _batch_size(args, device)
+    from .engine import ENGINE
+
     rep = Report(f"tinytools bfcl-score ({mode})", out=OUTPUTS / f"bfcl-{tag}.txt")
     _bfcl_setup(rep, model=args.model, split=args.split, limit=args.limit, sampling=sampling,
                 samples=args.samples, temperature=args.temperature, seed=args.seed,
-                dtype=dtype, determinism=determinism)
+                dtype=dtype, determinism=determinism, engine=(ENGINE, batch))
 
     progress.status(f"loading {args.model} on {device}")
     tok, model = bfcl.load_model(args.model, device)
@@ -406,8 +435,9 @@ def cmd_bfcl_score(args) -> None:
         on_item = progress.items(f"{cat}, {mode}", len(items))
         results.append(bfcl.score(tok, model, items, samples=args.samples,
                                   temperature=args.temperature, seed=args.seed,
-                                  on_item=on_item, records=records,
-                                  setup={"dtype": dtype, "device": device.type}))
+                                  batch_size=batch, on_item=on_item, records=records,
+                                  setup={"dtype": dtype, "device": device.type,
+                                         "engine": ENGINE, "batch_size": batch}))
     _bfcl_body(rep, results, sampling=sampling, samples=args.samples, wall=None)
     rep.close()
     items_path = OUTPUTS / f"bfcl-{tag}-replies.jsonl"
@@ -435,6 +465,14 @@ def recorded_setup(rows: list[dict], earlier: str | None) -> tuple[str, str]:
     if m.group(1) == "cuda":
         raise ValueError("a CUDA capture without a recorded dtype (bf16 or fp32?)")
     return m.group(1), "float32"
+
+
+def recorded_engine(rows: list[dict]) -> tuple[str, int] | None:
+    """(engine, batch size) from a replies file's rows; ``None``: the one-at-a-time
+    engine (rows written before the batched engine carry no such fields)."""
+    from .engine import recorded
+
+    return recorded(rows)
 
 
 def cmd_bfcl_rescore(args) -> None:
@@ -467,6 +505,7 @@ def cmd_bfcl_rescore(args) -> None:
     earlier = out.read_text(encoding="utf-8") if out.exists() else None
     try:
         device_type, dtype = recorded_setup(rows, earlier)
+        engine = recorded_engine(rows)
     except ValueError as e:
         sys.exit(f"{path.name}: {e}")
 
@@ -489,6 +528,8 @@ def cmd_bfcl_rescore(args) -> None:
             for i, r in enumerate(rs):
                 r.setdefault("sample", i)
                 r.update(dtype=dtype, device=device_type)
+                if engine is not None:
+                    r.update(engine=engine[0], batch_size=engine[1])
         ordered += [r for rs in reps for r in rs]
         results.append(bfcl.rejudge(items, reps, progress.items(f"rescore, {cat}", len(items))))
     wall = section_lines(earlier, WALL_CLOCK) if earlier else None
@@ -496,7 +537,8 @@ def cmd_bfcl_rescore(args) -> None:
     rep = Report(f"tinytools bfcl-score ({name['mode']})", out=out)
     _bfcl_setup(rep, model=args.model, split=name["split"], limit=name["limit"],
                 sampling=sampling, samples=samples, temperature=name["temperature"],
-                seed=args.seed, dtype=dtype, determinism=determinism_label(device_type))
+                seed=args.seed, dtype=dtype, determinism=determinism_label(device_type),
+                engine=engine)
     rep.kv("checked by", "bfcl-rescore of the saved replies")
     if name["split"] != source:
         rep.note(f"(the {name['split']} items of a --split {source} replies file)")
@@ -703,7 +745,7 @@ def _tagname(model: str, split: str, mode: str, limit) -> str:
 
 def _score_setup(rep: Report, *, model: str, split: str, splits: dict, limit, sampling: bool,
                  samples: int, temperature: float, seed: int, dtype: str,
-                 determinism: str) -> None:
+                 determinism: str, engine: tuple[str, int] | None) -> None:
     from . import bfcl, tasks
 
     rep.header()
@@ -718,7 +760,7 @@ def _score_setup(rep: Report, *, model: str, split: str, splits: dict, limit, sa
     rep.kv("max new tokens", bfcl.MAX_NEW_TOKENS)
     rep.kv("dtype", dtype)
     rep.kv("determinism", determinism)
-    rep.kv("seed", f"{seed} (+ crc32 of each task id)")
+    _seed_and_engine(rep, seed, engine, samples, "task")
     rep.kv("right means", "execution match (exact beside it)")
 
 
@@ -737,32 +779,33 @@ def cmd_score(args) -> None:
     device = get_device()
     determinism = set_determinism(device)
     dtype = dtype_name(preferred_dtype(device))
+    batch = _batch_size(args, device)
+    from .engine import ENGINE
+
     rep = Report(f"tinytools score ({args.split}, {mode})", out=OUTPUTS / f"score-{tag}.txt")
     _score_setup(rep, model=args.model, split=args.split, splits=splits, limit=args.limit,
                  sampling=sampling, samples=args.samples, temperature=args.temperature,
-                 seed=args.seed, dtype=dtype, determinism=determinism)
+                 seed=args.seed, dtype=dtype, determinism=determinism, engine=(ENGINE, batch))
 
     progress.status(f"loading {args.model} on {device}")
     tok, model = bfcl.load_model(args.model, device)
 
-    if not sampling:
-        task = ours.r1_task(splits["test"])
-        cfg = bfcl.generation_config(tok, model, 1, 0.0)
-        g = bfcl.generate_text(tok, model, ours.prompt(tok, task), task["id"], cfg, args.seed)
-        _r1(rep, tok, task, g.texts[0])
-
     greedy = ours.score(tok, model, items, samples=1, temperature=0.0, seed=args.seed,
+                        batch_size=batch,
                         on_item=progress.items(f"{args.split}, greedy", len(items)))
+    if not sampling:
+        _r1_from(rep, tok, splits, args.split, greedy)
     sampled = None
     if sampling:
         sampled = ours.score(tok, model, items, samples=args.samples,
-                             temperature=args.temperature, seed=args.seed,
+                             temperature=args.temperature, seed=args.seed, batch_size=batch,
                              on_item=progress.items(f"{args.split}, {mode}", len(items)))
     _score_body(rep, greedy=greedy, sampled=sampled, mode=mode, samples=args.samples,
                 split=args.split, wall=_wall_rows(greedy, sampled, mode))
     rep.close()
     path = OUTPUTS / f"score-{tag}-replies.jsonl"
-    _write_replies(path, greedy, sampled, mode, {"dtype": dtype, "device": device.type})
+    _write_replies(path, greedy, sampled, mode, {"dtype": dtype, "device": device.type,
+                                                 "engine": ENGINE, "batch_size": batch})
     progress.status(f"replies written to {path.relative_to(ROOT)}")
 
 
@@ -991,6 +1034,7 @@ def cmd_rescore(args) -> None:
     try:
         device_type, dtype = recorded_setup(rows, out.read_text(encoding="utf-8")
                                             if out.exists() else None)
+        engine = recorded_engine(rows)
     except ValueError as e:
         sys.exit(f"{path.name}: {e}")
     from .device import determinism_label
@@ -998,24 +1042,36 @@ def cmd_rescore(args) -> None:
     rep = Report(f"tinytools score ({args.split}, {mode})", out=out)
     _score_setup(rep, model=args.model, split=args.split, splits=splits, limit=limit,
                  sampling=sampling, samples=samples, temperature=temperature, seed=args.seed,
-                 dtype=dtype, determinism=determinism_label(device_type))
+                 dtype=dtype, determinism=determinism_label(device_type), engine=engine)
     rep.kv("checked by", "rescore of the saved replies")
     if not sampling:
-        task = ours.r1_task(splits["test"])
-        if args.split == "test" and any(s.task["id"] == task["id"] for s in greedy):
-            from transformers import AutoTokenizer
+        from transformers import AutoTokenizer
 
-            tok = AutoTokenizer.from_pretrained(args.model)
-            raw = next(s.replies[0] for s in greedy if s.task["id"] == task["id"])
-            _r1(rep, tok, task, raw)
-        else:
-            rep.section(f"One task, whole: {task['id']} ({task['kind']}, {task['tool']})")
-            rep.note("(not in this replies file: run score to print it)")
+        _r1_from(rep, AutoTokenizer.from_pretrained(args.model), splits, args.split, greedy,
+                 missing="(not in this replies file: run score to print it)")
     _score_body(rep, greedy=greedy, sampled=sampled, mode=mode, samples=samples,
                 split=args.split, wall=wall)
     rep.close()
-    _write_replies(path, greedy, sampled, mode, {"dtype": dtype, "device": device_type})
+    setup = {"dtype": dtype, "device": device_type}
+    if engine is not None:
+        setup.update(engine=engine[0], batch_size=engine[1])
+    _write_replies(path, greedy, sampled, mode, setup)
     progress.status(f"verdicts in {path.relative_to(ROOT)} updated (replies unchanged)")
+
+
+def _r1_from(rep: Report, tok, splits: dict, split: str, greedy,
+             missing: str = "(not among the tasks scored)") -> None:
+    """The r1 block from the greedy pass's own reply to r1's task (``score`` and
+    ``rescore`` alike), so the block and the replies file can't disagree."""
+    from . import ours
+
+    task = ours.r1_task(splits["test"])
+    raw = next((s.replies[0] for s in greedy if s.task["id"] == task["id"]), None)
+    if split == "test" and raw is not None:
+        _r1(rep, tok, task, raw)
+    else:
+        rep.section(f"One task, whole: {task['id']} ({task['kind']}, {task['tool']})")
+        rep.note(missing)
 
 
 def _r1(rep: Report, tok, task: dict, raw: str) -> None:
@@ -1308,15 +1364,33 @@ def cmd_milestone0(args) -> None:
         models = milestone0.parse_models(args.models) if args.models else None
     except ValueError as e:
         sys.exit(str(e))
+    if args.batch_size is not None and args.batch_size < 1:
+        sys.exit("--batch-size must be at least 1")
     code = milestone0.run(args.quick, models, ROOT, base_when_needed=args.base_when_needed,
-                          deadline=args.deadline_epoch)
+                          deadline=args.deadline_epoch, gen_batch=args.batch_size)
     if code:
         progress.status("scoring stopped early: " + ("SIGTERM" if code > 128 else "the deadline,"
                                                      " before the rule could decide"))
         sys.exit(code)
 
 
+def cmd_engine_check(args) -> None:
+    _quiet_hf()
+    from . import engine_check
+
+    if args.batch_size is not None and args.batch_size < 1:
+        sys.exit("--batch-size must be at least 1")
+    for n in (args.ours, args.bfcl, args.sampled):
+        if n is not None and n < 1:
+            sys.exit("--ours, --bfcl and --sampled must be at least 1")
+    engine_check.run(args.quick, args.batch_size, ROOT,
+                     engine_check.sizes_for(args.quick, args.ours, args.bfcl, args.sampled))
+
+
 # -- entry point -------------------------------------------------------------------
+
+BATCH_HELP = ("sequences per forward pass (an item's samples stay in one batch); default "
+              "by device: cuda 64, mps 8, cpu 4")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -1346,6 +1420,7 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--samples", type=int, default=1, help="1 = greedy; >1 = sampled group")
     s.add_argument("--temperature", type=float, default=0.0)
     s.add_argument("--seed", type=int, default=0)
+    s.add_argument("--batch-size", type=int, default=None, help=BATCH_HELP)
     s.set_defaults(fn=cmd_bfcl_score)
 
     s = sub.add_parser("bfcl-rescore", help="re-judge a bfcl-score replies file (no model)")
@@ -1372,6 +1447,7 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--samples", type=int, default=1, help="1 = greedy; >1 = sampled group")
     s.add_argument("--temperature", type=float, default=0.0)
     s.add_argument("--seed", type=int, default=0)
+    s.add_argument("--batch-size", type=int, default=None, help=BATCH_HELP)
     s.set_defaults(fn=cmd_score)
 
     s = sub.add_parser("rescore", help="re-check a score replies file with the current checkers")
@@ -1413,7 +1489,19 @@ def main(argv: list[str] | None = None) -> None:
                         "$TINYTOOLS_DEADLINE_EPOCH to when its time limit fires): a model that "
                         "can't finish by then is not started, and the rule is printed from "
                         "what was measured")
+    s.add_argument("--batch-size", type=int, default=None, help=BATCH_HELP)
     s.set_defaults(fn=cmd_milestone0)
+
+    s = sub.add_parser("engine-check", help="the batched engine vs the one-at-a-time engine")
+    s.add_argument("--quick", action="store_true", help="a few items of each kind (a smoke test)")
+    s.add_argument("--batch-size", type=int, default=None, help=BATCH_HELP)
+    s.add_argument("--ours", type=int, default=None,
+                   help="greedy: first N test tasks per kind (default 20; --quick 2)")
+    s.add_argument("--bfcl", type=int, default=None,
+                   help="greedy: first N BFCL eval items per category (default 8; --quick 1)")
+    s.add_argument("--sampled", type=int, default=None,
+                   help="sampled: the first N test tasks by id (default 10; --quick 3)")
+    s.set_defaults(fn=cmd_engine_check)
 
     args = p.parse_args(argv)
     t0 = time.perf_counter()

@@ -579,9 +579,36 @@ class Estimate:
         ]
 
 
+def gpu_family(instance_type: str) -> str:
+    """The GPU a Lambda type name names: ``gpu_1x_a100_sxm4`` -> ``a100``. Pure."""
+    parts = instance_type.split("_")
+    return parts[2] if len(parts) > 2 and parts[0] == "gpu" else instance_type
+
+
+def same_gpu_lines(types: dict, instance_type: str) -> list[str]:
+    """Every type in Lambda's live list with the experiment's GPU (any count, memory or
+    form factor), cheapest first: name, price, Lambda's description (which states the
+    memory, e.g. "1x A100 (40 GB SXM4)") and regions with capacity. Pure."""
+    fam = gpu_family(instance_type)
+    rows = sorted((v["instance_type"]["price_cents_per_hour"], k,
+                   v["instance_type"].get("description", ""),
+                   ", ".join(r["name"] for r in v.get("regions_with_capacity_available", []))
+                   or "no capacity")
+                  for k, v in types.items() if gpu_family(k) == fam)
+    if not rows:
+        return [f"no {fam} types in Lambda's list now"]
+    lines = [f"{fam} types in Lambda's list now (the experiment's is marked *):"]
+    for cents, name, desc, regions in rows:
+        mark = "*" if name == instance_type else " "
+        lines.append(f" {mark} {name:<26} ${cents / 100:>6.2f}/h  {desc}  [{regions}]")
+    return lines
+
+
 def make_estimate(exp: Experiment, types: dict, ledger: list[dict]) -> Estimate:
     if exp.instance_type not in types:
-        near = sorted(n for n in types if "h100" in n or exp.instance_type.split("_")[-1] in n)
+        fam = gpu_family(exp.instance_type)
+        near = sorted(n for n in types if gpu_family(n) == fam
+                      or exp.instance_type.split("_")[-1] in n)
         raise Refused(f"instance type {exp.instance_type} is not in Lambda's list now"
                       + (f"; similar: {', '.join(near)}" if near else ""))
     item = types[exp.instance_type]
@@ -1489,7 +1516,10 @@ def cmd_types(api: LambdaAPI) -> int:
 
 def cmd_estimate(api: LambdaAPI, root: Path, name: str) -> int:
     exp, _ = load_experiment(root, name)
-    est = make_estimate(exp, api.instance_types(), read_ledger(root / "runs" / "ledger.csv"))
+    types = api.instance_types()
+    for line in same_gpu_lines(types, exp.instance_type):  # e.g. A100 40 GB beside 80 GB
+        print(line)
+    est = make_estimate(exp, types, read_ledger(root / "runs" / "ledger.csv"))
     for line in est.lines():
         print(line)
     return EXIT_OK if est.within_cap else EXIT_REFUSED

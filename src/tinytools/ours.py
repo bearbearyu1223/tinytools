@@ -1,8 +1,9 @@
 """Our tool tasks: prompts, scoring with a model, and the pure summaries the reports print.
 
-Generation is ``bfcl.generate_text`` (the path ``bfcl-score`` uses: the model's
-own chat template, greedy = argmax or plain temperature sampling, each task's
-generator seeded with ``seed + crc32(task id)``). Each reply is checked both
+Generation is the batched engine (:mod:`tinytools.engine`, the path ``bfcl-score``
+uses: the model's own chat template, greedy = argmax or plain temperature
+sampling, each reply's draws seeded by the seed, its task id and sample number).
+Each reply is checked both
 ways and labelled by :func:`tinytools.checkers.check_reply`, whose outcome is
 :func:`tinytools.classify.classify` with execution match as the verdict, so
 the labels live in one place.
@@ -121,17 +122,22 @@ class Scored:
 
 
 def score(tok, model, items: list[dict], *, samples: int, temperature: float, seed: int,
-          on_item=None) -> list[Scored]:
-    from .bfcl import generate_text, generation_config
+          batch_size: int, on_item=None, stats: list | None = None) -> list[Scored]:
+    """Generate (the batched engine) and check every task. A task's ``seconds`` is its
+    batch's wall seconds x its share of the batch's rows. ``stats`` collects one
+    ``engine.BatchStat`` per batch."""
+    from .bfcl import MAX_NEW_TOKENS
+    from .engine import generate
 
-    cfg = generation_config(tok, model, samples, temperature)
+    run = generate(tok, model, [t["id"] for t in items], [prompt(tok, t) for t in items],
+                   samples=samples, temperature=temperature, seed=seed,
+                   batch_size=batch_size, max_new_tokens=MAX_NEW_TOKENS, on_done=on_item)
+    if stats is not None:
+        stats.extend(run.batches)
     out = []
-    for k, task in enumerate(items, start=1):
-        g = generate_text(tok, model, prompt(tok, task), task["id"], cfg, seed)
+    for task, g in zip(items, run.items, strict=True):
         checks = [check_reply(text, task["reference"]) for text in g.texts]
         out.append(Scored(task, g.texts, checks, g.capped, sum(g.new_tokens), g.seconds))
-        if on_item:
-            on_item(k)
     return out
 
 

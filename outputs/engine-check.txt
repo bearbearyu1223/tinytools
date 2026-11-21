@@ -1,0 +1,111 @@
+==========================================================================
+tinytools engine-check
+==========================================================================
+device        : mps (Apple arm64)
+torch         : 2.13.0
+platform      : Darwin 24.6.0 (arm64)
+device memory : 17.2 GB
+
+--------------------------------------------------------------------------
+Setup
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-0.5B-Instruct
+  dtype                              float32
+  determinism                        not set on mps (the CUDA flags only)
+  greedy, our tasks                  60: first 20 test tasks per kind
+  greedy, BFCL                       40: first 8 eval items per category
+  sampled, our tasks                 10: the first test tasks by id
+    decoding                         8 samples, temperature 1
+  top_p / top_k / repetition penalty 1.0 / off / 1.0
+  max new tokens                     512
+  seed                               0
+  One at a time (the replaced engine): Hugging Face generate on one
+  prompt, torch.manual_seed(seed + crc32(item id)) before it; its
+  8 samples are one generate call with 8 return sequences.
+  Batched (the engine every capture now uses):
+  engine                             batched, sorted by length
+    batch size, greedy               8 sequences
+    batch size, 8 samples            8 sequences (1 item x 8)
+  Left padding with the attention mask; a reply ends at the model's
+  eos or <|im_end|>. Seconds per item: the batch's seconds x the
+  item's share of its rows.
+  Its samples: each reply draws from its own generator seeded with
+  the seed, item id and sample number (engine.py says how).
+
+--------------------------------------------------------------------------
+Greedy: one at a time vs batched
+--------------------------------------------------------------------------
+  items      vs one at a time   n  identical  differ  outcome changed
+  ---------------------------------------------------------------------
+  our tasks        batched, 8  60         60       0                0
+  our tasks        batched, 1  60         60       0                0
+  BFCL             batched, 8  40         40       0                0
+  BFCL             batched, 1  40         40       0                0
+  identical: the same reply, byte for byte. batched, 1: the batched
+  engine one item per batch (no padding): the control, which
+  separates the new loop from the effect of batching.
+
+--------------------------------------------------------------------------
+Sampled (8 at T=1): one at a time vs batched
+--------------------------------------------------------------------------
+  outcome          one at a time  batched, 8  batched, 16
+  ---------------------------------------------------------
+  no call                      2           4            4
+  unparseable                  1           0            0
+  wrong arguments              4           2            2
+  right                       33          34           34
+  declined                    18          19           19
+  called anyway               22          21           21
+  total                       80          80           80
+
+  right of 8  one at a time  batched, 8  batched, 16
+  ----------------------------------------------------
+  0                       1           0            0
+  1                       1           1            1
+  2                       0           0            0
+  3                       0           2            2
+  4                       2           1            1
+  5                       1           1            1
+  6                       0           0            0
+  7                       3           3            3
+  8                       2           2            2
+  mixed                   7           8            8
+  tasks with k of 8 replies right; mixed: some right, some wrong.
+
+  Replies identical to batched, 8:
+    batched at batch size 16         80 of 80
+    one at a time                    24 of 80
+  Across batch sizes each reply has the same random draws, so a
+  difference there comes from rounding in the forward pass. The
+  old engine drew from torch's generator, so its replies are a
+  different sample: compare its counts, not its replies.
+
+--------------------------------------------------------------------------
+The batched engine twice (one process, same batch size)
+--------------------------------------------------------------------------
+  pass                  replies  identical
+  ------------------------------------------
+  greedy, our tasks          60         60
+  greedy, BFCL               40         40
+  8 samples, our tasks       80         80
+
+--------------------------------------------------------------------------
+Wall clock (varies run to run)
+--------------------------------------------------------------------------
+  pass          one at a time s  batched 8 s  again s  speed-up
+  ---------------------------------------------------------------
+  greedy, ours               78           62       64      1.3x
+  greedy, BFCL               86           83       82      1.0x
+  x8, ours                   70           57       56      1.2x
+  total                     235          202      203      1.2x
+  Generation only (no loading or checking); speed-up: one at a
+  time / batched (first run).
+
+  batched pass  batches  decode steps  s/step  new tokens  row use
+  ------------------------------------------------------------------
+  greedy, ours        8           651   0.095        2356      48%
+  greedy, BFCL        5          1058   0.079        2882      34%
+  x8, ours           10           979   0.058        3283      42%
+  decode steps: forward passes after each batch's prefill, summed;
+  s/step includes the prefill. row use: new tokens / (rows x steps),
+  the share of row-steps that produced a counted token.

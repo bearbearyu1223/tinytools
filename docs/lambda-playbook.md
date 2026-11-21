@@ -85,10 +85,10 @@ Each experiment is `experiments/<name>.toml`, committed before it runs:
 ```toml
 name = "milestone0"
 post = 9                             # required: the $50 cap is summed per post
-instance_type = "gpu_1x_h100_sxm5"   # checked against the live list at launch
+instance_type = "gpu_1x_a100_sxm4"   # checked against the live list at launch
 max_hours = 4.0                      # hard limit on the instance's life, launch to termination
-expected_hours = 3.1                 # the estimate's expected figure (basis in a comment)
-cap_usd = 20                         # refuse to launch past this total for the experiment
+expected_hours = 1.2                 # the estimate's expected figure (basis in a comment)
+cap_usd = 10                         # refuse to launch past this total for the experiment
 commands = [
   "uv run tinytools toolace-convert",
   "uv run tinytools sft-data --seeds 1",
@@ -111,7 +111,7 @@ experiment's commands rebuild what it needs on the instance.
 ## A run, step by step
 
 ```
-scripts/lambda.sh estimate milestone0   # price, hours, cost, both caps left
+scripts/lambda.sh estimate milestone0   # every type of its GPU, price, hours, cost, caps
 scripts/lambda.sh run milestone0        # checks, then up -> setup -> run -> fetch -> down
 scripts/lambda.sh list                  # must show nothing flagged "<- tinytools"
 ```
@@ -206,6 +206,13 @@ Lambda's invoice is authoritative; the ledger is the runner's own count.
 
 - CUDA runs set `torch.use_deterministic_algorithms(True)` and
   `CUBLAS_WORKSPACE_CONFIG=:4096:8`; captures print both, and the dtype.
+- Generation is the batched engine (`tinytools.engine`): the batch size is printed in
+  Setup and recorded in every replies row, and items are sorted by prompt length, so a
+  run's batches are fixed by the items and the batch size. Rounding in a forward pass
+  can depend on the batch's shape, so a capture is reproduced at the same batch size.
+  Sampled replies draw from per-reply generators (seed, item id, sample number), so
+  their random numbers don't depend on the batch at all (`engine-check` measures how
+  often a reply changes with the batch size anyway).
 - Before trusting a new kind of run, run it twice and diff the captures. If they differ, the
   post publishes one frozen capture and says which numbers moved, by how much. Milestone 0
   runs one model's greedy dev pass twice in one process and prints which replies differ.
@@ -213,53 +220,79 @@ Lambda's invoice is authoritative; the ledger is the runner's own count.
 
 ## Milestone 0's estimate
 
-`experiments/milestone0.toml`'s hours come from this arithmetic: Mac timings and reasoning
-about the H100, **not an H100 measurement**. Milestone 0 itself prints seconds per item and
-per training step, from which the main run's estimate is redone.
+`experiments/milestone0.toml`'s hours come from this arithmetic: a Mac measurement of the
+batched engine and reasoning about the A100, **not an A100 measurement**. Milestone 0
+itself prints seconds per item and per training step, and records each model's batched
+decode steps and seconds, from which the main run's estimate is redone.
 
-Generation is one item at a time with Hugging Face `generate` (the path every capture so far
-used), so its cost is decode steps x seconds per step. At batch 1 (or one group of 8) a
-0.5B-3B model's step is bounded by kernel-launch and Python overhead, not FLOPs, so the step
-time is taken as 15-30 ms on the H100 for every size (25 ms central). Decode steps per model:
+**The instance** (the author, 2026-11-21): an A100, not an H100 (an H100 is more than
+0.5-3B models need at these batch sizes); 80 GB if Lambda has one, for the 3B
+full-fine-tune probe. `gpu_1x_a100_sxm4` is a 1x A100 SXM4 **40 GB** (tinyvlm ran on it
+and torch reported A100-SXM4-40GB); no 1x A100 80 GB type name is known here without the
+live API. `estimate` therefore lists every A100 type in Lambda's live list (memory from
+Lambda's description, price, regions with capacity) above its usual lines: if a 1x A100
+80 GB type has capacity, put its name in the experiment file before `run`. On 40 GB the
+3B full fine-tune may not fit (bf16 weights, gradients and AdamW states are ~24 GB before
+activations); the probe then prints "out of memory" for that row and carries on.
 
-| pass | items | steps per item (basis) | instruct | base |
-|---|---|---|---|---|
-| our dev tasks, greedy | 200 | instruct ~46 (Mac 0.5B: 41 on test, 46 on dev); base 512 | 9,200 | 102,400 |
-| our dev tasks, 8 samples at T=1 | 200 | the longest of 8: instruct ~140 (Mac 0.5B: 3x greedy's time); base 512 | 28,000 | 102,400 |
-| BFCL dev slice, greedy | 124 | instruct ~68 (Mac 0.5B, all items); base ~425 (Mac quick) | 8,432 | 52,700 |
-| total per model | | | 45,632 | 257,500 |
+**Generation is batched** (`tinytools.engine`): 64 sequences per forward pass on CUDA, an
+item's 8 samples in one batch (8 tasks x 8). A batch runs until its longest row stops, so
+its cost is decode steps (the longest reply) x seconds per step, and short replies wait.
+Batches per model:
 
-**Base models don't stop.** A base model's config stops only at `<|endoftext|>`; the scorer
-adds `<|im_end|>` (`bfcl.stop_ids`), but `--quick` on the Mac shows Qwen2.5-0.5B base writing
-the call's JSON without `<tool_call>` tags and then repeating it until the 512-token cap, on
-every item. So a base model costs ~5.6x an instruct model.
+| pass | items | batches of 64 rows |
+|---|---|---|
+| our dev tasks, greedy | 200 | 4 |
+| our dev tasks, 8 samples at T=1 | 200 x 8 | 25 (8 tasks each) |
+| BFCL dev slice, greedy | 40 / 20 / 20 / 20 / 24 | 5 (one per category) |
+| the repeat model's second greedy pass (1.5B instruct) | 200 | 4 |
+| total | | 34 (38 for 1.5B instruct) |
 
-| scope | 15 ms/step | 25 ms/step | 30 ms/step |
+**Steps per batch: every batch is assumed to run to the 512-token cap.** On the Mac
+(`outputs/engine-check.txt`, 0.5B instruct, batches of 8) a batch's longest reply set its
+length and only 34-48% of row-steps produced a counted token; with 64 rows per batch the
+longest is often a reply that runs to the cap (T=1 samples, and BFCL replies, do), and a
+base model's replies always do. So the cap is the bound, not a typical case: an instruct
+model will usually take less. A base model costs the same as an instruct one here
+(every batch runs to the cap either way), where one at a time it cost ~5.6x.
+
+**Step time: 35 ms per batched decode step, assumed, 70 ms as the pessimistic case.**
+One at a time, a 0.5-3B model's decode step is bound by kernel launches and Python
+overhead (the H100 estimate assumed 15-30 ms). At 64 rows a step also reads the weights
+(3-6 GB in bf16 for 1.5B-3B, ~2-4 ms at the A100's ~1.5 TB/s) and the KV cache (64 rows
+x ~2k tokens x ~29-37 KB per token for 1.5B-3B, ~2.5-3 ms), and the sampler adds an
+integer cumulative sum over 64 x 152k probabilities and one host sync. The Mac shows why
+not to take a batch's step as free: there a padded batch's step grows with every row
+(16 rows: 53 ms unpadded, 130 ms padded), so batching sped generation up only 1.2x
+(`engine-check`); on the A100 the per-row cost is a small share of the step. Prefill (64
+prompts of ~0.4-2k tokens) is ~1-2 s a batch, included in the ~1 minute per model
+allowed for loading.
+
+| scope (`--base-when-needed`) | decode steps | 35 ms/step | 70 ms/step |
 |---|---|---|---|
-| all six models | 4.1 h | 6.7 h | 8.0 h |
-| `--base-when-needed`, an instruct model qualifies | 0.9 h | 1.3 h | 1.5 h |
-| `--base-when-needed`, base 1.5B needed | 2.0 h | 3.1 h | 3.7 h |
-| `--base-when-needed`, both base models needed | 3.1 h | 4.9 h | 5.8 h |
+| an instruct model qualifies (1.5B, 3B and 0.5B instruct scored) | 54,272 | 1.0 h | 1.5 h |
+| base 1.5B needed | 71,680 | 1.2 h | 1.9 h |
+| both base models needed | 89,088 | 1.4 h | 2.2 h |
 
-Each includes the second greedy pass of 1.5B instruct (9,200 steps) and ~18 minutes of
-boot, `uv sync`, data preparation, model downloads and loads, the training probe, fetch and
-termination. (`--base-when-needed` scores 1.5B, 3B and 0.5B instruct always, a base model
-only if the rule reaches it, and never 0.5B base.)
+Each includes ~24 minutes of boot, `uv sync`, data preparation, model downloads and
+loads, the training-step probe, fetch and termination, and ~1 minute per model of loading
+and prefill. `expected_hours = 1.2` is the middle row at 35 ms/step; even the worst row
+at 70 ms/step fits `max_hours = 4`. The worst case is 4 h x the live price; with
+`cap_usd = 10`, `estimate` refuses above $2.50/h ($7.96 at $1.99/h).
 
-The author chose `--base-when-needed` with `max_hours = 4` and `cap_usd = 20`
-(2026-11-21). `expected_hours = 3.1` is the middle row at 25 ms/step. The worst case is
-4 h x the live price: $17.16 at $4.29/h, so `estimate` refuses above $5.00/h. If both base
-models are needed the work doesn't fit. `milestone0` is given the deadline
-(`--deadline-epoch "$TINYTOOLS_DEADLINE_EPOCH"`, when the remote `timeout` fires) and, before
-each model, estimates its time conservatively from what was measured so far (the slowest
-seconds per item of a model of the same kind, or, for the first base model, every item at
-the 512-token cap at the slowest measured seconds per step, plus loading; x 1.5, and 2
-minutes kept for writing). A model that can't finish is not started: the rule section is
-printed from what was measured, with the verdict "incomplete" if the rule reaches the
-unscored model (it can't skip one), and `milestone0` exits 1 (so `run` exits 1, with every
-file fetched). SIGTERM (the time limit, or the run stopped) does the same with whatever was
-measured, and exits 143. The training probe is not started with under 10 minutes left. The
-next step is then the author's.
+The deadline logic stays as a guard. Before each model `milestone0` estimates its time
+conservatively from what was measured so far: a model of the same kind at the slowest
+measured seconds per item-pass; the first base model as its batches (`batch_count`) each
+running to the 512-token cap at the slowest measured seconds per greedy decode step, plus
+loading; x 1.5, and 2 minutes kept for writing. A model that can't finish is not started:
+the rule section is printed from what was measured, with the verdict "incomplete" if the
+rule reaches the unscored model, and `milestone0` exits 1 (so `run` exits 1, with every
+file fetched). SIGTERM (the time limit, or the run stopped) does the same with whatever
+was measured, and exits 143. The training probe is not started with under 10 minutes
+left. The next step is then the author's.
+
+The earlier H100 estimate (one item at a time, 15-30 ms per step, 3.1 h expected, $20 cap)
+is replaced by this one.
 
 ## The model rule Milestone 0 prints
 

@@ -230,7 +230,7 @@ class Timing:
     item_passes: int
     gen_s: float  # all generation, every pass
     greedy_s: float
-    greedy_steps: int  # new tokens of the greedy passes (one sequence: one step per token)
+    greedy_steps: int  # decode steps of the greedy passes' batches (one forward pass each)
 
 
 def item_passes(model: Model, n_ours: int, n_bfcl: int, repeat_model: Model) -> int:
@@ -239,12 +239,25 @@ def item_passes(model: Model, n_ours: int, n_bfcl: int, repeat_model: Model) -> 
     return 2 * n_ours + n_bfcl + (n_ours if model == repeat_model else 0)
 
 
+def batch_count(n_ours: int, n_bfcl: list[int], batch: int, samples: int,
+                again: bool) -> int:
+    """Batches a model's scoring runs (the batched engine): ours greedy, ours sampled
+    (``batch // samples`` tasks per batch), each BFCL category greedy (one call each),
+    and ours greedy again for the repeat model."""
+    def n(items: int, per: int) -> int:
+        return math.ceil(items / max(1, per))
+    greedy = n(n_ours, batch)
+    return greedy * (2 if again else 1) + n(n_ours, batch // samples) + sum(
+        n(c, batch) for c in n_bfcl)
+
+
 def estimate_seconds(model: Model, passes: int, timings: list[Timing],
-                     max_new_tokens: int) -> float | None:
+                     max_new_tokens: int, batches: int | None = None) -> float | None:
     """A conservative guess at how long scoring ``model`` takes. With a model of the same
     kind measured: the slowest such model's seconds per item-pass. Otherwise (a base
-    model after instruct ones, whose replies run to the cap): every item at the token
-    cap at the slowest measured greedy seconds per step, plus the largest measured
+    model after instruct ones, whose replies run to the cap): every batch (``batches``;
+    without it, every item-pass as its own sequence) running to the token cap at the
+    slowest measured greedy seconds per decode step, plus the largest measured
     loading and checking time. ``None``: nothing measured yet. Times :data:`SAFETY`."""
     if not timings:
         return None
@@ -255,7 +268,8 @@ def estimate_seconds(model: Model, passes: int, timings: list[Timing],
     if not rates:
         return None
     overhead = max(max(0.0, t.wall_s - t.gen_s) for t in timings)
-    return SAFETY * (passes * max_new_tokens * max(rates) + overhead)
+    units = passes if batches is None else batches
+    return SAFETY * (units * max_new_tokens * max(rates) + overhead)
 
 
 def fits(now: float, deadline: float | None, need_s: float | None,
@@ -317,6 +331,7 @@ class Settings:
     lora_alpha: float = 32.0
     lr: float = 1e-5
     base_when_needed: bool = False
+    gen_batch: int | None = None  # generation batch size; None: the device's default
 
     @property
     def tag(self) -> str:
@@ -324,15 +339,16 @@ class Settings:
 
 
 def settings(quick: bool, models: tuple[Model, ...] | None = None,
-             base_when_needed: bool = False) -> Settings:
+             base_when_needed: bool = False, gen_batch: int | None = None) -> Settings:
     if quick:  # one item per kind and category: a base model's replies run to the cap
         return Settings(True, models or (I05, B05), ours_limit=1, bfcl_limit=1,
                         repeat_model=I05, timing_sizes=("0.5B",), batch=2, seq_len=256,
-                        warmup_steps=1, timed_steps=2, base_when_needed=base_when_needed)
+                        warmup_steps=1, timed_steps=2, base_when_needed=base_when_needed,
+                        gen_batch=gen_batch)
     return Settings(False, models or RUN_ORDER, ours_limit=None, bfcl_limit=None,
                     repeat_model=REPEAT_MODEL, timing_sizes=TIMING_SIZES, batch=4,
                     seq_len=1024, warmup_steps=1, timed_steps=3,
-                    base_when_needed=base_when_needed)
+                    base_when_needed=base_when_needed, gen_batch=gen_batch)
 
 
 # -- running (needs the models) ------------------------------------------------------------
@@ -475,18 +491,21 @@ def _short(cat: str) -> str:
 
 
 def _score_model(model: Model, s: Settings, device, dev_tasks: list, setup: dict, out_dir: Path,
-                 repeat: dict) -> ModelResult:
+                 repeat: dict, batch: int) -> ModelResult:
     from . import bfcl, ours, progress
 
     t0 = time.perf_counter()
     progress.status(f"loading {model.hf_id} on {device}")
     tok, lm = bfcl.load_model(model.hf_id, device)
+    greedy_stats: list = []  # engine.BatchStat of the greedy passes: decode steps
     try:
         greedy = ours.score(tok, lm, dev_tasks, samples=1, temperature=0.0, seed=SEED,
+                            batch_size=batch, stats=greedy_stats,
                             on_item=progress.items(f"{model.label}: our dev, greedy",
                                                    len(dev_tasks)))
         if model == s.repeat_model:
             again = ours.score(tok, lm, dev_tasks, samples=1, temperature=0.0, seed=SEED,
+                               batch_size=batch,
                                on_item=progress.items(f"{model.label}: our dev, greedy again",
                                                       len(dev_tasks)))
             repeat["model"] = model
@@ -496,13 +515,14 @@ def _score_model(model: Model, s: Settings, device, dev_tasks: list, setup: dict
             repeat["outcomes_differ"] = sum(a.checks[0].outcome != b.checks[0].outcome
                                             for a, b in zip(greedy, again, strict=True))
         sampled = ours.score(tok, lm, dev_tasks, samples=SAMPLES, temperature=TEMPERATURE,
-                             seed=SEED, on_item=progress.items(
+                             seed=SEED, batch_size=batch, on_item=progress.items(
                                  f"{model.label}: our dev, {SAMPLES} samples", len(dev_tasks)))
         records: list[dict] = []
         results = []
         for cat in BFCL_CATEGORIES:
             items = bfcl.load_items(cat, s.bfcl_limit, "dev")
             results.append(bfcl.score(tok, lm, items, samples=1, temperature=0.0, seed=SEED,
+                                      batch_size=batch, stats=greedy_stats,
                                       on_item=progress.items(f"{model.label}: bfcl dev {cat}",
                                                              len(items)),
                                       records=records, setup=setup))
@@ -521,8 +541,7 @@ def _score_model(model: Model, s: Settings, device, dev_tasks: list, setup: dict
                     + sum(c.n for c in results),
                     greedy_s + (repeat["seconds"] if again else 0.0)
                     + sum(x.seconds for x in sampled),
-                    greedy_s, sum(x.new_tokens for x in greedy)
-                    + sum(c.new_tokens or 0 for c in results))
+                    greedy_s, sum(b.steps for b in greedy_stats))
     return ModelResult(model, greedy, sampled, results,
                        _measure(model, greedy, sampled, results), timing)
 
@@ -672,16 +691,19 @@ def _minutes(seconds: float) -> str:
 
 
 def run(quick: bool, models: tuple[Model, ...] | None, root: Path,
-        base_when_needed: bool = False, deadline: float | None = None) -> int:
+        base_when_needed: bool = False, deadline: float | None = None,
+        gen_batch: int | None = None) -> int:
     """Score, print, record. Returns the exit code: 0; 1 if the deadline stopped the
     scoring before the rule could decide; 143 after SIGTERM."""
     from . import bfcl, ours, progress, tasks
     from .device import dtype_name, get_device, preferred_dtype, set_determinism
+    from .engine import ENGINE, default_batch_size, print_setup
     from .report import Report
 
-    s = settings(quick, models, base_when_needed)
+    s = settings(quick, models, base_when_needed, gen_batch)
     out_dir = root / "outputs"
     device = get_device()
+    batch = s.gen_batch or default_batch_size(device.type)
     determinism = set_determinism(device)  # before any model loads (cuBLAS workspace)
     dtype = dtype_name(preferred_dtype(device))
     splits = tasks.generate(tasks.DEFAULT_SEED)
@@ -691,13 +713,14 @@ def run(quick: bool, models: tuple[Model, ...] | None, root: Path,
         sys.exit(f"{path} differs from what seed {tasks.DEFAULT_SEED} generates; rerun `tinytools tasks`")
     dev_tasks = ours.limit_per_kind(dev, s.ours_limit)
     versions = _versions()
-    setup = {"dtype": dtype, "device": device.type}
+    setup = {"dtype": dtype, "device": device.type, "engine": ENGINE, "batch_size": batch}
     record = {"command": "tinytools milestone0" + (" --quick" if quick else "")
               + (" --base-when-needed" if base_when_needed else "")
               + (" --deadline-epoch ..." if deadline is not None else ""),
               "deadline_epoch": deadline,
               "models": [m.hf_id for m in s.models], "device": device.type, "dtype": dtype,
               "determinism": determinism, "seeds": {"generation": SEED, "probe": SEED},
+              "engine": ENGINE, "batch_size": batch,
               "samples": SAMPLES, "temperature": TEMPERATURE,
               "max_new_tokens": bfcl.MAX_NEW_TOKENS, "versions": versions,
               "dev_tasks_sha256": tasks.sha256(dev), "bfcl_dev_seed": bfcl.DEV_SEED,
@@ -727,7 +750,8 @@ def run(quick: bool, models: tuple[Model, ...] | None, root: Path,
     rep.kv("top_p / top_k / repetition penalty", "1.0 / off / 1.0")
     rep.kv("max new tokens", bfcl.MAX_NEW_TOKENS)
     rep.kv("stop at", "the model's eos, and <|im_end|>")
-    rep.kv("seed", f"{SEED} (+ crc32 of each item id)")
+    rep.kv("seed", f"{SEED} (+ item id and sample number)")
+    print_setup(rep, batch, (1, SAMPLES))
     rep.kv("deadline", "none" if deadline is None else
            time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(deadline)))
     if deadline is not None:
@@ -772,10 +796,11 @@ def run(quick: bool, models: tuple[Model, ...] | None, root: Path,
             why = skip_reason(m, measured_now, base_when_needed)
             if not why and deadline is not None:
                 timings = [r.timing for r in results.values() if r.timing]
-                n_bfcl = next((sum(c.n for c in r.bfcl) for r in results.values()), None)
-                need = None if n_bfcl is None else estimate_seconds(
-                    m, item_passes(m, len(dev_tasks), n_bfcl, s.repeat_model), timings,
-                    bfcl.MAX_NEW_TOKENS)
+                cats = next(([c.n for c in r.bfcl] for r in results.values()), None)
+                need = None if cats is None else estimate_seconds(
+                    m, item_passes(m, len(dev_tasks), sum(cats), s.repeat_model), timings,
+                    bfcl.MAX_NEW_TOKENS,
+                    batch_count(len(dev_tasks), cats, batch, SAMPLES, m == s.repeat_model))
                 if not fits(time.time(), deadline, need):
                     left = deadline - time.time()
                     needs = f"~{_minutes(need)}" if need is not None else "unknown"
@@ -795,7 +820,8 @@ def run(quick: bool, models: tuple[Model, ...] | None, root: Path,
                 progress.status(f"{m.hf_id}: not scored ({why})")
             else:
                 with term.raising():
-                    results[m] = _score_model(m, s, device, dev_tasks, setup, out_dir, repeat)
+                    results[m] = _score_model(m, s, device, dev_tasks, setup, out_dir, repeat,
+                                              batch)
                 _print_model(rep, results[m])
                 if m == s.repeat_model:
                     _print_repeat(rep, repeat)

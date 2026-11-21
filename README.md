@@ -164,8 +164,28 @@ file as it was; the figures read that eval capture by default.
 
 Decoding is set explicitly: greedy is argmax (Qwen's `generation_config.json` would
 otherwise add repetition penalty 1.1, top-p 0.8, top-k 20), and `--samples N
---temperature T` samples the full softmax. Each item's generator is seeded with
-`seed + crc32(item id)`, so an item's replies don't depend on what ran before it.
+--temperature T` samples the full softmax.
+
+**Generation: one batched engine** (`engine.py`; `score`, `bfcl-score` and
+`milestone0` all use it, and the training evals will). Items are sorted by prompt
+length (longest first) and run `--batch-size` sequences at a time (default by device:
+cuda 64, mps 8, cpu 4; an item's samples stay in one batch), left-padded with the
+attention mask, one forward pass per token with the KV cache; a row stops at the
+model's eos or `<|im_end|>` and the batch ends when every row has (or at the cap).
+Greedy is the argmax of the float32 logits. Sampling is our own loop: each reply
+(item id, sample j) draws 96 random bits per token from its own `random.Random`
+seeded with `"<seed>:<item id>:<j>"`, scaled to an integer below the total of the
+probabilities floored to multiples of 2^-40 and summed by an integer cumulative sum
+(exact, and allowed in CUDA's deterministic mode), and takes the token whose interval
+holds it. So a reply's random numbers don't depend on its batch, its position or
+what ran before; the forward pass's rounding can still depend on the batch's shape,
+so a capture is reproduced at the same batch size. Setup prints "engine: batched,
+sorted by length" and the batch size; replies rows record `engine` and `batch_size`;
+seconds per item are the batch's seconds x the item's share of its rows. Captures
+made before (Hugging Face `generate`, one item at a time, `bfcl.generate_text`) print
+no engine line, and `rescore`/`bfcl-rescore` reproduce them unchanged.
+`tinytools engine-check` compares the two engines on the Mac
+(`outputs/engine-check.txt`).
 `simple` is BFCL V4's `simple_python`; `--limit N` takes the first N items in bfcl's
 file order.
 
@@ -220,14 +240,14 @@ tree, with one narrow percent rule: `3438 * 0.48` or `3438 * (48 / 100)` matches
 document searches include their plurals ("meetings", "events", "files").
 Outcomes come from `classify.py`, with execution match as the verdict.
 
-**Scoring** (`tinytools score`): the generation path `bfcl-score` uses
-(`bfcl.generate_text`). `--limit N` takes the first N tasks of each kind by id.
+**Scoring** (`tinytools score`): the generation path `bfcl-score` uses (the
+batched engine). `--limit N` takes the first N tasks of each kind by id.
 Prints the outcomes per kind (tasks that need a call; no tool fits, separately),
 right by execution and by exact match,
 two controls (reference answers; never calling), every reply that passes
 execution but not exact match, and the reverse count (should be 0). Greedy runs
 also print one test task whole (the templated prompt, its token count and the
-tool list's, the reply, parsed call and tool result as fed back; the prompt is
+tool list's, the reply (the greedy pass's own), parsed call and tool result as fed back; the prompt is
 also written unbroken to `outputs/r1-prompt.txt`). With `--samples`: right per
 task out of G, all-wrong / mixed / all-right, mixed groups per 1,000 answers
 (post 8's unit), and greedy right vs pass@G. Replies go to
