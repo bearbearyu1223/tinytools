@@ -1,0 +1,94 @@
+==========================================================================
+tinytools bfcl-score (samples8-t1)
+==========================================================================
+device        : mps (Apple arm64)
+torch         : 2.13.0
+platform      : Darwin 24.6.0 (arm64)
+device memory : 17.2 GB
+
+--------------------------------------------------------------------------
+Setup
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-0.5B-Instruct
+  bfcl-eval                          2025.12.17
+  items per category                 first 10 in bfcl's order
+  decoding                           8 samples, temperature 1
+  top_p / top_k / repetition penalty 1.0 / off / 1.0
+  max new tokens                     512
+  seed                               0 (+ crc32 of each item id)
+
+--------------------------------------------------------------------------
+Every reply, split five ways (all samples)
+--------------------------------------------------------------------------
+  category        n  no call  unparse  wrong fn  wrong arg  right  bfcl
+  -----------------------------------------------------------------------
+  simple         80        1        0         0          9     70    70
+  multiple       80        1        9         2          5     63    63
+  parallel       80        1       11        28         20     20    20
+  par_multiple   80        0        2        12         10     56    56
+  irrelevance    80        0        0        48          0     32    32
+  total         400        3       22        90         44    241   241
+  bfcl = BFCL's own pass count. It equals 'right' on the AST
+  categories; on irrelevance BFCL also passes replies whose
+  <tool_call> fails to decode, which this split calls unparseable.
+
+--------------------------------------------------------------------------
+Controls
+--------------------------------------------------------------------------
+  category      items  reference passes  replies hit token cap
+  --------------------------------------------------------------
+  simple           10                10                      0
+  multiple         10                10                      0
+  parallel         10                10                      0
+  par_multiple     10                10                      0
+  irrelevance      10                10                      1
+  reference passes: BFCL's own answer, written in Qwen's format and
+  scored by the same checker (the harness can give full marks).
+  hit token cap: replies cut off mid-generation.
+
+--------------------------------------------------------------------------
+'wrong fn' that is only a wrong number of calls
+--------------------------------------------------------------------------
+  category      wrong fn  right names, wrong count
+  --------------------------------------------------
+  simple               0                         0
+  multiple             2                         0
+  parallel            28                        28
+  par_multiple        12                         7
+  irrelevance         48                         0
+  e.g. one spotify.play call where the reference has two.
+
+--------------------------------------------------------------------------
+Groups of 8: how many samples are right per task
+--------------------------------------------------------------------------
+  category      0  1  2  3  4  5  6  7  8
+  -----------------------------------------
+  simple        0  0  0  2  0  0  0  0  8
+  multiple      1  0  0  1  0  0  0  4  4
+  parallel      5  0  3  0  0  0  1  0  1
+  par_multiple  1  0  1  1  0  1  1  0  5
+  irrelevance   1  2  1  0  4  0  2  0  0
+
+--------------------------------------------------------------------------
+Groups with signal (some right, some wrong)
+--------------------------------------------------------------------------
+  category      tasks  all wrong  mixed  all right  mixed share
+  ---------------------------------------------------------------
+  simple           10          0      2          8         0.20
+  multiple         10          1      5          4         0.50
+  parallel         10          5      4          1         0.40
+  par_multiple     10          1      4          5         0.40
+  irrelevance      10          1      9          0         0.90
+  total            50          8     24         18         0.48
+
+--------------------------------------------------------------------------
+Wall clock (varies run to run)
+--------------------------------------------------------------------------
+  category      tasks  s/task  new tokens/task
+  ----------------------------------------------
+  simple           10    6.97              261
+  multiple         10   10.22              373
+  parallel         10   14.90              704
+  par_multiple     10    8.80              487
+  irrelevance      10   28.37              971
+  total            50   13.85              559

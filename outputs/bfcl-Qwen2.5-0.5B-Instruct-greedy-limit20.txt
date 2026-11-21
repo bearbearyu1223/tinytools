@@ -1,0 +1,71 @@
+==========================================================================
+tinytools bfcl-score (greedy)
+==========================================================================
+device        : mps (Apple arm64)
+torch         : 2.13.0
+platform      : Darwin 24.6.0 (arm64)
+device memory : 17.2 GB
+
+--------------------------------------------------------------------------
+Setup
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-0.5B-Instruct
+  bfcl-eval                          2025.12.17
+  items per category                 first 20 in bfcl's order
+  decoding                           greedy
+  top_p / top_k / repetition penalty 1.0 / off / 1.0
+  max new tokens                     512
+  seed                               0 (+ crc32 of each item id)
+
+--------------------------------------------------------------------------
+Every reply, split five ways
+--------------------------------------------------------------------------
+  category        n  no call  unparse  wrong fn  wrong arg  right  bfcl
+  -----------------------------------------------------------------------
+  simple         20        0        0         0          3     17    17
+  multiple       20        0        1         1          4     14    14
+  parallel       20        0        0         6          6      8     8
+  par_multiple   20        0        0         2          3     15    15
+  irrelevance    20        0        0        14          0      6     6
+  total         100        0        1        23         16     60    60
+  bfcl = BFCL's own pass count. It equals 'right' on the AST
+  categories; on irrelevance BFCL also passes replies whose
+  <tool_call> fails to decode, which this split calls unparseable.
+
+--------------------------------------------------------------------------
+Controls
+--------------------------------------------------------------------------
+  category      items  reference passes  replies hit token cap
+  --------------------------------------------------------------
+  simple           20                20                      0
+  multiple         20                20                      0
+  parallel         20                20                      0
+  par_multiple     20                20                      0
+  irrelevance      20                20                      2
+  reference passes: BFCL's own answer, written in Qwen's format and
+  scored by the same checker (the harness can give full marks).
+  hit token cap: replies cut off mid-generation.
+
+--------------------------------------------------------------------------
+'wrong fn' that is only a wrong number of calls
+--------------------------------------------------------------------------
+  category      wrong fn  right names, wrong count
+  --------------------------------------------------
+  simple               0                         0
+  multiple             1                         0
+  parallel             6                         6
+  par_multiple         2                         1
+  irrelevance         14                         0
+  e.g. one spotify.play call where the reference has two.
+
+--------------------------------------------------------------------------
+Wall clock (varies run to run)
+--------------------------------------------------------------------------
+  category      tasks  s/task  new tokens/task
+  ----------------------------------------------
+  simple           20    1.90               30
+  multiple         20    2.76               43
+  parallel         20    4.58               78
+  par_multiple     20    4.31               73
+  irrelevance      20    6.70              115
+  total           100    4.05               68

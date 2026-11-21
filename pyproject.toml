@@ -1,0 +1,64 @@
+[project]
+name = "tinytools"
+version = "0.1.0"
+description = "Teaching a small model to call tools, then RL with execution rewards: companion project for posts 9-12 of the LLM Architecture Refresh series"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+
+# torch and transformers are pinned to the versions tinyvlm (post 7) uses, so
+# the series runs on one stack. The default PyPI torch wheel is MPS-enabled on
+# macOS/arm64 and CUDA-enabled on linux/x86_64, so one pin covers a Mac and a
+# Lambda Cloud GPU instance.
+#
+# bfcl-eval is pinned to the version the BFCL leaderboard names for
+# reproducing its scores (see README, "Versions"). It pins numpy==1.26.4.
+dependencies = [
+    "torch==2.13.0",
+    "transformers==5.14.1",
+    "bfcl-eval==2025.12.17",
+    # bfcl-eval imports every model handler when it loads its registry; one of
+    # them imports qwen-agent, whose 0.0.34 imports soundfile without
+    # declaring it. Not used by anything here.
+    "soundfile",
+    "huggingface_hub",
+]
+
+# A linux-only optional extra for vLLM generation goes here once the Lambda
+# harness is built (posts 9-10). bfcl-eval's own `oss-eval-vllm` extra pins
+# vllm==0.8.5, which pins its own torch; check that against torch 2.13 before
+# adding it. Shape:
+# [project.optional-dependencies]
+# vllm = ["vllm==X; sys_platform == 'linux'"]
+
+[project.scripts]
+tinytools = "tinytools.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tinytools"]
+
+[tool.uv]
+package = true
+
+# On Linux, take torch from PyTorch's CUDA 12.6 index. PyPI's default Linux
+# wheel for 2.13.0 is built for CUDA 13.0 and needs a newer NVIDIA driver than
+# Lambda Cloud's image has (12.8), so it would silently fall back to the CPU.
+# A 12.6 build runs on any driver from 12.6 up. macOS keeps PyPI's MPS wheel.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu126", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

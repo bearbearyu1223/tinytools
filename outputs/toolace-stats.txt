@@ -1,0 +1,75 @@
+==========================================================================
+tinytools toolace-stats
+==========================================================================
+device        : mps (Apple arm64)
+torch         : 2.13.0
+platform      : Darwin 24.6.0 (arm64)
+device memory : 17.2 GB
+
+--------------------------------------------------------------------------
+The file
+--------------------------------------------------------------------------
+  dataset                            Team-ACE/ToolACE @ 6bda777c88d2
+  data.json sha256                   ba12c083fca7e8da
+  rows                               11300
+
+--------------------------------------------------------------------------
+Language
+--------------------------------------------------------------------------
+  Rule: a row is Chinese if the first 200 characters of its
+  system prompt contain a CJK ideograph (U+4E00-U+9FFF).
+  Chinese rows (dropped)             18
+  English rows                       11282
+  contrast: rows with any CJK        25
+
+--------------------------------------------------------------------------
+English rows that do not convert, by reason
+--------------------------------------------------------------------------
+  reason                                     rows
+  -------------------------------------------------
+  tool list not JSON (format-variation row)   500
+  rows converted                     10782
+    with an empty tool list          248
+    with tool results                797
+    with a date/time line kept       5869
+
+--------------------------------------------------------------------------
+Converted rows by number of assistant turns
+--------------------------------------------------------------------------
+  assistant turns  rows
+  -----------------------
+  1                9982
+  2                   6
+  3                 262
+  4                 232
+  5                 207
+  6                  93
+
+--------------------------------------------------------------------------
+Assistant turns: calls and not-calls
+--------------------------------------------------------------------------
+  A turn is a call if it starts with '[' and ends with ']' (and parses).
+  Not-calls are split by what precedes them: a tool result (answering
+  from it) or a user turn (asking for a missing argument, saying no
+  function fits, or chatting).
+  assistant turns                    13301
+    calls                            9964
+      with 2+ calls in one turn      4127
+    not-calls after a tool result    1034
+    not-calls after a user turn      2303
+  calls in all call turns            18161
+  calls passing an unlisted argument 0
+
+--------------------------------------------------------------------------
+Rows the random-call control can use
+--------------------------------------------------------------------------
+  rows with 2+ tools in the list     7753
+    with at least one call           6980
+
+--------------------------------------------------------------------------
+Masking, tokenized with Qwen/Qwen2.5-0.5B-Instruct
+--------------------------------------------------------------------------
+  tokens, all converted rows         7925395
+  tokens trained (assistant turns)   1137261
+  share trained                      0.1435
+  tokens straddling a mask edge      0
