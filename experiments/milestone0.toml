@@ -1,33 +1,32 @@
-# Milestone 0 (post 9, plan 3a): six Qwen2.5 models on the dev split, the model rule's
-# verdict, one greedy pass run twice, and a LoRA-vs-full training-step probe.
+# Milestone 0 (post 9, plan 3a): the Qwen2.5 instruct models on the dev split (a base
+# model only if the rule reaches it; 0.5B base not at all), the rule's verdict, one greedy
+# pass run twice, and a LoRA-vs-full training-step probe.
 #   scripts/lambda.sh estimate milestone0, then scripts/lambda.sh run milestone0
 #
 # Hours (docs/lambda-playbook.md, "Milestone 0's estimate"): decode steps x an assumed
 # 15-30 ms per HF-generate step on the H100 (not measured; Milestone 0 measures it), plus
-# ~18 min of boot, setup, loading and teardown. Base models never stop before the 512-token
-# cap (tinytools milestone0 --quick on the Mac: every base reply hit it), so they are ~85%
-# of the time: all six = 4.1-8.0 h (6.7 h at 25 ms/step).
-# At the spec'd max_hours 2.5 / cap $15 this scope does not fit: with max_hours = 8 the
-# estimate refuses (worst case past the cap) until the author picks one of:
-#   (A) `uv run tinytools milestone0 --base-when-needed`, max_hours = 4: instruct models
-#       first, base only if the rule reaches it, no 0.5B base (1.3 h if an instruct
-#       qualifies, 3.1 h with base 1.5B; worst $13.16 at $3.29/h);
-#   (B) this scope with a higher cap (~$27 at $3.29/h).
+# ~18 min of boot, setup, loading and teardown. With --base-when-needed, at 25 ms/step:
+# 1.3 h if an instruct model qualifies, 3.1 h if base 1.5B is needed (3.7 h at 30 ms),
+# 4.9 h if both base models are. expected_hours is the middle case. The last case does
+# not fit max_hours: the commands stop at the limit with base 3B unscored and the verdict
+# "incomplete" (the rule can't skip a model it reaches); then bring it to the author.
+# Worst case: max_hours x the live price ($17.16 at $4.29/h; refused above $5.00/h).
 name = "milestone0"
 post = 9
 instance_type = "gpu_1x_h100_sxm5"   # checked against the live list at launch
-max_hours = 8.0                      # hard limit on the instance's life, launch to termination
-expected_hours = 6.7
-cap_usd = 15                         # refuse to launch past this total for the experiment
+max_hours = 4.0                      # hard limit on the instance's life, launch to termination
+expected_hours = 3.1
+cap_usd = 20                         # refuse to launch past this total for the experiment
 commands = [
   "uv run tinytools toolace-convert",       # data/ is not in git: the SFT rows the probe needs
   "uv run tinytools sft-data --seeds 1",
-  "uv run tinytools milestone0",
+  "uv run tinytools milestone0 --base-when-needed",
 ]
+# Only files these commands write (fetch also skips any not written during the run).
 fetch = [
   "outputs/milestone0.txt",
-  "outputs/milestone0-*.jsonl",
   "outputs/milestone0-setup.json",
+  "outputs/milestone0-Qwen2.5-*-replies.jsonl",
   "outputs/toolace-convert.txt",
   "outputs/sft-data.txt",
 ]

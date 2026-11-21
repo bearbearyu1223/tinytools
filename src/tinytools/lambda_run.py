@@ -2,11 +2,15 @@
 
     scripts/lambda.sh doctor               settings, SSH key, agent, API; launches nothing
     scripts/lambda.sh types                instance types, prices, regions with capacity
-    scripts/lambda.sh estimate EXP         price x hours, the experiment's cap left; refuses past it
+    scripts/lambda.sh estimate EXP         price x hours, the experiment's and post's caps left
     scripts/lambda.sh run EXP [--approve USD]
                                            up -> setup -> run -> fetch -> down, terminated always
     scripts/lambda.sh list                 every instance; flags this repo's
     scripts/lambda.sh down ID [--yes]      terminate one instance and wait until Lambda confirms
+
+Exit codes: 0 done and terminated; 1 the run failed but its instance is confirmed
+terminated; 2 refused before launching (nothing started); 3 TERMINATION NOT CONFIRMED, or
+another tinytools instance still up (an instance may be billing: ``list`` and ``down`` now).
 
 Billing stops only when Lambda terminates the instance, so ``run`` terminates it
 through the API from this laptop whatever happens: success, a failing command,
@@ -22,7 +26,8 @@ tested against a local fake of the API (``tests/test_lambda_run.py``). Standard
 library only, so it never imports torch.
 
 Secrets: ``lambda.env`` (gitignored) or the environment. Nothing here prints a
-value from it; :class:`Redactor` scrubs them from every line written anyway.
+value from it; :class:`Redactor` scrubs the API key, any ``Bearer`` token and the
+SSH key's path (as written and expanded) from every line written anyway.
 """
 
 from __future__ import annotations
@@ -31,11 +36,13 @@ import argparse
 import csv
 import datetime as dt
 import hashlib
+import http.client
 import io
 import json
 import math
 import os
 import re
+import secrets
 import shlex
 import shutil
 import signal
@@ -46,29 +53,49 @@ import tempfile
 import time
 import tomllib
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
 ROOT = Path(__file__).resolve().parents[2]
-API_URL = "https://cloud.lambda.ai/api/v1"
+# Lambda's API reference (docs.lambda.com) uses this base; LAMBDA_API_URL overrides it.
+API_URL = "https://cloud.lambda.com/api/v1"
 NAME_PREFIX = "tinytools"  # every instance this repo launches is named tinytools-<exp>-<stamp>
+NAME_MAX = 64  # Lambda's limit on an instance name
+RUN_TAG = "tinytools-run"  # the tag key whose value is unique to one run
 SSH_USER = "ubuntu"
 REMOTE_DIR = "tinytools"
 ENV_KEYS = ("LAMBDA_API_KEY", "LAMBDA_SSH_KEY_NAME", "LAMBDA_SSH_KEY")
 OPTIONAL_ENV = ("LAMBDA_API_URL", "LAMBDA_REGION")
 
-RESERVE_S = 600  # kept back from max_hours for fetch + terminate
+ENDED = ("terminated", "preempted")  # the instance is gone; billing has stopped
+BROKEN = ("unhealthy",)  # up (and billing) but not usable: terminate
+
+RESERVE_S = 600  # kept back from max_hours for stop + fetch + terminate
+TERMINATE_ALLOW_S = 300  # of the reserve, kept for terminate + confirm (fetch gets the rest)
 REMOTE_MARGIN_S = 30  # the remote `timeout` fires this long before the laptop's deadline
 BOOT_TIMEOUT_S = 20 * 60
+SSH_WAIT_S = 10 * 60  # SSH must answer within this of the instance going active
+LOST_LAUNCH_S = 120  # after a launch whose answer was lost: how long to look for it
+STATUS_CHECK_S = 300  # while the commands run: how often to ask Lambda for the instance
 POLL_S = 15
 BOOT_POLL_S = 10
-TERMINATE_TRIES = 20
-CONFIRM_S = 600
+TERMINATE_TRIES = 20  # failed terminate calls before the runner says so loudly (it keeps going)
+RESEND_S = 60  # re-send terminate this often until Lambda confirms
+CONFIRM_S = 2 * 3600  # keep terminating and checking this long before giving up (exit 3)
 FETCH_TIMEOUT_S = 420
+STOP_WAIT_S = 20  # after TERM to the job's session: wait this long, then KILL
+RATE_RETRIES = 6  # 429s retried per call, waiting 1, 2, 4, 8, 15, 15 s
+RATE_WAIT_S = 1.0
+RATE_WAIT_MAX_S = 15.0
+API_MIN_INTERVAL_S = 1.0  # Lambda allows 1 request per second
+POST_CAP_USD = 50.0  # the plan's cap per post, summed over the post's experiments
 TIMED_OUT = (124, 137)  # GNU timeout: TERM sent (124), or KILL after --kill-after (137)
-LEDGER_FIELDS = ("run", "experiment", "commit", "instance_type", "price_usd_per_hour",
+DIED = "died"  # poll(): the job is gone and left no exit code
+EXIT_OK, EXIT_FAILED, EXIT_REFUSED, EXIT_UNCONFIRMED = 0, 1, 2, 3
+LEDGER_FIELDS = ("run", "experiment", "post", "commit", "instance_type", "price_usd_per_hour",
                  "launched_at", "ended_at", "hours", "cost_usd", "status")
 
 
@@ -98,15 +125,20 @@ class Experiment:
     cap_usd: float
     commands: tuple[str, ...]
     fetch: tuple[str, ...]
-    post: int | None = None
+    post: int
     setup_record: str | None = None
 
 
 _TYPES = {"name": str, "post": int, "instance_type": str, "max_hours": (int, float),
           "expected_hours": (int, float), "cap_usd": (int, float), "commands": list,
           "fetch": list, "setup_record": str}
-_REQUIRED = ("name", "instance_type", "max_hours", "expected_hours", "cap_usd", "commands",
-             "fetch")
+_REQUIRED = ("name", "post", "instance_type", "max_hours", "expected_hours", "cap_usd",
+             "commands", "fetch")
+_STAMP = "%Y%m%d-%H%M%S"
+
+
+def instance_name(experiment: str, t: float) -> str:
+    return f"{NAME_PREFIX}-{experiment}-{time.strftime(_STAMP, time.localtime(t))}"
 
 
 def parse_experiment(text: str, stem: str) -> Experiment:
@@ -126,6 +158,9 @@ def parse_experiment(text: str, stem: str) -> Experiment:
             raise ValueError(f"{k} has the wrong type ({type(d[k]).__name__})")
     if d["name"] != stem:
         raise ValueError(f"name {d['name']!r} differs from the file name {stem!r}")
+    if len(instance_name(d["name"], 0)) > NAME_MAX:
+        raise ValueError(f"name {d['name']!r} is too long: instance names are at most "
+                         f"{NAME_MAX} characters")
     if not 0 < d["max_hours"] <= 24:
         raise ValueError("max_hours must be in (0, 24]")
     if not 0 < d["expected_hours"] <= d["max_hours"]:
@@ -139,7 +174,7 @@ def parse_experiment(text: str, stem: str) -> Experiment:
     if not fetch or not all(isinstance(p, str) for p in fetch):
         raise ValueError("fetch must be a non-empty list of strings")
     for p in fetch:
-        if not FETCH_PATTERN.fullmatch(p) or p.startswith("/") or ".." in p.split("/"):
+        if not FETCH_PATTERN.fullmatch(p) or p.startswith(("/", "-")) or ".." in p.split("/"):
             raise ValueError(f"fetch pattern {p!r}: relative paths of [A-Za-z0-9_.*?/-] only, "
                              "no '..'")
     rec = d.get("setup_record")
@@ -147,7 +182,7 @@ def parse_experiment(text: str, stem: str) -> Experiment:
         raise ValueError(f"setup_record {rec!r} is not matched by any fetch pattern")
     return Experiment(d["name"], d["instance_type"], float(d["max_hours"]),
                       float(d["expected_hours"]), float(d["cap_usd"]), tuple(cmds), tuple(fetch),
-                      d.get("post"), rec)
+                      d["post"], rec)
 
 
 def load_experiment(root: Path, name: str) -> tuple[Experiment, Path]:
@@ -199,10 +234,22 @@ def describe_env(env: dict[str, str]) -> list[str]:
 
 
 class Redactor:
-    """Replaces every secret value (and any ``Bearer ...`` token) in a string."""
+    """Replaces every secret value, and any ``Bearer ...`` token, in a string. A value that
+    is a path (has a ``/`` or starts with ``~``) is also replaced in its expanded and
+    absolute forms, since that is how ssh and its error messages carry it. Only what is
+    passed in is replaced: the SSH key's *name* at Lambda is not a secret, and redacting
+    a short common word would garble every line that contains it."""
 
     def __init__(self, secrets: list[str]) -> None:
-        self.secrets = sorted({s for s in secrets if s and len(s) >= 4}, key=len, reverse=True)
+        values = set()
+        for s in secrets:
+            if not s:
+                continue
+            values.add(s)
+            if "/" in s or s.startswith("~"):
+                e = os.path.expanduser(s)
+                values.update({e, os.path.abspath(e), os.path.realpath(e)})
+        self.secrets = sorted({v for v in values if len(v) >= 4}, key=len, reverse=True)
 
     def __call__(self, text: str) -> str:
         for s in self.secrets:
@@ -214,48 +261,127 @@ class Redactor:
 
 
 class ApiError(RuntimeError):
+    """``status`` is the HTTP status, or ``None`` when no answer came back (a transport
+    error, a cut-off body, an unreadable reply): then the request may or may not have
+    taken effect."""
+
     def __init__(self, status: int | None, message: str) -> None:
         super().__init__(message)
         self.status = status
 
 
-def _error_text(body: bytes) -> str:
+def definite_refusal(e: ApiError) -> bool:
+    """A 4xx: Lambda read the request and refused it, so it did nothing."""
+    return e.status is not None and 400 <= e.status < 500
+
+
+def _request_id(payload, headers) -> str | None:
+    if isinstance(payload, dict):
+        for d in (payload, payload.get("error") if isinstance(payload.get("error"), dict) else {}):
+            if d.get("request_id"):
+                return str(d["request_id"])
+    for k, v in (headers.items() if headers is not None else []):
+        if k.lower().replace("_", "-").endswith("request-id") and v:
+            return v
+    return None
+
+
+def _error_text(body: bytes, headers=None) -> str:
     try:
-        err = json.loads(body).get("error", {})
-        return f"{err.get('code', '')}: {err.get('message', '')}".strip(": ")
+        payload = json.loads(body)
+        err = payload.get("error", {})
+        text = f"{err.get('code', '')}: {err.get('message', '')}".strip(": ")
     except (ValueError, AttributeError):
-        return body.decode("utf-8", "replace")[:200]
+        payload, text = None, body.decode("utf-8", "replace")[:200]
+    rid = _request_id(payload, headers)
+    return text + (f" (request_id {rid})" if rid else "")
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect: urllib would send the Authorization header to the new
+    host, and turn a POST into a body-less GET. The 3xx becomes an error instead."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _is_lambda_host(url: str) -> bool:
+    host = urllib.parse.urlsplit(url).hostname or ""
+    return host.endswith((".lambda.com", ".lambda.ai", ".lambdalabs.com"))
 
 
 class LambdaAPI:
-    """The few Lambda Cloud API calls the runner needs. Errors are redacted."""
+    """The few Lambda Cloud API calls the runner needs. Errors are redacted.
 
-    def __init__(self, base: str, key: str, redact: Redactor, timeout: float = 30) -> None:
+    Every failure is an :class:`ApiError`; nothing else escapes ``_call`` (an
+    ``http.client`` protocol error or a cut-off body included). A 429 is retried with
+    backoff; requests are spaced ``min_interval`` apart."""
+
+    def __init__(self, base: str, key: str, redact: Redactor, timeout: float = 30,
+                 min_interval: float = 0.0, rate_wait: float = RATE_WAIT_S) -> None:
         self.base = base.rstrip("/")
         self._key = key
         self.redact = redact
         self.timeout = timeout
+        self.min_interval = min_interval
+        self.rate_wait = rate_wait
+        self._last = 0.0
+        self._opener = urllib.request.build_opener(_NoRedirect)
 
-    def _call(self, method: str, path: str, body: dict | None = None):
-        if not self._key:
-            raise ApiError(None, "LAMBDA_API_KEY is not set (lambda.env)")
+    def _pace(self) -> None:
+        wait = self._last + self.min_interval - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        self._last = time.monotonic()
+
+    def _once(self, method: str, path: str, body: dict | None):
         req = urllib.request.Request(
             self.base + path, method=method,
             data=None if body is None else json.dumps(body).encode(),
             headers={"Authorization": f"Bearer {self._key}", "Accept": "application/json",
                      "Content-Type": "application/json", "User-Agent": "tinytools-runner"})
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
-                payload = r.read()
+            with self._opener.open(req, timeout=self.timeout) as r:
+                return r.status, r.read(), r.headers
         except urllib.error.HTTPError as e:
-            raise ApiError(e.code, self.redact(
-                f"{method} {path}: HTTP {e.code}: {_error_text(e.read())}")) from None
-        except (urllib.error.URLError, OSError) as e:
-            raise ApiError(None, self.redact(f"{method} {path}: {e}")) from None
-        try:
-            return json.loads(payload)["data"]
-        except (ValueError, KeyError, TypeError):
-            raise ApiError(None, f"{method} {path}: unexpected response") from None
+            try:
+                payload = e.read()
+            except (http.client.HTTPException, OSError, ValueError):
+                payload = b""
+            return e.code, payload, e.headers
+
+    def _call(self, method: str, path: str, body: dict | None = None):
+        if not self._key:
+            raise ApiError(None, "LAMBDA_API_KEY is not set (lambda.env)")
+        for attempt in range(RATE_RETRIES + 1):
+            self._pace()
+            try:
+                status, payload, headers = self._once(method, path, body)
+            except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError) as e:
+                raise ApiError(None, self.redact(
+                    f"{method} {path}: no answer: {type(e).__name__}: {e}")) from None
+            if 200 <= status < 300:
+                try:
+                    return json.loads(payload)["data"]
+                except (ValueError, KeyError, TypeError):
+                    raise ApiError(None, f"{method} {path}: unexpected response") from None
+            if 300 <= status < 400:
+                where = (headers.get("Location") if headers is not None else None) or "?"
+                raise ApiError(status, self.redact(
+                    f"{method} {path}: HTTP {status}: {self.base} redirects to {where}; not "
+                    "followed (the key would go with it). If that is Lambda's new address, "
+                    "set LAMBDA_API_URL"))
+            if status == 429 and attempt < RATE_RETRIES:
+                after = headers.get("Retry-After") if headers is not None else None
+                try:
+                    wait = float(after)
+                except (TypeError, ValueError):
+                    wait = self.rate_wait * 2 ** attempt
+                time.sleep(min(RATE_WAIT_MAX_S * self.rate_wait / RATE_WAIT_S, wait))
+                continue
+            raise ApiError(status, self.redact(
+                f"{method} {path}: HTTP {status}: {_error_text(payload, headers)}"))
+        raise AssertionError("unreachable")
 
     def instance_types(self) -> dict:
         return self._call("GET", "/instance-types")
@@ -264,7 +390,8 @@ class LambdaAPI:
         return self._call("GET", "/instances")
 
     def instance(self, instance_id: str) -> dict | None:
-        """The instance, or ``None`` once Lambda no longer knows it (404)."""
+        """The instance, or ``None`` when Lambda doesn't know it (404): gone, or (just
+        after a launch) not listed yet."""
         try:
             return self._call("GET", f"/instances/{instance_id}")
         except ApiError as e:
@@ -272,14 +399,26 @@ class LambdaAPI:
                 return None
             raise
 
-    def launch(self, instance_type: str, region: str, ssh_key_name: str, name: str) -> str:
-        data = self._call("POST", "/instance-operations/launch", {
-            "region_name": region, "instance_type_name": instance_type,
-            "ssh_key_names": [ssh_key_name], "name": name})
-        return data["instance_ids"][0]
+    def launch(self, instance_type: str, region: str, ssh_key_name: str, name: str,
+               tag: str | None = None) -> str:
+        body = {"region_name": region, "instance_type_name": instance_type,
+                "ssh_key_names": [ssh_key_name], "name": name}
+        if tag:
+            body["tags"] = [{"key": RUN_TAG, "value": tag}]
+        data = self._call("POST", "/instance-operations/launch", body)
+        try:
+            return str(data["instance_ids"][0])
+        except (KeyError, IndexError, TypeError):
+            raise ApiError(None, "POST /instance-operations/launch: no instance id in the "
+                                 "answer") from None
 
-    def terminate(self, ids: list[str]) -> None:
-        self._call("POST", "/instance-operations/terminate", {"instance_ids": ids})
+    def terminate(self, ids: list[str]) -> list[str]:
+        """The ids Lambda says it is terminating (its answer lists Instance objects)."""
+        data = self._call("POST", "/instance-operations/terminate", {"instance_ids": ids})
+        out = []
+        for x in (data or {}).get("terminated_instances", []) if isinstance(data, dict) else []:
+            out.append(str(x.get("id")) if isinstance(x, dict) else str(x))
+        return out
 
     def ssh_keys(self) -> list[dict]:
         return self._call("GET", "/ssh-keys")
@@ -289,8 +428,21 @@ def is_ours(instance: dict) -> bool:
     return str(instance.get("name") or "").startswith(NAME_PREFIX)
 
 
+def run_tag(instance: dict) -> str | None:
+    for t in instance.get("tags") or []:
+        if isinstance(t, dict) and t.get("key") == RUN_TAG:
+            return t.get("value")
+    return None
+
+
 def live(instance: dict) -> bool:
-    return instance.get("status") != "terminated"
+    return instance.get("status") not in ENDED
+
+
+def terminate_available(instance: dict) -> bool:
+    """Lambda's ``actions.terminate.available`` (false while a VM has not launched)."""
+    act = ((instance.get("actions") or {}).get("terminate") or {})
+    return act.get("available", True) is not False
 
 
 # -- money (pure) ---------------------------------------------------------------------
@@ -309,15 +461,21 @@ def spent(rows: list[dict], experiment: str) -> float:
     return round(sum(float(r["cost_usd"] or 0) for r in rows if r["experiment"] == experiment), 4)
 
 
+def spent_on_post(rows: list[dict], post: int) -> float:
+    """Dollars charged to every experiment of a post (the ledger's ``post`` column)."""
+    return round(sum(float(r["cost_usd"] or 0) for r in rows
+                     if str(r.get("post") or "") == str(post)), 4)
+
+
 def write_ledger_row(path: Path, row: dict) -> None:
     """Add ``row``, or replace the row with the same ``run``."""
     rows = [r for r in read_ledger(path) if r["run"] != row["run"]]
     rows.append({k: row.get(k, "") for k in LEDGER_FIELDS})
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=LEDGER_FIELDS, lineterminator="\n")
+        w = csv.DictWriter(f, fieldnames=LEDGER_FIELDS, lineterminator="\n", extrasaction="ignore")
         w.writeheader()
-        w.writerows(rows)
+        w.writerows({k: r.get(k) or "" for k in LEDGER_FIELDS} for r in rows)
 
 
 def cost_usd(price_per_hour: float, seconds: float) -> float:
@@ -334,6 +492,9 @@ class Estimate:
     spent: float
     cap: float
     regions: tuple[str, ...]  # with capacity now
+    post: int = 0
+    post_spent: float = 0.0
+    post_cap: float = POST_CAP_USD
 
     @property
     def worst(self) -> float:
@@ -349,21 +510,40 @@ class Estimate:
         return round(self.cap - self.spent, 2)
 
     @property
+    def post_remaining(self) -> float:
+        return round(self.post_cap - self.post_spent, 2)
+
+    @property
     def within_cap(self) -> bool:
-        return self.worst <= self.remaining
+        return self.worst <= self.remaining and self.worst <= self.post_remaining
+
+    def refusal(self) -> str | None:
+        if self.worst > self.remaining:
+            return (f"the worst case ${self.worst:.2f} is more than the ${self.remaining:.2f} "
+                    f"left of {self.experiment}'s ${self.cap:.2f} cap")
+        if self.worst > self.post_remaining:
+            return (f"the worst case ${self.worst:.2f} is more than the "
+                    f"${self.post_remaining:.2f} left of post {self.post}'s "
+                    f"${self.post_cap:.2f} cap")
+        return None
 
     def lines(self) -> list[str]:
+        why = ("REFUSED: the worst case is more than the experiment's cap left"
+               if self.worst > self.remaining else
+               "REFUSED: the worst case is more than the post's cap left"
+               if self.worst > self.post_remaining else "within both caps")
         return [
-            f"experiment          {self.experiment}",
+            f"experiment          {self.experiment} (post {self.post})",
             f"instance type       {self.instance_type}",
             f"price (API, now)    ${self.price:.2f}/h",
             f"capacity now        {', '.join(self.regions) or 'none'}",
             f"expected            {self.expected_hours:g} h = ${self.expected:.2f}",
             f"worst case          {self.max_hours:g} h (hard limit) = ${self.worst:.2f}",
-            f"cap                 ${self.cap:.2f}, spent ${self.spent:.2f}, "
+            f"cap, experiment     ${self.cap:.2f}, spent ${self.spent:.2f}, "
             f"left ${self.remaining:.2f}",
-            "verdict             " + ("within the cap" if self.within_cap else
-                                      "REFUSED: the worst case is more than the cap left"),
+            f"cap, post {self.post:<9} ${self.post_cap:.2f}, spent ${self.post_spent:.2f}, "
+            f"left ${self.post_remaining:.2f}",
+            "verdict             " + why,
         ]
 
 
@@ -376,7 +556,8 @@ def make_estimate(exp: Experiment, types: dict, ledger: list[dict]) -> Estimate:
     regions = tuple(r["name"] for r in item.get("regions_with_capacity_available", []))
     return Estimate(exp.name, exp.instance_type,
                     item["instance_type"]["price_cents_per_hour"] / 100, exp.max_hours,
-                    exp.expected_hours, spent(ledger, exp.name), exp.cap_usd, regions)
+                    exp.expected_hours, spent(ledger, exp.name), exp.cap_usd, regions,
+                    exp.post, spent_on_post(ledger, exp.post), POST_CAP_USD)
 
 
 # -- what runs on the instance -----------------------------------------------------------
@@ -407,15 +588,32 @@ PY
 """
 SETUP_MARK = "TINYTOOLS_SETUP_JSON "
 
-# Started detached (nohup setsid), so a dropped SSH connection doesn't stop it. $1 is the
+# Started detached (nohup setsid), so a dropped SSH connection doesn't stop it; its pid is
+# its session id, and stop() signals the whole session (GNU timeout moves itself and the
+# commands into a process group of their own, but not out of the session). .run/start is
+# the marker fetch compares against: only files newer than it are this run's. $1 is the
 # hard limit in seconds; `timeout` stops the work then (it does not stop the bill).
 JOB_SCRIPT = """#!/usr/bin/env bash
 cd "$(dirname "$0")/.."
 echo $$ > .run/pid
+touch .run/start
 export PATH="$HOME/.local/bin:$PATH"
 timeout --signal=TERM --kill-after=60 "$1" bash .run/commands.sh
 echo $? > .run/exit.tmp && mv .run/exit.tmp .run/exit
 """
+
+# The exit code; else "running" while job.sh lives; else "died" (killed, or the instance
+# restarted: no exit code will ever come). The exit file is read again after the liveness
+# check, since job.sh writes it just before it ends.
+POLL_SCRIPT = (f"cd {REMOTE_DIR} || exit 1; if [ -f .run/exit ]; then cat .run/exit; "
+               'elif kill -0 "$(cat .run/pid 2>/dev/null)" 2>/dev/null; then echo running; '
+               f"elif [ -f .run/exit ]; then cat .run/exit; else echo {DIED}; fi; "
+               "tail -c +{start} .run/log.txt")
+
+STOP_SCRIPT = (f"cd {REMOTE_DIR} 2>/dev/null && [ -f .run/pid ] || exit 0; sid=$(cat .run/pid); "
+               'pkill -TERM -s "$sid"; for i in $(seq 1 {wait}); do '
+               'pgrep -s "$sid" >/dev/null || exit 0; sleep 1; done; '
+               'pkill -KILL -s "$sid"; exit 0')
 
 
 def commands_script(commands: tuple[str, ...]) -> str:
@@ -450,6 +648,13 @@ def remote_seconds(deadline: float, now: float, margin: float) -> int:
     return max(1, int(deadline - now - margin))
 
 
+def fetch_budget(hard_end: float, now: float, terminate_allow: float,
+                 cap: float = FETCH_TIMEOUT_S) -> float:
+    """Seconds fetch may take: at most ``cap``, and never into the time kept for
+    terminating before the instance's hard end. 0: skip the fetch."""
+    return max(0.0, min(cap, hard_end - now - terminate_allow))
+
+
 def sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -462,7 +667,8 @@ def sha256_file(path: Path) -> str:
 
 
 class SSHRemote:
-    """The instance, reached with ssh and rsync (BatchMode: never a prompt)."""
+    """The instance, reached with ssh and rsync (BatchMode: never a prompt; ``-n`` and no
+    stdin unless a script is sent, so ssh never reads the terminal)."""
 
     def __init__(self, ip: str, key_path: str, known_hosts: Path) -> None:
         self.host = f"{SSH_USER}@{ip}"
@@ -471,9 +677,13 @@ class SSHRemote:
                      "-o", f"UserKnownHostsFile={known_hosts}", "-o", "ServerAliveInterval=30",
                      "-o", "ServerAliveCountMax=4", "-o", "ConnectTimeout=10"]
 
-    def _ssh(self, command: str, timeout: float, stdin: str | None = None):
+    def _ssh(self, command: str, timeout: float, stdin: str | None = None, text: bool = True):
+        if stdin is None:
+            return subprocess.run(["ssh", "-n", *self.opts, self.host, command],
+                                  stdin=subprocess.DEVNULL, capture_output=True, text=text,
+                                  timeout=timeout)
         return subprocess.run(["ssh", *self.opts, self.host, command], input=stdin,
-                              capture_output=True, text=True, timeout=timeout)
+                              capture_output=True, text=text, timeout=timeout)
 
     def ready(self) -> bool:
         try:
@@ -484,7 +694,8 @@ class SSHRemote:
     def push(self, src: Path, timeout: float) -> None:
         ssh = " ".join(shlex.quote(x) for x in ["ssh", *self.opts])
         r = subprocess.run(["rsync", "-az", "-e", ssh, f"{src}/", f"{self.host}:{REMOTE_DIR}/"],
-                           capture_output=True, text=True, timeout=timeout)
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                           timeout=timeout)
         if r.returncode:
             raise RuntimeError(f"rsync to the instance failed: {r.stderr.strip()[-300:]}")
 
@@ -495,37 +706,45 @@ class SSHRemote:
     def start(self, seconds: int) -> None:
         # Not `cd x && nohup ... &`: that backgrounds the whole `&&` list in a subshell
         # which keeps this session's stdout open, so ssh would wait for the job to end.
-        r = self._ssh(f"cd {REMOTE_DIR} || exit 1; nohup setsid bash .run/job.sh {seconds} "
-                      "> .run/log.txt 2>&1 < /dev/null & echo started", 60)
+        # Waits (up to 10 s) for job.sh to write its pid, so poll() can tell a job that
+        # has not started yet from one that died.
+        r = self._ssh(f"cd {REMOTE_DIR} || exit 1; rm -f .run/pid .run/start .run/exit; "
+                      f"nohup setsid bash .run/job.sh {seconds} > .run/log.txt 2>&1 < /dev/null & "
+                      "for i in $(seq 1 100); do [ -f .run/pid ] && break; sleep 0.1; done; "
+                      "[ -f .run/pid ] && echo started", 60)
         if "started" not in r.stdout:
             raise RuntimeError(f"could not start the job: {r.stderr.strip()[-300:]}")
 
-    def poll(self, offset: int) -> tuple[bytes, int | None]:
-        r = subprocess.run(["ssh", *self.opts, self.host,
-                            f"cd {REMOTE_DIR} && (cat .run/exit 2>/dev/null || echo running) "
-                            f"&& tail -c +{offset + 1} .run/log.txt"],
-                           capture_output=True, timeout=60)
+    def poll(self, offset: int) -> tuple[bytes, int | str | None]:
+        """New log bytes, and the exit code (``None`` while running, :data:`DIED`)."""
+        r = self._ssh(POLL_SCRIPT.format(start=offset + 1), 60, text=False)
         if r.returncode:
             raise RuntimeError("poll failed")
         head, _, rest = r.stdout.partition(b"\n")
         code = head.strip().decode()
-        return rest, None if code == "running" else int(code)
+        return rest, None if code == "running" else DIED if code == DIED else int(code)
 
-    def stop(self) -> None:
-        self._ssh(f"cd {REMOTE_DIR} && [ -f .run/pid ] && kill -TERM -- -$(cat .run/pid)", 30)
+    def stop(self, wait_s: float = STOP_WAIT_S) -> None:
+        """TERM every process in the job's session, wait for them to end, then KILL."""
+        self._ssh(STOP_SCRIPT.format(wait=max(1, int(wait_s))), wait_s + 30)
 
     def fetch(self, patterns: tuple[str, ...], dest: Path, timeout: float) -> list[str]:
-        r = self._ssh(f"cd {REMOTE_DIR} && shopt -s nullglob && for f in {' '.join(patterns)}; "
-                      'do [ -f "$f" ] && echo "$f"; done; true', 60)
+        """The files matching ``patterns`` that this run wrote (newer than .run/start)."""
+        t0 = time.time()
+        r = self._ssh(f"cd {REMOTE_DIR} && [ -f .run/start ] && shopt -s nullglob && "
+                      f"for f in {' '.join(patterns)}; do [ -f \"$f\" ] && "
+                      '[ -n "$(find "$f" -maxdepth 0 -newer .run/start)" ] && echo "$f"; '
+                      "done; true", min(60.0, timeout))
         files = [f for f in r.stdout.splitlines() if f.strip()]
         if not files:
             return []
         dest.mkdir(parents=True, exist_ok=True)
         # a tar stream over ssh: macOS ships openrsync, whose --files-from with a remote
         # source is not something to find out about mid-run
-        tar = subprocess.run(["ssh", *self.opts, self.host,
+        tar = subprocess.run(["ssh", "-n", *self.opts, self.host,
                               f"cd {REMOTE_DIR} && tar -cf - " + " ".join(map(shlex.quote, files))],
-                             capture_output=True, timeout=timeout, check=True).stdout
+                             stdin=subprocess.DEVNULL, capture_output=True,
+                             timeout=max(1.0, timeout - (time.time() - t0)), check=True).stdout
         with tarfile.open(fileobj=io.BytesIO(tar)) as t:
             t.extractall(dest, filter="data")
         return files
@@ -566,9 +785,13 @@ class RunState:
     run_dir: Path | None = None
     instance_id: str | None = None
     instance_name: str = ""
+    tag: str = ""
     region: str = ""
     launch_attempted: bool = False
+    launch_refused: bool = False  # a 4xx: Lambda started nothing
+    launch_uncertain: bool = False  # 5xx or no answer: it may have started one
     existed: bool = False  # an instance id was known (so it may have billed)
+    seen: set = field(default_factory=set)  # ids Lambda has shown us
     t_launch: float | None = None
     t_end: float | None = None
     terminated: bool = False
@@ -587,7 +810,10 @@ class Runner:
                  approve: float | None = None, setup_script: str = SETUP_SCRIPT,
                  poll_s: float = POLL_S, boot_poll_s: float = BOOT_POLL_S,
                  reserve_s: float = RESERVE_S, margin_s: float = REMOTE_MARGIN_S,
-                 confirm_s: float = CONFIRM_S, keep_awake: bool = True,
+                 confirm_s: float = CONFIRM_S, resend_s: float = RESEND_S,
+                 ssh_wait_s: float = SSH_WAIT_S, boot_timeout_s: float = BOOT_TIMEOUT_S,
+                 lost_launch_s: float = LOST_LAUNCH_S, status_check_s: float = STATUS_CHECK_S,
+                 stop_wait_s: float = STOP_WAIT_S, keep_awake: bool = True,
                  stream=None, ask: Callable[[str], str] | None = None) -> None:
         self.root, self.exp, self.exp_path, self.api, self.env = root, exp, exp_path, api, env
         self.remote_factory = remote_factory
@@ -595,6 +821,9 @@ class Runner:
         self.setup_script = setup_script
         self.poll_s, self.boot_poll_s = poll_s, boot_poll_s
         self.reserve_s, self.margin_s, self.confirm_s = reserve_s, margin_s, confirm_s
+        self.resend_s, self.ssh_wait_s, self.boot_timeout_s = resend_s, ssh_wait_s, boot_timeout_s
+        self.lost_launch_s, self.status_check_s = lost_launch_s, status_check_s
+        self.stop_wait_s = stop_wait_s
         self.keep_awake = keep_awake
         self.stream = stream or sys.stderr
         self.ask = ask
@@ -636,9 +865,8 @@ class Runner:
                             read_ledger(self.root / "runs" / "ledger.csv"))
         for line in est.lines():
             self.say(line)
-        if not est.within_cap:
-            raise Refused(f"the worst case ${est.worst:.2f} is more than the ${est.remaining:.2f}"
-                          f" left of {self.exp.name}'s ${est.cap:.2f} cap")
+        if est.refusal():
+            raise Refused(est.refusal())
         if not est.regions:
             raise Refused(f"no capacity for {est.instance_type} right now; try later")
         if self.approve is None:
@@ -666,7 +894,7 @@ class Runner:
             est = self.preflight()
         except (Refused, ApiError) as e:
             self.say(f"refused: {e}")
-            return 2
+            return EXIT_REFUSED
         self.price = est.price
         runs = self.root / "runs"
         runs.mkdir(exist_ok=True)
@@ -678,8 +906,9 @@ class Runner:
         self._log.write("\n".join(self.redact(line) for line in est.lines()) + "\n")
         self.say(f"run {st.run_dir.name}: commit {self.commit[:12]}")
         old = self._handlers()
-        self._awake()
+        clean = None
         try:
+            self._awake()
             region = self.env.get("LAMBDA_REGION")
             region = region if region in est.regions else est.regions[0]
             self._launch(region)
@@ -697,8 +926,12 @@ class Runner:
         except Exception as e:  # noqa: BLE001 - every failure ends in the same cleanup
             st.status = f"failed: {type(e).__name__}: {e}"
         finally:
-            self._cleanup(old)
-        return 0 if st.status == "ok" else 1
+            clean = self._cleanup(old)
+        if not st.terminated or clean is False or (clean is None and st.launch_uncertain):
+            self.say("EXIT 3: termination is not confirmed; an instance may be billing. Run "
+                     "`scripts/lambda.sh list` and `down` it, or use the dashboard, NOW")
+            return EXIT_UNCONFIRMED
+        return EXIT_OK if st.status == "ok" else EXIT_FAILED
 
     def _handlers(self) -> dict:
         def raise_interrupted(signum, frame):
@@ -713,14 +946,23 @@ class Runner:
         return old
 
     def _awake(self) -> None:
-        """caffeinate: the Mac must not sleep while it is the one that terminates."""
+        """caffeinate: the Mac must not sleep while it is the one that terminates. In its
+        own session, so the Ctrl-C that the terminal sends its foreground group (and a
+        SIGHUP when the terminal closes) doesn't end it before the cleanup has run."""
         if self.keep_awake and shutil.which("caffeinate"):
-            self._caffeinate = subprocess.Popen(["caffeinate", "-i", "-s", "-w", str(os.getpid())])
+            self._caffeinate = subprocess.Popen(
+                ["caffeinate", "-i", "-s", "-w", str(os.getpid())], start_new_session=True,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self.say("caffeinate on: this Mac will not idle-sleep during the run")
 
     @property
+    def hard_end(self) -> float:
+        """When the instance's life must end (launch + max_hours)."""
+        return self.state.t_launch + self.exp.max_hours * 3600
+
+    @property
     def deadline(self) -> float:
-        return self.state.t_launch + self.exp.max_hours * 3600 - self.reserve_s
+        return self.hard_end - self.reserve_s
 
     def _check_deadline(self) -> None:
         if self.state.t_launch is not None and time.time() >= self.deadline:
@@ -744,7 +986,7 @@ class Runner:
             "experiment_file": str(self.exp_path.relative_to(self.root)),
             "experiment_sha256": sha256_file(self.exp_path), "commit": self.commit,
             "commands": list(self.exp.commands),
-            "instance": {"id": st.instance_id, "name": st.instance_name,
+            "instance": {"id": st.instance_id, "name": st.instance_name, "tag": st.tag,
                          "type": self.exp.instance_type, "region": st.region,
                          "price_usd_per_hour": self.price},
             "max_hours": self.exp.max_hours, "launched_at": stamp(st.t_launch),
@@ -759,10 +1001,12 @@ class Runner:
         }
         (st.run_dir / "run.json").write_text(self.redact(json.dumps(data, indent=2)) + "\n")
         write_ledger_row(self.root / "runs" / "ledger.csv", {
-            "run": st.run_dir.name, "experiment": self.exp.name, "commit": self.commit[:12],
-            "instance_type": self.exp.instance_type, "price_usd_per_hour": f"{self.price:.2f}",
+            "run": st.run_dir.name, "experiment": self.exp.name, "post": str(self.exp.post),
+            "commit": self.commit[:12], "instance_type": self.exp.instance_type,
+            "price_usd_per_hour": f"{self.price:.2f}",
             "launched_at": stamp(st.t_launch) or "", "ended_at": stamp(st.t_end) or "",
-            "hours": f"{hours:.4f}", "cost_usd": f"{cost:.4f}", "status": st.status})
+            "hours": f"{hours:.4f}", "cost_usd": f"{cost:.4f}",
+            "status": self.redact(st.status)})
 
     def _setup_record(self) -> dict:
         rec = self.exp.setup_record
@@ -774,17 +1018,41 @@ class Runner:
                 return {"error": "unreadable"}
         return {}
 
+    def _is_this_run(self, inst: dict) -> bool:
+        st = self.state
+        return bool((st.instance_name and inst.get("name") == st.instance_name)
+                    or (st.tag and run_tag(inst) == st.tag)
+                    or (st.instance_id and inst.get("id") == st.instance_id))
+
     def _launch(self, region: str) -> None:
         st = self.state
         st.region = region
-        st.instance_name = f"{NAME_PREFIX}-{self.exp.name}-{time.strftime('%Y%m%d-%H%M%S')}"
         st.status = "launching"
         st.t_launch = time.time()  # billing may start from here: count it
+        st.instance_name = instance_name(self.exp.name, st.t_launch)
+        st.tag = f"{st.run_dir.name}-{secrets.token_hex(4)}"
         self._record()
         self.say(f"launching {self.exp.instance_type} in {region} as {st.instance_name}")
         st.launch_attempted = True
-        st.instance_id = self.api.launch(self.exp.instance_type, region,
-                                         self.env.get("LAMBDA_SSH_KEY_NAME", ""), st.instance_name)
+        key_name = self.env.get("LAMBDA_SSH_KEY_NAME", "")
+        try:
+            try:
+                st.instance_id = self.api.launch(self.exp.instance_type, region, key_name,
+                                                 st.instance_name, st.tag)
+            except ApiError as e:
+                if not (definite_refusal(e) and "tag" in str(e).lower()):
+                    raise
+                self.say(f"the launch refused the run tag ({e}); launching again without it "
+                         "(the run's instance is then found by its name only)")
+                st.tag = ""
+                st.instance_id = self.api.launch(self.exp.instance_type, region, key_name,
+                                                 st.instance_name)
+        except ApiError as e:
+            if definite_refusal(e):
+                st.launch_refused = True
+            else:
+                st.launch_uncertain = True
+            raise
         st.existed = True
         st.status = "running"
         self._record()
@@ -792,24 +1060,36 @@ class Runner:
                  f"{self.exp.max_hours:g} h")
 
     def _wait_active(self) -> str:
+        st = self.state
         t0 = time.time()
         while True:
             self._check_deadline()
-            inst = self.api.instance(self.state.instance_id)
-            status = (inst or {}).get("status")
-            if status == "active" and inst.get("ip"):
-                self.say(f"active at {inst['ip']}")
-                return inst["ip"]
-            if status not in ("booting", "active"):
-                raise RuntimeError(f"instance status is {status!r}")
-            if time.time() - t0 > BOOT_TIMEOUT_S:
-                raise RuntimeError("not active after 20 minutes")
+            try:
+                inst = self.api.instance(st.instance_id)
+            except ApiError as e:
+                self.say(f"status check failed: {e}")
+            else:
+                # None (404): just launched and not listed yet; keep waiting
+                if inst is not None:
+                    st.seen.add(st.instance_id)
+                    status = inst.get("status")
+                    if status == "active" and inst.get("ip"):
+                        self.say(f"active at {inst['ip']}")
+                        return inst["ip"]
+                    if status not in ("booting", "active"):
+                        raise RuntimeError(f"instance status is {status!r}")
+            if time.time() - t0 > self.boot_timeout_s:
+                raise RuntimeError(f"not active after {self.boot_timeout_s / 60:g} minutes")
             time.sleep(self.boot_poll_s)
 
     def _wait_ssh(self) -> None:
         self.say("waiting for SSH")
+        t0 = time.time()
         while not self.remote.ready():
             self._check_deadline()
+            if time.time() - t0 > self.ssh_wait_s:
+                raise RuntimeError(f"SSH did not answer within {self.ssh_wait_s / 60:g} minutes "
+                                   "(key not in the agent, or registered from another machine?)")
             time.sleep(self.boot_poll_s)
 
     def _setup(self) -> None:
@@ -832,6 +1112,17 @@ class Runner:
         if code:
             raise RuntimeError(f"setup failed (exit {code})")
 
+    def _check_instance(self) -> None:
+        """Between polls: is the instance still up and healthy? An API error is only noted."""
+        try:
+            inst = self.api.instance(self.state.instance_id)
+        except ApiError as e:
+            self.say(f"instance status check failed: {e}")
+            return
+        status = (inst or {}).get("status")
+        if inst is None or status in ENDED or status in BROKEN:
+            raise RuntimeError(f"instance status is {status or 'gone (404)'!r}")
+
     def _job(self) -> None:
         st = self.state
         secs = remote_seconds(self.deadline, time.time(), self.margin_s)
@@ -839,6 +1130,7 @@ class Runner:
         self.say(f"starting the commands; remote hard limit {secs} s")
         self.remote.start(secs)
         offset, failures = 0, 0
+        last_check = time.time()
         while True:
             self._check_deadline()
             try:
@@ -851,17 +1143,26 @@ class Runner:
             if chunk:
                 offset += len(chunk)
                 self._job_output(chunk)
+            if code == DIED:
+                raise RuntimeError("the job on the instance ended without an exit code "
+                                   "(killed, or the instance restarted)")
             if code is not None:
                 st.remote_exit = code
                 st.status = ("ok" if code == 0 else "time limit" if code in TIMED_OUT
                              else f"failed: a command exited {code}")
                 self.say(f"commands finished: exit {code}")
                 return
+            if time.time() - last_check >= self.status_check_s:
+                last_check = time.time()
+                self._check_instance()
             time.sleep(max(0.0, min(self.poll_s, self.deadline - time.time())))
 
     # -- always ----------------------------------------------------------------------------
 
-    def _cleanup(self, old_handlers: dict) -> None:
+    def _cleanup(self, old_handlers: dict) -> bool | None:
+        """Stop, fetch, terminate, record, final check. Every step is guarded: whatever one
+        of them raises, the next still runs. Returns the final check's answer (``True``:
+        nothing of this run is up; ``False``: something is; ``None``: couldn't tell)."""
         st = self.state
         for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             try:
@@ -870,121 +1171,214 @@ class Runner:
                 break
         self.say(f"status: {st.status}. Fetching and terminating; Ctrl-C is ignored until "
                  "Lambda confirms the instance is gone")
-        if self.remote is not None and st.status != "ok":
-            try:
-                self.remote.stop()
-            except Exception:  # noqa: BLE001
-                pass
         if self.remote is not None:
-            self._fetch()
-        ids: list[str] | None = [st.instance_id] if st.instance_id else []
-        if st.launch_attempted and not ids:
-            ids = self._find_by_name()  # None: couldn't tell
-            if ids:
-                st.instance_id = ids[0]
+            if st.status != "ok":
+                self._guard("stopping the job", lambda: self.remote.stop(self.stop_wait_s))
+            self._guard("fetch", self._fetch)
+        ids: list[str] | None = None
+        try:
+            ids = self._ids_to_terminate()
+        except Exception as e:  # noqa: BLE001
+            self.say(f"could not work out what to terminate: {type(e).__name__}: {e}")
         if ids:
             st.existed = True
-            st.terminated = self._terminate(ids)
+            try:
+                st.terminated = self._terminate(ids)
+            except Exception as e:  # noqa: BLE001 - not expected: terminate_and_confirm catches
+                self.say(f"terminate raised {type(e).__name__}: {e}")
+                st.terminated = False
             st.t_end = time.time()
         elif ids is not None:
             st.terminated = True  # nothing was started (or the launch started nothing)
             st.t_end = time.time()
+        self._guard("writing run.json / ledger", self._record)
+        clean = None
         try:
-            self._record()
+            clean = self._final_check()
         except Exception as e:  # noqa: BLE001
-            self.say(f"could not write run.json / ledger: {e}")
+            self.say(f"final check raised {type(e).__name__}: {e}")
+        self._guard("writing run.json / ledger", self._record)
         if self._caffeinate is not None:
-            self._caffeinate.terminate()
-        self._final_check()
+            self._guard("stopping caffeinate", self._caffeinate.terminate)
         if self._log:
             self._log.close()
             self._log = None
         for sig, h in old_handlers.items():
-            signal.signal(sig, h)
+            try:
+                signal.signal(sig, h)
+            except (ValueError, TypeError):
+                pass
+        return clean
+
+    def _guard(self, what: str, fn: Callable[[], object]) -> None:
+        try:
+            fn()
+        except Exception as e:  # noqa: BLE001 - the cleanup goes on
+            self.say(f"{what} failed: {type(e).__name__}: {e}")
+
+    def _ids_to_terminate(self) -> list[str] | None:
+        st = self.state
+        if st.instance_id:
+            return [st.instance_id]
+        if not st.launch_attempted or st.launch_refused:
+            return []  # no launch call, or Lambda refused it (4xx): nothing started
+        found = self._find_by_name()  # None: couldn't tell
+        if found:
+            st.instance_id = found[0]
+        return found
 
     def _fetch(self) -> None:
         st = self.state
-        try:
-            files = self.remote.fetch(self.exp.fetch, st.run_dir, timeout=FETCH_TIMEOUT_S)
-        except Exception as e:  # noqa: BLE001
-            self.say(f"fetch failed: {type(e).__name__}: {e}")
-            files = []
+        budget = fetch_budget(self.hard_end, time.time(),
+                              min(TERMINATE_ALLOW_S, self.reserve_s / 2)) if st.t_launch else 0
+        files: list[str] = []
+        if budget <= 0:
+            self.say("no time left to fetch before the hard limit: terminating without it")
+        else:
+            try:
+                files = self.remote.fetch(self.exp.fetch, st.run_dir, timeout=budget)
+            except Exception as e:  # noqa: BLE001
+                self.say(f"fetch failed: {type(e).__name__}: {e}")
         st.fetched = [{"path": f, "sha256": sha256_file(st.run_dir / f),
                        "bytes": (st.run_dir / f).stat().st_size}
                       for f in sorted(files) if (st.run_dir / f).is_file()]
         got = [f["path"] for f in st.fetched]
         st.missing = [p for p in self.exp.fetch if not any(Path(g).match(p) for g in got)]
-        self.say(f"fetched {len(st.fetched)} files into {st.run_dir.relative_to(self.root)}"
-                 + (f"; nothing matched {st.missing}" if st.missing else ""))
+        self.say(f"fetched {len(st.fetched)} files this run wrote into "
+                 f"{st.run_dir.relative_to(self.root)}"
+                 + (f"; nothing written matched {st.missing}" if st.missing else ""))
 
     def _find_by_name(self) -> list[str] | None:
-        """After a launch call that failed or whose answer was lost: did it start one anyway?
-        ``None`` if the API can't be asked (then the run stays charged at its worst case)."""
-        for _ in range(5):
+        """After a launch call whose answer was lost (5xx, no answer): did it start one
+        anyway? A new instance can take a while to appear in the list, so look for
+        ``lost_launch_s``. ``None`` if the API never answered (then the run stays charged
+        at its worst case and exits 3)."""
+        st = self.state
+        t0, answered = time.time(), False
+        while True:
             try:
                 found = [i["id"] for i in self.api.instances()
-                         if i.get("name") == self.state.instance_name and live(i)]
-                self.say(f"the launch call failed; instances named {self.state.instance_name}: "
-                         f"{len(found)}")
-                return found
+                         if self._is_this_run(i) and live(i)]
+                answered = True
+                if found:
+                    st.seen.update(found)
+                    self.say(f"the launch call's answer was lost, but {st.instance_name} is "
+                             f"listed: {', '.join(found)}")
+                    return found
+            except ApiError as e:
+                self.say(f"listing instances failed: {e}")
+            if time.time() - t0 >= self.lost_launch_s:
+                break
+            time.sleep(self.boot_poll_s)
+        if not answered:
+            self.say("COULD NOT LIST INSTANCES after a lost launch: check the dashboard NOW")
+            return None
+        self.say(f"{st.instance_name} not listed after {self.lost_launch_s:.0f} s: taking it "
+                 "that the launch started nothing (the final check looks once more)")
+        return []
+
+    def _terminate(self, ids: list[str]) -> bool:
+        return terminate_and_confirm(self.api, ids, self.say, self.boot_poll_s, self.confirm_s,
+                                     resend_s=min(self.resend_s, self.confirm_s / 4),
+                                     seen=self.state.seen)
+
+    def _final_check(self) -> bool | None:
+        """List the account. An instance of this run that is still up is terminated here
+        (a lost launch that appeared late); any other ``tinytools-*`` is reported."""
+        st = self.state
+        rows = None
+        for _ in range(3):
+            try:
+                rows = self.api.instances()
+                break
             except ApiError as e:
                 self.say(f"listing instances failed: {e}")
                 time.sleep(self.boot_poll_s)
-        self.say("COULD NOT LIST INSTANCES after a failed launch: check the dashboard NOW")
-        return None
-
-    def _terminate(self, ids: list[str]) -> bool:
-        return terminate_and_confirm(self.api, ids, self.say, self.boot_poll_s, self.confirm_s)
-
-    def _final_check(self) -> None:
-        try:
-            left = [i for i in self.api.instances() if is_ours(i) and live(i)]
-        except ApiError as e:
-            self.say(f"LIST FAILED ({e}): check the dashboard; an instance may be billing")
-            return
-        if left:
-            for i in left:
-                self.say(f"STILL UP: {i['id']} {i.get('name')} {i.get('status')}: run "
-                         f"`scripts/lambda.sh down {i['id']}` now")
-        else:
+        if rows is None:
+            self.say("LIST FAILED: check the dashboard; an instance may be billing")
+            return None
+        mine = [i for i in rows if self._is_this_run(i) and live(i)]
+        others = [i for i in rows if is_ours(i) and live(i) and not self._is_this_run(i)]
+        clean = True
+        if mine:
+            ids = [i["id"] for i in mine]
+            self.say(f"STILL UP (this run's): {', '.join(ids)}: terminating")
+            st.seen.update(ids)
+            st.existed = True
+            ok = self._terminate(ids)
+            if not st.instance_id:
+                st.instance_id = ids[0]
+            st.terminated = ok
+            st.t_end = time.time()
+            clean = ok
+        for i in others:
+            self.say(f"STILL UP: {i['id']} {i.get('name')} {i.get('status')}: not this run's; "
+                     f"run `scripts/lambda.sh down {i['id']}` now")
+            clean = False
+        if clean:
             self.say("list: no instance of this repo is up")
+        return clean
 
 
 def terminate_and_confirm(api: LambdaAPI, ids: list[str], say: Callable[[str], None],
-                          poll_s: float, confirm_s: float) -> bool:
-    """Terminate through the API (retrying), then poll until every id is terminated or gone."""
-    for attempt in range(TERMINATE_TRIES):
-        try:
-            api.terminate(ids)
-            say(f"terminate requested for {', '.join(ids)}")
-            break
-        except ApiError as e:
-            say(f"terminate failed (try {attempt + 1}/{TERMINATE_TRIES}): {e}")
-            try:
-                if all((api.instance(i) or {"status": "terminated"})["status"] == "terminated"
-                       for i in ids):
-                    return True
-            except ApiError:
-                pass
-            time.sleep(min(30.0, poll_s * 2 ** attempt))
-    else:
-        say(f"COULD NOT TERMINATE {', '.join(ids)}: it may still be billing. Run "
-            f"`scripts/lambda.sh down {ids[0]}` or use the dashboard NOW")
-        return False
+                          poll_s: float, confirm_s: float, *, resend_s: float | None = None,
+                          seen=()) -> bool:
+    """Terminate through the API and poll until Lambda reports every id ended
+    (terminated or preempted), for up to ``confirm_s``.
+
+    Terminate is retried after every failure; while an instance is still booting
+    (``actions.terminate.available`` false) it waits; and after an accepted call it is
+    re-sent every ``resend_s`` until confirmed, since a 200 is not proof. A 404 means gone
+    only for an id Lambda has shown (``seen``, or a status read here): just after a
+    launch, a new instance can be missing from the API for a while."""
+    resend_s = min(RESEND_S, confirm_s / 4) if resend_s is None else resend_s
+    seen = set(seen)
     t0 = time.time()
-    while time.time() - t0 < confirm_s:
+    last_sent: float | None = None
+    failures, waiting_said = 0, False
+    while True:
+        pending, blocked = list(ids), []
         try:
-            states = [(api.instance(i) or {"status": "terminated"})["status"] for i in ids]
-        except ApiError as e:
+            views = {i: api.instance(i) for i in ids}
+        except Exception as e:  # noqa: BLE001 - ApiError, or anything else: keep going
             say(f"status check failed: {e}")
-            states = ["?"]
-        if all(s == "terminated" for s in states):
-            say("terminated: Lambda confirms; billing has stopped")
-            return True
+            views = None
+        if views is not None:
+            seen.update(i for i, v in views.items() if v is not None)
+            pending = [i for i in ids
+                       if (views[i] is None and i not in seen)
+                       or (views[i] is not None and views[i].get("status") not in ENDED)]
+            if not pending:
+                say("terminated: Lambda confirms; billing has stopped")
+                return True
+            blocked = [i for i in pending
+                       if views[i] is not None and not terminate_available(views[i])]
+        sendable = [i for i in pending if i not in blocked]
+        now = time.time()
+        if sendable and (last_sent is None or now - last_sent >= resend_s):
+            try:
+                accepted = api.terminate(sendable)
+                say(f"terminate {'re-sent' if last_sent else 'requested'} for "
+                    f"{', '.join(sendable)}"
+                    + ("" if set(sendable) <= set(accepted) else
+                       f" (Lambda listed {', '.join(accepted) or 'none'} as terminating)"))
+                last_sent = now
+            except Exception as e:  # noqa: BLE001 - ApiError, or anything else: retry
+                failures += 1
+                say(f"terminate failed (try {failures}): {e}")
+                if failures == TERMINATE_TRIES:
+                    say(f"STILL NOT TERMINATED after {failures} tries: it may be billing. "
+                        "The runner keeps trying; check the dashboard too")
+        elif blocked and not sendable and not waiting_said:
+            why = ((views[blocked[0]].get("actions") or {}).get("terminate") or {})
+            say(f"{', '.join(blocked)}: Lambda can't terminate it until it has launched "
+                f"({why.get('reason_code') or 'booting'}); waiting")
+            waiting_said = True
+        if time.time() - t0 >= confirm_s:
+            say(f"TERMINATION OF {', '.join(ids)} NOT CONFIRMED after {confirm_s:.0f} s: it may "
+                f"be billing. Run `scripts/lambda.sh down {ids[0]}` or use the dashboard NOW")
+            return False
         time.sleep(poll_s)
-    say(f"termination of {', '.join(ids)} not confirmed after {confirm_s:.0f} s; "
-        "check `scripts/lambda.sh list`")
-    return False
 
 
 # -- the other commands ------------------------------------------------------------------------
@@ -1006,7 +1400,7 @@ def cmd_estimate(api: LambdaAPI, root: Path, name: str) -> int:
     est = make_estimate(exp, api.instance_types(), read_ledger(root / "runs" / "ledger.csv"))
     for line in est.lines():
         print(line)
-    return 0 if est.within_cap else 2
+    return EXIT_OK if est.within_cap else EXIT_REFUSED
 
 
 def cmd_list(api: LambdaAPI) -> int:
@@ -1022,18 +1416,18 @@ def cmd_list(api: LambdaAPI) -> int:
 
 
 def cmd_down(api: LambdaAPI, instance_id: str, yes: bool, ask=input,
-             poll_s: float = BOOT_POLL_S) -> int:
+             poll_s: float = BOOT_POLL_S, confirm_s: float = CONFIRM_S) -> int:
     inst = api.instance(instance_id)
-    if inst is None or inst.get("status") == "terminated":
-        print(f"{instance_id}: already terminated or unknown")
-        return 0
+    if inst is None or inst.get("status") in ENDED:
+        print(f"{instance_id}: already ended or unknown")
+        return EXIT_OK
     if not yes and ask(f"Terminate {instance_id} ({inst.get('name') or '-'})? Anything not "
                        "fetched is lost. Type yes: ").strip().lower() != "yes":
         print("not terminated")
-        return 1
+        return EXIT_FAILED
     ok = terminate_and_confirm(api, [instance_id], lambda m: print(m, file=sys.stderr),
-                               poll_s, CONFIRM_S)
-    return 0 if ok else 1
+                               poll_s, confirm_s, seen={instance_id})
+    return EXIT_OK if ok else EXIT_UNCONFIRMED
 
 
 def _fingerprint(pub_text: str) -> str | None:
@@ -1072,7 +1466,7 @@ def doctor_checks(root: Path, env: dict[str, str], api: LambdaAPI) -> list[tuple
                         "usable without a prompt (no passphrase, or loaded in ssh-agent)"))
     try:
         types = api.instance_types()
-        out.append((True, f"API reachable ({len(types)} instance types listed)"))
+        out.append((True, f"API reachable at {api.base} ({len(types)} instance types listed)"))
         keys = api.ssh_keys()
         named = [k for k in keys if k.get("name") == env.get("LAMBDA_SSH_KEY_NAME")]
         out.append((bool(named), "an SSH key with LAMBDA_SSH_KEY_NAME is registered at Lambda"))
@@ -1082,7 +1476,7 @@ def doctor_checks(root: Path, env: dict[str, str], api: LambdaAPI) -> list[tuple
         up = [i for i in api.instances() if is_ours(i) and live(i)]
         out.append((not up, f"no instance of this repo is up ({len(up)} up)"))
     except ApiError as e:
-        out.append((False, f"API: {e}"))
+        out.append((False, f"API at {api.base}: {e}"))
     return out
 
 
@@ -1095,9 +1489,16 @@ def cmd_doctor(root: Path, env: dict[str, str], api: LambdaAPI) -> int:
     return 0 if not bad else 1
 
 
-def make_api(env: dict[str, str]) -> LambdaAPI:
-    redact = Redactor([env.get(k, "") for k in ENV_KEYS])
-    return LambdaAPI(env.get("LAMBDA_API_URL") or API_URL, env.get("LAMBDA_API_KEY", ""), redact)
+def make_api(env: dict[str, str], min_interval: float | None = None,
+             rate_wait: float = RATE_WAIT_S) -> LambdaAPI:
+    """The API client. Requests to Lambda itself are spaced 1 s apart (its limit); a
+    local fake is not paced unless asked. A 429 is retried either way."""
+    base = env.get("LAMBDA_API_URL") or API_URL
+    if min_interval is None:
+        min_interval = API_MIN_INTERVAL_S if _is_lambda_host(base) else 0.0
+    redact = Redactor([env.get("LAMBDA_API_KEY", ""), env.get("LAMBDA_SSH_KEY", "")])
+    return LambdaAPI(base, env.get("LAMBDA_API_KEY", ""), redact, min_interval=min_interval,
+                     rate_wait=rate_wait)
 
 
 def main(argv: list[str] | None = None, root: Path = ROOT) -> int:
@@ -1142,7 +1543,7 @@ def main(argv: list[str] | None = None, root: Path = ROOT) -> int:
         return runner.run()
     except (Refused, ApiError) as e:
         print(f"refused: {api.redact(str(e))}", file=sys.stderr)
-        return 2
+        return EXIT_REFUSED
 
 
 if __name__ == "__main__":

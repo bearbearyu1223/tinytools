@@ -20,9 +20,9 @@ uv run tinytools score --split test --limit 10 --samples 8 --temperature 1.0
 uv run tinytools rescore --replies outputs/score-<...>-replies.jsonl      # no model
 uv run tinytools sft-data --seeds 1,2,3  # SFT sets -> data/sft/ (r4a, r4b)
 uv run tinytools milestone0 --quick      # Milestone 0 end to end, 0.5B, a few items (Mac check)
-uv run tinytools milestone0              # six models on the dev split, the rule's verdict (H100)
-scripts/lambda.sh doctor                 # Lambda settings, SSH key, API; launches nothing
-scripts/lambda.sh estimate milestone0    # price x hours against the experiment's cap
+uv run tinytools milestone0 --base-when-needed  # instruct models, base only if the rule needs it (H100)
+scripts/lambda.sh doctor                 # Lambda settings, SSH key, API base URL; launches nothing
+scripts/lambda.sh estimate milestone0    # price x hours against the experiment's and the post's cap
 scripts/lambda.sh run milestone0         # up -> setup -> run -> fetch -> down (docs/lambda-playbook.md)
 uv run pytest -q && uvx ruff check --select F,E9,B
 ```
@@ -34,10 +34,18 @@ outcome and BFCL's error type to `outputs/bfcl-<model>-<mode>-limit<N>-replies.j
 are gitignored.
 
 GPU runs go through `scripts/lambda.sh` and `experiments/<name>.toml`, as
-`docs/lambda-playbook.md` describes: an approved estimate, a hard time limit, termination
-through Lambda's API whatever happens, and a record in `runs/<date>-<exp>/run.json` and
-`runs/ledger.csv`. Settings and keys live in `lambda.env` (gitignored; see
-`lambda.env.example`).
+`docs/lambda-playbook.md` describes: an approved estimate within the experiment's cap and
+the post's ($50, summed over its experiments), a hard time limit, termination through
+Lambda's API whatever happens (retried until Lambda confirms; exit code 3 if it never
+does), only the files the run wrote fetched, and a record in `runs/<date>-<exp>/run.json`
+and `runs/ledger.csv`. Settings and keys live in `lambda.env` (gitignored; see
+`lambda.env.example`); the API base defaults to `https://cloud.lambda.com/api/v1`
+(`LAMBDA_API_URL` overrides it) and redirects are never followed.
+
+Milestone 0's model rule: a candidate qualifies when (a) greedy right on our dev tasks
+<= 70%, (b) BFCL dev call categories right <= 80%, (c) mixed groups of 8 at T=1 >= 10% of
+the dev tasks that need a call, and (d) greedy right on the dev tasks that need a call
+>= 20%. The capture prints each with its count, denominator, threshold and met / not.
 
 Environment: `TINYTOOLS_DEVICE=cpu|mps|cuda` overrides the device (default cuda >
 mps > cpu); `TINYTOOLS_QUIET=1` silences progress.

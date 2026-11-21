@@ -54,12 +54,20 @@ def test_the_milestone0_experiment_parses():
     assert e.instance_type == "gpu_1x_h100_sxm5"
     assert e.expected_hours <= e.max_hours
     assert e.setup_record == "outputs/milestone0-setup.json"
-    assert e.commands[-1].startswith("uv run tinytools milestone0")
-    # at the 2025 list price, the six-model scope's worst case is past its own cap
-    types = {H100: {"instance_type": {"price_cents_per_hour": 329},
-                    "regions_with_capacity_available": [{"name": "us-east-1"}]}}
-    est = lr.make_estimate(e, types, [])
-    assert est.within_cap is (e.max_hours * 3.29 <= e.cap_usd)
+    assert e.commands[-1] == "uv run tinytools milestone0 --base-when-needed"
+    assert (e.post, e.max_hours, e.cap_usd) == (9, 4.0, 20.0)
+    for cents, ok in ((429, True), (500, True), (501, False)):  # worst $17.16 at $4.29/h
+        types = {H100: {"instance_type": {"price_cents_per_hour": cents},
+                        "regions_with_capacity_available": [{"name": "us-east-1"}]}}
+        assert lr.make_estimate(e, types, []).within_cap is ok
+    # the fetch globs match this run's outputs, not the committed Mac --quick captures
+    committed = subprocess.run(["git", "-C", str(ROOT), "ls-files", "outputs"],
+                               capture_output=True, text=True).stdout.split()
+    quick = [f for f in committed if f.startswith("outputs/milestone0-quick")]
+    assert quick and not [f for f in quick if any(Path(f).match(p) for p in e.fetch)]
+    for f in ("outputs/milestone0-Qwen2.5-1.5B-Instruct-ours-replies.jsonl",
+              "outputs/milestone0-Qwen2.5-3B-bfcl-replies.jsonl"):
+        assert any(Path(f).match(p) for p in e.fetch)
 
 
 @pytest.mark.parametrize("change, error", [
@@ -180,9 +188,16 @@ def repo(tmp_path):
     return r
 
 
-@pytest.fixture
-def fake():
-    with FakeLambda(KEY, boot_polls=2, term_polls=2) as f:
+# The real API's behaviour, scaled in time: terminate refused while booting, a new
+# instance missing from the first read of it, and 429s for requests 0.05 s apart.
+REALISTIC = dict(blocked_while_booting=True, list_lag=1, rate_limit=(0.05, 0.6))
+RATE_WAIT = 0.05  # the client's 429 backoff, scaled the same way
+
+
+@pytest.fixture(params=["plain", "realistic"])
+def fake(request):
+    kw = REALISTIC if request.param == "realistic" else {}
+    with FakeLambda(KEY, boot_polls=2, term_polls=2, **kw) as f:
         yield f
 
 
@@ -203,7 +218,7 @@ def make_runner(repo, fake, tmp_path, *, remote_cls=LocalRemote, approve=100.0,
     env = env_for(fake)
     exp, path = lr.load_experiment(repo, "demo")
     out = io.StringIO()
-    runner = lr.Runner(repo, exp, path, lr.make_api(env), env,
+    runner = lr.Runner(repo, exp, path, lr.make_api(env, rate_wait=RATE_WAIT), env,
                        remote_factory=lambda ip: remote_cls(tmp_path / "remote"),
                        approve=approve, setup_script=setup_script, poll_s=0.05,
                        boot_poll_s=0.02, reserve_s=reserve_s, margin_s=margin_s, confirm_s=5,
@@ -317,7 +332,7 @@ def test_estimate_refuses_past_the_cap_and_nothing_launches(repo, fake, tmp_path
     assert runner.run() == 2
     assert "refused: the worst case $3.29 is more than the $1.00 left" in out.getvalue()
     assert fake.count("POST", "/instance-operations/launch") == 0
-    api = lr.make_api(env_for(fake))
+    api = lr.make_api(env_for(fake), rate_wait=RATE_WAIT)
     assert lr.cmd_estimate(api, repo, "demo") == 2
     assert "REFUSED" in capsys.readouterr().out
 
@@ -387,7 +402,7 @@ def test_unconfirmed_termination_is_charged_at_the_worst_case(repo, tmp_path):
     with FakeLambda(KEY, term_polls=10**9) as f:  # never reports terminated
         runner, out = make_runner(repo, f, tmp_path)
         runner.confirm_s = 0.3
-        assert runner.run() == 0
+        assert runner.run() == lr.EXIT_UNCONFIRMED  # 3: never 0 while it may be billing
         rj = run_json(repo)
         assert rj["terminated"] is False and rj["cost_usd"] == lr.cost_usd(3.29, 3600)
         assert "STILL UP" in out.getvalue()
@@ -397,7 +412,7 @@ def _driver(repo, fake, tmp_path, shim, commands):
     write_exp(repo, commands)
     settings = {"env": env_for(fake), "repo": str(repo), "experiment": "demo",
                 "remote": str(tmp_path / "remote"), "setup_script": SETUP, "reserve_s": 1.0,
-                "margin_s": 0.5}
+                "margin_s": 0.5, "rate_wait": RATE_WAIT}
     err = open(tmp_path / "driver.err", "w")
     proc = subprocess.Popen([sys.executable, str(Path(__file__).with_name("lambda_driver.py")),
                              json.dumps(settings)], stdout=err, stderr=err,
@@ -451,7 +466,7 @@ def test_the_ssh_remote_end_to_end_through_a_fake_ssh(repo, fake, tmp_path, shim
     env = env_for(fake)
     exp, path = lr.load_experiment(repo, "demo")
     out = io.StringIO()
-    runner = lr.Runner(repo, exp, path, lr.make_api(env), env,
+    runner = lr.Runner(repo, exp, path, lr.make_api(env, rate_wait=RATE_WAIT), env,
                        remote_factory=lambda ip: lr.SSHRemote(ip, KEY_PATH, tmp_path / "kh"),
                        approve=100.0, setup_script="cd ~/tinytools && " + SETUP, poll_s=0.1,
                        boot_poll_s=0.02, reserve_s=1.0, margin_s=0.5, confirm_s=5,
@@ -541,7 +556,7 @@ def test_doctor_with_a_wrong_api_key(tmp_path, capsys):
 def test_list_flags_ours_and_down_terminates(fake, capsys):
     a = fake._create({"name": "tinytools-milestone0-x", "region_name": "r", "instance_type_name": H100})
     fake._create({"name": "someone-else", "region_name": "r", "instance_type_name": H100})
-    api = lr.make_api(env_for(fake))
+    api = lr.make_api(env_for(fake), rate_wait=RATE_WAIT)
     lr.cmd_list(api)
     out = capsys.readouterr().out
     assert out.count("<- tinytools") == 1 and "jt-should-never-print" not in out

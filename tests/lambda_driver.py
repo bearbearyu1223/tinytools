@@ -11,7 +11,7 @@ from tinytools import lambda_run
 
 s = json.loads(sys.argv[1])
 env = s["env"]
-api = lambda_run.make_api(env)
+api = lambda_run.make_api(env, rate_wait=s.get("rate_wait", 1.0))
 repo = Path(s["repo"])
 exp, path = lambda_run.load_experiment(repo, s["experiment"])
 runner = lambda_run.Runner(

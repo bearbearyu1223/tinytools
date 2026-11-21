@@ -9,8 +9,8 @@ from tinytools.bfcl import stop_ids
 from tinytools.lora import ATTENTION_MLP, inject_lora, trainable_parameters
 
 
-def measured(model, ours=(130, 200), bfcl=(70, 100), mixed=(25, 200)):
-    return m0.Measured(model, *ours, *bfcl, *mixed)
+def measured(model, ours=(130, 200), bfcl=(70, 100), mixed=(25, 160), calls=(90, 160)):
+    return m0.Measured(model, *ours, *bfcl, *mixed, *calls)
 
 
 def test_thresholds_are_inclusive_and_exact():
@@ -25,8 +25,10 @@ def test_each_criterion():
     assert (m.a, m.b, m.c, m.qualifies) == (True, True, True, True)
     assert not measured(m0.I15, ours=(141, 200)).a
     assert not measured(m0.I15, bfcl=(81, 100)).b
-    assert not measured(m0.I15, mixed=(19, 200)).c
-    assert m0.failed_criteria(measured(m0.I15, ours=(150, 200), mixed=(5, 200))) == ["a", "c"]
+    assert not measured(m0.I15, mixed=(15, 160)).c and measured(m0.I15, mixed=(16, 160)).c
+    assert not measured(m0.I15, calls=(31, 160)).d and measured(m0.I15, calls=(32, 160)).d
+    assert m0.failed_criteria(measured(m0.I15, ours=(150, 200), mixed=(5, 160),
+                                       calls=(0, 160))) == ["a", "c", "d"]
 
 
 def test_the_smaller_qualifying_instruct_is_picked():
@@ -39,7 +41,7 @@ def test_the_smaller_qualifying_instruct_is_picked():
 def test_fallbacks_in_order_then_stop():
     fail = dict(ours=(190, 200))
     ms = {m: measured(m, **fail) for m in (m0.I15, m0.I3, m0.B3)}
-    ms[m0.B15] = measured(m0.B15, mixed=(20, 200))  # exactly 10%
+    ms[m0.B15] = measured(m0.B15, mixed=(16, 160), calls=(32, 160))  # exactly 10%, 20%
     v = m0.verdict(ms)
     assert (v.outcome, v.model) == ("pick", m0.B15)
     assert "fallback" in v.text
@@ -60,8 +62,9 @@ def test_takeaway_is_built_from_the_numbers():
     ms = {m0.I15: measured(m0.I15, ours=(150, 200)), m0.I3: measured(m0.I3)}
     t = m0.takeaway(ms, m0.verdict(ms))
     assert t == ("1.5B instruct fails (a: 75.0% right on our dev tasks, 70.0% on BFCL's dev "
-                 "calls, 12.5% mixed groups); 3B instruct qualifies (65.0% right on our dev "
-                 "tasks, 70.0% on BFCL's dev calls, 12.5% mixed groups).")
+                 "calls, 15.6% mixed groups and 56.3% right on the tasks that need a call); "
+                 "3B instruct qualifies (65.0% right on our dev tasks, 70.0% on BFCL's dev "
+                 "calls, 15.6% mixed groups and 56.3% right on the tasks that need a call).")
 
 
 def test_parse_models_keeps_the_run_order():
@@ -139,5 +142,85 @@ def test_base_when_needed_skips_only_what_the_rule_cannot_reach():
     both_fail = {m0.I15: bad, m0.I3: measured(m0.I3, bfcl=(90, 100))}
     assert m0.skip_reason(m0.B15, both_fail, True) is None
     assert m0.skip_reason(m0.B3, {**both_fail, m0.B15: measured(m0.B15)}, True) is not None
-    assert m0.skip_reason(m0.B3, {**both_fail, m0.B15: measured(m0.B15, mixed=(0, 200))},
+    assert m0.skip_reason(m0.B3, {**both_fail, m0.B15: measured(m0.B15, mixed=(0, 160))},
                           True) is None
+
+
+# -- (c) and (d) over the tasks that need a call (the author's rule, 2026-11-21) ------------
+
+
+def _scored(kind, right):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(task={"kind": kind}, right=right)
+
+
+def _dev(greedy_right, sampled_right):
+    """Dev-sized results (120 / 40 / 40) with real task kinds."""
+    from tinytools import tasks
+
+    kinds = [tasks.CHOOSE] * 120 + [tasks.TRICKY] * 40 + [tasks.NO_FIT] * 40
+    return ([_scored(k, greedy_right(k, i)) for i, k in enumerate(kinds)],
+            [_scored(k, sampled_right(k, i)) for i, k in enumerate(kinds)])
+
+
+def _bfcl(right):
+    from types import SimpleNamespace
+
+    return [SimpleNamespace(category=c, right_per_task=[right] * 20)
+            for c in m0.BFCL_CALL_CATEGORIES]
+
+
+def test_a_model_that_only_declines_fails_c_and_d_on_the_numbers():
+    from tinytools import tasks
+
+    greedy, sampled = _dev(lambda k, i: int(k == tasks.NO_FIT),
+                           lambda k, i: 4 if k == tasks.NO_FIT else 0)
+    m = m0._measure(m0.I15, greedy, sampled, _bfcl(0))
+    assert (m.ours_right, m.ours_n, m.mixed, m.groups, m.calls_right, m.calls_n) == (
+        40, 200, 0, 160, 0, 160)
+    assert (m.a, m.b, m.c, m.d, m.qualifies) == (True, True, False, False, False)
+    assert m0.verdict({m0.I15: m, m0.I3: m, m0.B15: m, m0.B3: m}).outcome == "stop"
+
+
+def test_a_model_with_real_calls_and_spread_qualifies():
+    from tinytools import tasks
+
+    # right greedy on 1 call task in 4; on call tasks, 1 group in 8 is mixed
+    greedy, sampled = _dev(lambda k, i: int(k == tasks.NO_FIT or i % 4 == 0),
+                           lambda k, i: 0 if k == tasks.NO_FIT else (3 if i % 8 == 0 else 8))
+    m = m0._measure(m0.I15, greedy, sampled, _bfcl(1))
+    assert (m.calls_right, m.calls_n, m.mixed, m.groups) == (40, 160, 20, 160)
+    assert (m.c, m.d) == (True, True)
+    assert not m.b  # BFCL all right: 80 of 80 is past 80%
+    m = m0._measure(m0.I15, greedy, sampled, [*_bfcl(0)[:2], *_bfcl(1)[2:]])
+    assert m.qualifies and m0.verdict({m0.I15: m}).model == m0.I15
+
+
+def test_tasks_of_unknown_kind_never_count_toward_c_or_d():
+    from types import SimpleNamespace
+
+    rows = [SimpleNamespace(right=8)] * 10
+    m = m0._measure(m0.I15, rows, rows, _bfcl(0))
+    assert (m.calls_n, m.groups, m.c, m.d) == (0, 0, False, False)
+
+
+def test_criteria_carry_their_denominators_and_thresholds():
+    rows = m0.criteria(measured(m0.I15, calls=(31, 160)))
+    assert [(r[0], r[2], r[3], r[4], r[5]) for r in rows] == [
+        ("a", 130, 200, "<= 70%", True), ("b", 70, 100, "<= 80%", True),
+        ("c", 25, 160, ">= 10%", True), ("d", 31, 160, ">= 20%", False)]
+
+
+def test_the_printed_rule_fits_74_columns_and_shows_every_count():
+    from tinytools.report import WIDTH, Report
+
+    out = []
+    rep = Report("t", out=None)
+    rep.print = lambda line="": out.append(line)
+    ms = {m0.I15: measured(m0.I15, calls=(0, 160)), m0.I3: measured(m0.I3)}
+    m0._print_rule(rep, ms, quick=False)
+    text = "\n".join(out)
+    assert all(len(line) <= WIDTH for line in out)
+    assert "0 of 160 (0.0%)" in text and ">= 20%" in text and "not met" in text
+    assert "pick Qwen/Qwen2.5-3B-Instruct" in text

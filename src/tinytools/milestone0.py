@@ -4,10 +4,18 @@ Six models (Qwen2.5 0.5B / 1.5B / 3B, base and instruct) are scored on the dev
 split only: our 200 dev tasks greedy, the same tasks with 8 samples at T=1, and
 the BFCL dev slice greedy. The rule (plan 3a, thresholds adopted by the author):
 
-    a candidate qualifies when, all three,
-    (a) greedy right by execution match on our dev tasks <= 70%
-    (b) BFCL right on the dev slice's call categories     <= 80%
-    (c) mixed groups (some of 8 right, some wrong)        >= 10% of dev tasks
+    a candidate qualifies when, all four,
+    (a) greedy right by execution match on our dev tasks      <= 70%
+    (b) BFCL right on the dev slice's call categories          <= 80%
+    (c) mixed groups (some of 8 at T=1 right, some wrong)      >= 10%
+        of the dev tasks that need a call
+    (d) greedy right by execution match on the dev tasks       >= 20%
+        that need a call
+
+(c) and (d) leave out the "no tool fits" tasks, where a reply without a call is
+right: a model that never makes a right call must not qualify (review of f13ccbd;
+the author's decision of 2026-11-21). A task whose kind is unknown counts as not
+needing a call, so it can't help a model qualify.
 
 Pick the smaller of 1.5B / 3B instruct that qualifies; else base 1.5B, then
 base 3B, by the same rule; else stop and bring it to the author. 0.5B is scored
@@ -65,6 +73,8 @@ TIMING_SIZES = ("1.5B", "3B")  # the candidate sizes
 OURS_RIGHT_MAX = 70  # percent, (a)
 BFCL_RIGHT_MAX = 80  # percent, (b)
 MIXED_MIN = 10  # percent, (c)
+CALLS_RIGHT_MIN = 20  # percent, (d)
+CALL_KINDS = ("choose+fill", "tricky arguments")  # tasks.CHOOSE, tasks.TRICKY: need a call
 SAMPLES = 8
 TEMPERATURE = 1.0
 SEED = 0
@@ -101,15 +111,17 @@ def at_least(k: int, n: int, percent: int) -> bool:
 
 @dataclass(frozen=True)
 class Measured:
-    """The three numbers the rule reads, with their denominators."""
+    """The four numbers the rule reads, with their denominators."""
 
     model: Model
     ours_right: int  # greedy, right by execution match, all dev tasks
     ours_n: int
     bfcl_right: int  # greedy, call categories of the dev slice
     bfcl_n: int
-    mixed: int  # dev tasks with some of 8 right and some wrong
-    groups: int
+    mixed: int  # call-needing dev tasks with some of 8 right and some wrong
+    groups: int  # call-needing dev tasks sampled
+    calls_right: int  # greedy, right by execution match, call-needing dev tasks
+    calls_n: int
 
     @property
     def a(self) -> bool:
@@ -124,8 +136,12 @@ class Measured:
         return at_least(self.mixed, self.groups, MIXED_MIN)
 
     @property
+    def d(self) -> bool:
+        return at_least(self.calls_right, self.calls_n, CALLS_RIGHT_MIN)
+
+    @property
     def qualifies(self) -> bool:
-        return self.a and self.b and self.c
+        return self.a and self.b and self.c and self.d
 
 
 @dataclass(frozen=True)
@@ -149,7 +165,7 @@ def verdict(measured: dict[Model, Measured]) -> Verdict:
 
 
 def failed_criteria(m: Measured) -> list[str]:
-    return [name for name, ok in (("a", m.a), ("b", m.b), ("c", m.c)) if not ok]
+    return [name for name, ok in (("a", m.a), ("b", m.b), ("c", m.c), ("d", m.d)) if not ok]
 
 
 def takeaway(measured: dict[Model, Measured], v: Verdict) -> str:
@@ -159,7 +175,8 @@ def takeaway(measured: dict[Model, Measured], v: Verdict) -> str:
     def nums(m: Measured) -> str:
         return (f"{share(m.ours_right, m.ours_n)} right on our dev tasks, "
                 f"{share(m.bfcl_right, m.bfcl_n)} on BFCL's dev calls, "
-                f"{share(m.mixed, m.groups)} mixed groups")
+                f"{share(m.mixed, m.groups)} mixed groups and "
+                f"{share(m.calls_right, m.calls_n)} right on the tasks that need a call")
 
     reached = []
     for m in RULE_ORDER:
@@ -292,15 +309,24 @@ class ModelResult:
     measured: Measured
 
 
+def needs_call(scored) -> bool:
+    """Does this scored task need a call? Unknown kind: no (it can't help a model qualify)."""
+    task = getattr(scored, "task", None)
+    return isinstance(task, dict) and task.get("kind") in CALL_KINDS
+
+
 def _measure(model: Model, greedy, sampled, bfcl_results) -> Measured:
     from .classify import mixed_share
 
     calls = [r for r in bfcl_results if r.category in BFCL_CALL_CATEGORIES]
-    _, mixed, _ = mixed_share([s.right for s in sampled], SAMPLES)
+    call_sampled = [s for s in sampled if needs_call(s)]
+    call_greedy = [s for s in greedy if needs_call(s)]
+    _, mixed, _ = mixed_share([s.right for s in call_sampled], SAMPLES)
     return Measured(model, ours_right=sum(s.right for s in greedy), ours_n=len(greedy),
                     bfcl_right=sum(sum(r.right_per_task) for r in calls),
                     bfcl_n=sum(len(r.right_per_task) for r in calls),
-                    mixed=mixed, groups=len(sampled))
+                    mixed=mixed, groups=len(call_sampled),
+                    calls_right=sum(s.right for s in call_greedy), calls_n=len(call_greedy))
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -706,30 +732,48 @@ def _probe(rep, s: Settings, device, root: Path) -> list[StepTiming]:
     return timings
 
 
+def criteria(m: Measured) -> list[tuple[str, str, int, int, str, bool]]:
+    """The rule's four criteria for one model: (name, what, k, n, threshold, met)."""
+    return [
+        ("a", "our dev tasks, greedy, right by execution", m.ours_right, m.ours_n,
+         f"<= {OURS_RIGHT_MAX}%", m.a),
+        ("b", "BFCL dev slice, call categories, greedy right", m.bfcl_right, m.bfcl_n,
+         f"<= {BFCL_RIGHT_MAX}%", m.b),
+        ("c", f"call-needing dev tasks, mixed groups of {SAMPLES} at T={TEMPERATURE:g}",
+         m.mixed, m.groups, f">= {MIXED_MIN}%", m.c),
+        ("d", "call-needing dev tasks, greedy, right by execution", m.calls_right, m.calls_n,
+         f">= {CALLS_RIGHT_MIN}%", m.d),
+    ]
+
+
 def _print_rule(rep, measured: dict[Model, Measured], quick: bool) -> None:
     from .ours import pct
 
     rep.section("The rule (fixed before these numbers)")
     rep.note(f"(a) our dev tasks, greedy, right by execution: at most {OURS_RIGHT_MAX}%")
     rep.note(f"(b) BFCL dev slice, call categories, right: at most {BFCL_RIGHT_MAX}%")
-    rep.note(f"(c) our dev tasks, {SAMPLES} samples at T={TEMPERATURE:g}, mixed groups: "
-             f"at least {MIXED_MIN}%")
-    rep.note("Pick the smaller of 1.5B / 3B instruct meeting all three; else")
+    rep.note(f"(c) dev tasks that need a call, {SAMPLES} samples at T={TEMPERATURE:g}, mixed")
+    rep.note(f"    groups: at least {MIXED_MIN}%")
+    rep.note("(d) dev tasks that need a call, greedy, right by execution: at")
+    rep.note(f"    least {CALLS_RIGHT_MIN}%")
+    rep.note("Tasks that need a call: choose+fill and tricky arguments (not")
+    rep.note("'no tool fits', where declining is right).")
+    rep.note("Pick the smaller of 1.5B / 3B instruct meeting all four; else")
     rep.note("base 1.5B, then base 3B; else stop and bring it to the author.")
     order = [m for m in (*RULE_ORDER, I05, B05) if m in measured]
-    for title, fn in (("(a) our dev tasks, greedy right",
-                       lambda x: (pct(x.ours_right, x.ours_n), x.a)),
-                      ("(b) BFCL dev calls, greedy right",
-                       lambda x: (pct(x.bfcl_right, x.bfcl_n), x.b)),
-                      ("(c) mixed groups of 8",
-                       lambda x: (pct(x.mixed, x.groups), x.c))):
+    for k in range(4):
+        rows = []
+        for m in order:
+            name, what, n_right, n, threshold, met = criteria(measured[m])[k]
+            rows.append([m.label, role(m), pct(n_right, n), threshold,
+                         "met" if met else "not met"])
         rep.blank()
-        rep.table(["model", "role", title, "met"],
-                  [[m.label, role(m), *fn(measured[m])] for m in order])
+        rep.note(f"({name}) {what}")
+        rep.table(["model", "role", "count", "needs", "met"], rows)
     rep.blank()
-    rep.table(["model", "role", "(a)", "(b)", "(c)", "qualifies"],
-              [[m.label, role(m), measured[m].a, measured[m].b, measured[m].c,
-                measured[m].qualifies] for m in order])
+    rep.table(["model", "role", "(a)", "(b)", "(c)", "(d)", "qualifies"],
+              [[m.label, role(m), *["met" if c[5] else "not" for c in criteria(measured[m])],
+                "yes" if measured[m].qualifies else "no"] for m in order])
     v = verdict(measured)
     rep.blank()
     import textwrap
