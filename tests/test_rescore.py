@@ -79,3 +79,62 @@ def test_setup_labels():
     assert dtype_name(torch.float32) == "float32" and dtype_name(torch.bfloat16) == "bfloat16"
     assert "CUBLAS_WORKSPACE_CONFIG=:4096:8" in determinism_label("cuda")
     assert determinism_label("mps").startswith("not set on mps")
+
+
+# -- bfcl-rescore --split eval: filter an all-split file (needs bfcl-eval's data, no model) ----
+
+
+def _all_split_irrelevance(tmp_path, monkeypatch):
+    import json
+
+    from tinytools import bfcl
+
+    monkeypatch.setattr(cli, "ROOT", tmp_path)
+    monkeypatch.setattr(cli, "OUTPUTS", tmp_path / "outputs")
+    (tmp_path / "outputs").mkdir()
+    ids = [it.id for it in bfcl.load_items("irrelevance", 400, "all")]
+    src = tmp_path / "outputs" / "bfcl-Qwen2.5-0.5B-Instruct-greedy-limit400-replies.jsonl"
+    src.write_text("".join(json.dumps({"id": i, "category": "irrelevance", "reply": "No tool fits.",
+                                       "hit_cap": False, "sample": 0, "dtype": "float32",
+                                       "device": "mps"}) + "\n" for i in ids))
+    return src, ids
+
+
+def _args(path, split):
+    import argparse
+
+    return argparse.Namespace(replies=path, model="Qwen/Qwen2.5-0.5B-Instruct", seed=0, split=split)
+
+
+def test_bfcl_rescore_split_eval_filters_to_eval(tmp_path, monkeypatch):
+    import json
+
+    from tinytools import bfcl
+
+    src, ids = _all_split_irrelevance(tmp_path, monkeypatch)
+    before = src.read_bytes()
+    cli.cmd_bfcl_rescore(_args(src, "eval"))
+    assert src.read_bytes() == before  # the all-split file is not touched
+    out = tmp_path / "outputs"
+    rows = [json.loads(x) for x in
+            (out / "bfcl-Qwen2.5-0.5B-Instruct-eval-greedy-limit400-replies.jsonl").read_text().splitlines()]
+    dev = set(bfcl.dev_slice("irrelevance"))
+    assert [r["id"] for r in rows] == [i for i in ids if i not in dev] and len(rows) == 216
+    text = (out / "bfcl-Qwen2.5-0.5B-Instruct-eval-greedy-limit400.txt").read_text()
+    assert "eval: every item minus the dev slice" in text and "WARNING" not in text
+    assert any(line.split()[:2] == ["irrelevance", "216"] for line in text.splitlines())
+    # the eval file it wrote rescores to the same capture
+    first = text
+    cli.cmd_bfcl_rescore(_args(out / "bfcl-Qwen2.5-0.5B-Instruct-eval-greedy-limit400-replies.jsonl",
+                               None))
+    assert (out / "bfcl-Qwen2.5-0.5B-Instruct-eval-greedy-limit400.txt").read_text() \
+        .replace("  (the eval items of a --split all replies file)\n", "") == first \
+        .replace("  (the eval items of a --split all replies file)\n", "")
+
+
+def test_bfcl_rescore_split_eval_refuses_a_non_all_file(tmp_path, monkeypatch):
+    src, _ = _all_split_irrelevance(tmp_path, monkeypatch)
+    dev = src.with_name("bfcl-Qwen2.5-0.5B-Instruct-dev-greedy-limit400-replies.jsonl")
+    src.rename(dev)
+    with pytest.raises(SystemExit, match="filters an all-split file"):
+        cli.cmd_bfcl_rescore(_args(dev, "eval"))

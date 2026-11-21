@@ -453,8 +453,16 @@ def cmd_bfcl_rescore(args) -> None:
     if not rows:
         sys.exit(f"{path}: no replies")
     sampling, samples = name["samples"] > 1, name["samples"]
+    source = name["split"]
+    if args.split is not None and args.split != source:
+        if source != "all":
+            sys.exit(f"{path.name} holds the {source} split; --split {args.split} filters "
+                     "an all-split file")
+        name["split"] = args.split
     tag = _bfcl_tag(args.model, name["split"], name["mode"], name["limit"])
     out = OUTPUTS / f"bfcl-{tag}.txt"
+    # filtering writes a new replies file under the split's name; the source stays as it was
+    replies_out = path if name["split"] == source else OUTPUTS / f"bfcl-{tag}-replies.jsonl"
     earlier = out.read_text(encoding="utf-8") if out.exists() else None
     try:
         device_type, dtype = recorded_setup(rows, earlier)
@@ -467,6 +475,9 @@ def cmd_bfcl_rescore(args) -> None:
     results, ordered = [], []
     for cat, group in by_cat.items():
         items = bfcl.load_items(cat, name["limit"], name["split"])
+        if name["split"] != source:  # keep the split's items (all minus the dev slice)
+            keep = set(bfcl.in_split(list(group), bfcl.dev_slice(cat), name["split"]))
+            group = {i: rs for i, rs in group.items() if i in keep}
         if [it.id for it in items] != list(group):
             sys.exit(f"{path.name}: the {cat} replies are not the first "
                      f"{name['limit'] or 'all'} items of split {name['split']}, in order")
@@ -486,10 +497,16 @@ def cmd_bfcl_rescore(args) -> None:
                 sampling=sampling, samples=samples, temperature=name["temperature"],
                 seed=args.seed, dtype=dtype, determinism=determinism_label(device_type))
     rep.kv("checked by", "bfcl-rescore of the saved replies")
+    if name["split"] != source:
+        rep.note(f"(the {name['split']} items of a --split {source} replies file)")
     _bfcl_body(rep, results, sampling=sampling, samples=samples, wall=wall)
     rep.close()
-    _write_jsonl(path, ordered)
-    progress.status(f"verdicts in {path.relative_to(ROOT)} updated (replies unchanged)")
+    _write_jsonl(replies_out, ordered)
+    if replies_out == path:
+        progress.status(f"verdicts in {path.relative_to(ROOT)} updated (replies unchanged)")
+    else:
+        progress.status(f"{name['split']} replies written to {replies_out.relative_to(ROOT)} "
+                        f"({path.name} unchanged)")
 
 
 # -- our tool tasks --------------------------------------------------------------
@@ -1316,6 +1333,9 @@ def main(argv: list[str] | None = None) -> None:
                    help="a bfcl-...-replies.jsonl; its verdict fields are rewritten")
     s.add_argument("--model", default="Qwen/Qwen2.5-0.5B-Instruct", help="the model it was scored with")
     s.add_argument("--seed", type=int, default=0, help="the seed it was scored with (printed only)")
+    s.add_argument("--split", choices=["eval"], default=None,
+                   help="eval: keep only the eval items of an all-split file and write the "
+                        "capture bfcl-score --split eval would (default: the file's own split)")
     s.set_defaults(fn=cmd_bfcl_rescore)
 
     s = sub.add_parser("tasks", help="generate our tool tasks (test, dev, train) and count them")

@@ -11,9 +11,9 @@ Five figures, in the post's order:
   three calls, each checked by exact match and by execution match.
 * ``untrained-outcomes`` (section 3, :func:`figure_untrained_outcomes`): every
   greedy reply of the untrained model, split by outcome, one bar per BFCL
-  category and per kind of our tasks. From the greedy ``score`` and
-  ``bfcl-score`` captures; skipped with a message while either is missing or
-  still being written.
+  category and per kind of our tasks. From the greedy ``score`` capture and
+  the greedy ``bfcl-score --split eval`` capture; skipped with a message while
+  either is missing or still being written.
 * ``toolace-funnel`` (section 4, :func:`figure_toolace_funnel`): ToolACE's rows
   down to the ones each arm trains on, bars sized by row count. From the
   ``toolace-stats`` and ``sft-data`` captures.
@@ -1431,10 +1431,12 @@ def default_score_capture(model: str = MODEL) -> Path:
 
 
 def default_bfcl_capture(model: str = MODEL) -> Path | None:
-    """The one greedy BFCL capture under outputs/ (any limit); None if there is none."""
-    found = sorted(OUTPUTS.glob(f"bfcl-{model}-greedy-limit*.txt"))
+    """The one greedy BFCL capture of the eval split under outputs/ (any limit); None if
+    there is none. The eval split is every item minus the dev slice, the one the post
+    publishes; an all-split or dev capture is used only when passed with --bfcl."""
+    found = sorted(OUTPUTS.glob(f"bfcl-{model}-eval-greedy-limit*.txt"))
     if len(found) > 1:
-        raise SystemExit(f"several greedy BFCL captures: {[p.name for p in found]}; "
+        raise SystemExit(f"several greedy eval BFCL captures: {[p.name for p in found]}; "
                          "choose one with --bfcl")
     return found[0] if found else None
 
@@ -1468,7 +1470,7 @@ def make_figures(only: str | None = None, *, score: Path | None = None,
         b_path = bfcl or default_bfcl_capture()
         missing = [p.name for p in (s_path, b_path) if p is not None and not p.exists()]
         if b_path is None:
-            missing.append(f"bfcl-{MODEL}-greedy-limit<N>.txt")
+            missing.append(f"bfcl-{MODEL}-eval-greedy-limit<N>.txt")
         if missing:
             _say(f"untrained-outcomes: skipped, capture missing: {', '.join(missing)}")
         else:

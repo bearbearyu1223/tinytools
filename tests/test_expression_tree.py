@@ -7,7 +7,8 @@ import json
 
 import pytest
 
-from tinytools.checkers import check_reply, expression_tree, normalize_arguments
+from tinytools.checkers import (check_reply, expression_tree, normalize_arguments,
+                                same_percent_work)
 from tinytools.tools import execute
 
 CALC = {"name": "calculator", "arguments": {"expression": "348 * 27"}}
@@ -85,10 +86,63 @@ def test_bare_reference_matches_bare_reply():
     assert calc("--4", "4") == (False, True)
 
 
-def test_percent_written_as_a_decimal_fails():
-    # test-0437 in the first 0.5B capture: equivalent work in another form. Option (b) as
-    # specified fails it; whether to normalize x * p / 100 vs x * 0.p is open (see the report).
-    assert calc("3438 * 0.48", "3438 * 48 / 100") == (False, False)
+# -- the percent rule (Han, 2026-11-21) ------------------------------------------------------
+
+PCT = "3438 * 48 / 100"
+
+
+@pytest.mark.parametrize("expr", ["3438 * 0.48", "0.48 * 3438", "3438 * (48 / 100)",
+                                  "(48 / 100) * 3438", "3438 * 0.480", "(3438) * .48"])
+def test_percent_as_a_decimal_or_a_fraction_passes_execution(expr):
+    # test-0437 in the 0.5B test capture wrote "3438 * 0.48"
+    assert calc(expr, PCT) == (False, True)
+
+
+def test_test_0964_passes_execution():
+    assert calc("1062 * 0.68", "1062 * 68 / 100") == (False, True)
+
+
+@pytest.mark.parametrize("expr", ["1650.24", "1650.24 * 1", "1650.24 * 100 / 100", "--1650.24",
+                                  "1650.24 + 0"])
+def test_hand_worked_percent_answer_still_fails(expr):
+    assert calc(expr, PCT) == (False, False)
+
+
+@pytest.mark.parametrize("expr", ["9396 * 1", "--9396", "9396"])
+def test_percent_rule_leaves_other_hand_worked_answers_failing(expr):
+    assert calc(expr) == (False, False)
+
+
+@pytest.mark.parametrize("expr", ["3438 * 4.8", "3438 * 0.048", "3438 * 0.49", "3437 * 0.48",
+                                  "3438 * 0.48 + 1", "3438 * (48 / 10)", "3438 * (48 // 100)",
+                                  "3438 * 48 / 1000"])
+def test_percent_rule_needs_exactly_100_and_the_rest_of_the_tree(expr):
+    assert calc(expr, PCT)[1] is False
+
+
+@pytest.mark.parametrize("expr, reference", [
+    ("2.5", "250 / 100"),          # cm to m: a standalone n / 100 is not a decimal
+    ("250 * 0.01", "250 / 100"),   # nor a product with 0.01 (the reference is no product)
+    ("2500", "2.5 * 1000"),        # km/kg: no digits x 10^k rule
+    ("25 * 100", "2.5 * 1000"),
+    ("2.5 * 1000 / 100", "2.5 * 1000"),
+])
+def test_unit_traps_stay_failing(expr, reference):
+    assert calc(expr, reference) == (False, False)
+
+
+def test_percent_rule_is_symmetric_in_the_operands():
+    # the rule doesn't know which operand of x * p is the percent: x / 100 passes too
+    assert calc("48 * 34.38", PCT) == (False, True)
+
+
+def test_percent_rule_trees():
+    want = expression_tree(PCT)
+    assert same_percent_work(expression_tree("3438 * 0.48"), want)
+    assert not same_percent_work(expression_tree("3438 * 0.48"), expression_tree("3438 * 48"))
+    assert not same_percent_work(None, want)
+    assert not same_percent_work(expression_tree("3438 * 0.48"), None)
+    assert expression_tree("3438 * 0.48") != want  # the trees still differ: the rule is separate
 
 
 # -- blank optional arguments ---------------------------------------------------------------

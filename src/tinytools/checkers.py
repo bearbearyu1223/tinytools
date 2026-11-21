@@ -27,8 +27,12 @@ the reply's call raises no error; and the results agree:
   ``348 * 27``, but the answer worked out by hand does not, whether bare
   (``9396``) or dressed up (``9396 * 1``, ``--9396``, ``9396 + 0``): post
   10's reward must not pay for computing the answer without the tool.
-  Equivalent work in another form fails too (``3438 * 0.48`` against
-  ``3438 * 48 / 100``);
+  One narrow exception, the percent rule (:func:`same_percent_work`):
+  against a reference ``x * p / 100``, a product written ``x * 0.pp``,
+  ``0.pp * x`` or ``x * (p / 100)`` is the same work when its number times
+  exactly 100 is the reference's ``p`` and the rest of the product matches.
+  Nothing else is folded: ``2.5`` still fails against ``250 / 100``, and
+  ``2500`` against ``2.5 * 1000``;
 * search_contacts, get_calendar_event, search_documents: the *same set* of
   records (by id). A broader query that includes the answer fails, and so
   does a narrower one;
@@ -54,6 +58,7 @@ from __future__ import annotations
 import ast
 import json
 import math
+from decimal import Decimal
 from dataclasses import dataclass
 from typing import Any
 
@@ -65,7 +70,7 @@ ABS_TOL = 1e-9
 
 __all__ = ["REL_TOL", "ABS_TOL", "decode", "normalize_arguments", "exact_match",
            "execution_match", "Check", "check_reply", "call_text", "state_key", "is_bare_number",
-           "expression_tree"]
+           "expression_tree", "same_percent_work"]
 
 
 # -- decoding ------------------------------------------------------------------------
@@ -295,7 +300,49 @@ def same_work(name: str, args: Any, reference: dict) -> bool:
     if not isinstance(args, dict):
         return False
     got = expression_tree(args.get("expression"))
-    return got is not None and got == expression_tree(reference["arguments"].get("expression"))
+    want = expression_tree(reference["arguments"].get("expression"))
+    return got is not None and (got == want or same_percent_work(got, want))
+
+
+_HUNDRED = ("n", 100.0)
+
+
+def _times_100(value: float) -> Decimal:
+    """``value`` as written (its shortest repr) times 100, exactly: ``0.48`` gives 48."""
+    return Decimal(repr(value)) * 100
+
+
+def same_percent_work(got: tuple | None, want: tuple | None) -> bool:
+    """The percent rule: ``want`` is ``x * p / 100`` and ``got`` the same product with
+    one operand ``p`` written as ``p / 100`` or as a decimal ``d`` with ``d * 100 == p``
+    exactly (``3438 * 0.48``, ``0.48 * 3438``, ``3438 * (48 / 100)``). Pure.
+
+    Both are :func:`expression_tree` trees. Only a whole reference of that shape
+    qualifies, and only when its numerator is a product (so ``250 / 100`` stays
+    ``250 / 100``: ``2.5`` and ``250 * 0.01`` don't match it). Nothing is
+    computed beyond that one operand, and execution match still compares the
+    evaluated results.
+    """
+    if got is None or want is None or got[0] != "*":
+        return False
+    if want[0] != "/" or want[2] != _HUNDRED or want[1][0] != "*":
+        return False
+    target = sorted(want[1][1], key=repr)
+    numbers = {x[1] for x in target if x[0] == "n"}
+    operands = list(got[1])
+    for i, x in enumerate(operands):
+        if x[0] == "n":
+            p = float(_times_100(x[1]))
+        elif x[0] == "/" and x[1][0] == "n" and x[2] == _HUNDRED:
+            p = x[1][1]
+        else:
+            continue
+        if p not in numbers:
+            continue
+        rest = operands[:i] + [("n", p)] + operands[i + 1:]
+        if sorted(rest, key=repr) == target:
+            return True
+    return False
 
 
 def same_result(name: str, a: Any, b: Any) -> bool:

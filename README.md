@@ -138,7 +138,10 @@ decimal.
 **`bfcl-rescore --replies <file>`** re-judges a replies file with bfcl's checker
 (no model) and rewrites the capture `bfcl-score` would have written; its split,
 mode and limit come from the file name. Timings come from the replies, or are
-carried over from the earlier capture.
+carried over from the earlier capture. `--split eval` on an all-split file keeps
+the eval items only and writes `bfcl-<model>-eval-<mode>-limit<N>.txt` and its
+`-replies.jsonl` (the names `bfcl-score --split eval` writes), leaving the all-split
+file as it was; the figures read that eval capture by default.
 
 Decoding is set explicitly: greedy is argmax (Qwen's `generation_config.json` would
 otherwise add repetition penalty 1.1, top-p 0.8, top-k 20), and `--samples N
@@ -192,7 +195,9 @@ result can never match. Three details of execution match: a start time with zero
 seconds (`"15:00:00"`) runs as `"15:00"` (exact match still compares the strings);
 a calculator call whose expression is a bare number (`"9396"`, no operator) fails
 when the reference's has an operator, since it skips the tool's work and post
-10's reward must not pay for that; and the filler words dropped from title and
+10's reward must not pay for that (the expressions must have the same normalized
+tree, with one narrow percent rule: `3438 * 0.48` or `3438 * (48 / 100)` matches
+`3438 * 48 / 100`, but `2.5` never matches `250 / 100`); and the filler words dropped from title and
 document searches include their plurals ("meetings", "events", "files").
 Outcomes come from `classify.py`, with execution match as the verdict.
 

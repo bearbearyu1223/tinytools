@@ -1,0 +1,86 @@
+==========================================================================
+tinytools bfcl-score (greedy)
+==========================================================================
+device        : mps (Apple arm64)
+torch         : 2.13.0
+platform      : Darwin 24.6.0 (arm64)
+device memory : 17.2 GB
+
+--------------------------------------------------------------------------
+Setup
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-0.5B-Instruct
+  bfcl-eval                          2025.12.17
+  split                              eval: every item minus the dev slice
+    dev slice                        10% of each category, seed 0
+  items per category                 first 400 in bfcl's order
+  decoding                           greedy
+  top_p / top_k / repetition penalty 1.0 / off / 1.0
+  max new tokens                     512
+  dtype                              float32
+  determinism                        not set on mps (the CUDA flags only)
+  seed                               0 (+ crc32 of each item id)
+  checked by                         bfcl-rescore of the saved replies
+  (the eval items of a --split all replies file)
+
+--------------------------------------------------------------------------
+Tasks that need a call: every reply
+--------------------------------------------------------------------------
+  category     n  no call  unparse  wrong fn  wrong n  bad args  right
+  ----------------------------------------------------------------------
+  simple     360        1        3         0        0        58    298
+  multiple   180        0        2         2        0        32    144
+  parallel   180        0        2         0       41        40     97
+  par_multi  180        0        2        27       16        42     93
+  total      900        1        9        29       57       172    632
+  wrong fn: names differ as a set; wrong n: the right names, too
+  many or too few calls; bad args: the right calls, arguments the
+  checker rejects; right: BFCL's checker accepts the reply (BFCL's
+  accuracy on these categories).
+
+  category   hit token cap  counted above as
+  --------------------------------------------
+  simple                 0                 -
+  multiple               0                 -
+  parallel               1         unparse 1
+  par_multi              0                 -
+  total                  1         unparse 1
+  hit token cap: the model's reply ran to max new tokens (Setup)
+  and was cut off there; it is counted in the table above.
+
+--------------------------------------------------------------------------
+Tasks where no tool fits: every reply
+--------------------------------------------------------------------------
+  category       n  declined  called anyway  bfcl right
+  -------------------------------------------------------
+  irrelevance  216        98            118         100
+  declined: no <tool_call> tag (right); called anyway: any tag.
+  bfcl right: BFCL's own verdict, which also passes a reply whose
+  <tool_call> fails to decode (here it called anyway).
+
+  category           outcome  replies  of which hit token cap
+  -------------------------------------------------------------
+  irrelevance       declined       98                       6
+  irrelevance  called anyway      118                       0
+  hit token cap: the model's reply ran to max new tokens (Setup)
+  and was cut off there. Cut off before any <tool_call> tag, it
+  counts as declined.
+
+--------------------------------------------------------------------------
+Controls
+--------------------------------------------------------------------------
+  category     items  reference passes
+  --------------------------------------
+  simple         360               360
+  multiple       180               180
+  parallel       180               180
+  par_multi      180               180
+  irrelevance    216               216
+  reference passes: BFCL's own answer, written in Qwen's format and
+  scored by the same checker (the harness can give full marks).
+
+--------------------------------------------------------------------------
+Wall clock (varies run to run)
+--------------------------------------------------------------------------
+  (not recorded: the replies file has no timings and there is no
+  earlier capture to carry them over from)

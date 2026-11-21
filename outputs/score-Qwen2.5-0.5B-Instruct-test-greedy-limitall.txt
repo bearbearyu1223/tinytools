@@ -114,8 +114,8 @@ Tasks that need a call: every reply
   kind           n  no call  unparse  wrong fn  wrong n  bad args  right
   ------------------------------------------------------------------------
   choose+fill  600       59        1        79        0        97    364
-  tricky args  200       39        1        23        0        79     58
-  total        800       98        2       102        0       176    422
+  tricky args  200       39        1        23        0        77     60
+  total        800       98        2       102        0       174    424
   wrong fn: another tool; wrong n: the right tool, more than one
   call; bad args: the right tool, arguments that fail execution
   match; right: execution match.
@@ -150,9 +150,9 @@ Right by execution and by exact match
   kind           right by execution  right by exact match
   ---------------------------------------------------------
   choose+fill    364 of 600 (60.7%)    348 of 600 (58.0%)
-  tricky args     58 of 200 (29.0%)     57 of 200 (28.5%)
+  tricky args     60 of 200 (30.0%)     57 of 200 (28.5%)
   no tool fits    94 of 200 (47.0%)     94 of 200 (47.0%)
-  total         516 of 1000 (51.6%)   499 of 1000 (49.9%)
+  total         518 of 1000 (51.8%)   499 of 1000 (49.9%)
   The same replies, two checks. On no-tool-fits tasks both mean
   declined.
 
@@ -167,7 +167,7 @@ Controls, scored by the same checks
 --------------------------------------------------------------------------
 Execution match but not exact match
 --------------------------------------------------------------------------
-  replies                            17
+  replies                            19
   test-0005  get_calendar_event
       ref: {"name": "get_calendar_event", "arguments": {"date": \
       "2026-02-23"}}
@@ -212,6 +212,11 @@ Execution match but not exact match
       got: {"name": "create_calendar_event", "arguments": {"title": \
       "Strategy session", "date": "2026-03-27", "start_time": \
       "13:00:00", "duration_minutes": 45}}
+  test-0437  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "3438 * 48 \
+      / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "3438 * \
+      0.48"}}
   test-0462  get_calendar_event
       ref: {"name": "get_calendar_event", "arguments": {"date": \
       "2026-03-03"}}
@@ -263,6 +268,11 @@ Execution match but not exact match
       "2026-04-01"}}
       got: {"name": "get_calendar_event", "arguments": {"date": \
       "2026-04-01", "title": "meeting"}}
+  test-0964  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "1062 * 68 \
+      / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "1062 * \
+      0.68"}}
 
 --------------------------------------------------------------------------
 Exact match but not execution match (a check: should be 0)
