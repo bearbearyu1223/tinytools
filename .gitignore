@@ -13,3 +13,8 @@ outputs/*.err
 
 # code-reviewer findings as failing tests (series convention: kept out of git)
 /tests/review/
+
+# Lambda runner: secrets, per-run host keys, run logs (run.json and runs/ledger.csv are committed)
+lambda.env
+/.lambda/
+/runs/*/log.txt

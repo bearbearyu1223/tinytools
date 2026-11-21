@@ -13,6 +13,7 @@ Commands (``tinytools <command> --help`` for each one's flags):
     bfcl-rescore    re-judge a bfcl-score replies file with bfcl's checker (no model)
     sft-data        the SFT sets: ToolACE truncated (real), random-call per seed (control)
     figures         the post's figures, parsed from the captures, into figures/
+    milestone0      six models on the dev split, the model rule's verdict, LoRA vs full timing
 
 Every command prints a report on stdout (progress goes to stderr) and saves the
 same report under outputs/, so ``tinytools bfcl-score > x.txt`` captures only
@@ -1296,6 +1297,20 @@ def cmd_figures(args) -> None:
     make_figures(args.only, score=args.score, bfcl=args.bfcl, out=args.out)
 
 
+# -- Milestone 0 -------------------------------------------------------------------------
+
+
+def cmd_milestone0(args) -> None:
+    _quiet_hf()
+    from . import milestone0
+
+    try:
+        models = milestone0.parse_models(args.models) if args.models else None
+    except ValueError as e:
+        sys.exit(str(e))
+    milestone0.run(args.quick, models, ROOT, base_when_needed=args.base_when_needed)
+
+
 # -- entry point -------------------------------------------------------------------
 
 
@@ -1377,6 +1392,18 @@ def main(argv: list[str] | None = None) -> None:
                    help="greedy bfcl-score capture (default: the one under outputs/)")
     s.add_argument("--out", type=Path, default=None, help="directory (default: figures/)")
     s.set_defaults(fn=cmd_figures)
+
+    s = sub.add_parser("milestone0", help="score six models on the dev split; the rule's verdict")
+    s.add_argument("--quick", action="store_true",
+                   help="0.5B only, 1 task per kind and category, a tiny timing probe (Mac check)")
+    s.add_argument("--models", default=None,
+                   help="comma-separated subset, e.g. 1.5B-instruct,3B-instruct (default: all six; "
+                        "with --quick: 0.5B-instruct,0.5B-base)")
+    s.add_argument("--base-when-needed", action="store_true",
+                   help="score a base model only if the rule reaches it (no instruct "
+                        "candidate qualifies), and 0.5B base not at all; base replies run to "
+                        "the token cap, so this is most of the run's time")
+    s.set_defaults(fn=cmd_milestone0)
 
     args = p.parse_args(argv)
     t0 = time.perf_counter()

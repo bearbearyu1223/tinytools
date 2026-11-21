@@ -1,0 +1,96 @@
+{
+  "command": "tinytools milestone0 --quick",
+  "models": [
+    "Qwen/Qwen2.5-0.5B-Instruct",
+    "Qwen/Qwen2.5-0.5B"
+  ],
+  "device": "mps",
+  "dtype": "float32",
+  "determinism": "not set on mps (the CUDA flags only)",
+  "seeds": {
+    "generation": 0,
+    "probe": 0
+  },
+  "samples": 8,
+  "temperature": 1.0,
+  "max_new_tokens": 512,
+  "versions": {
+    "torch": "2.13.0",
+    "transformers": "5.14.1",
+    "bfcl-eval": "2025.12.17",
+    "numpy": "1.26.4",
+    "python": "3.12.11",
+    "platform": "Darwin 24.6.0 (arm64)",
+    "cuda (torch build)": "-"
+  },
+  "dev_tasks_sha256": "fabf92cbf4ea84fecef3fcffd9051a67520bcdff539f13d4744d1d5796bcb83c",
+  "bfcl_dev_seed": 0,
+  "probe": {
+    "quick": true,
+    "ours_limit": 1,
+    "bfcl_limit": 1,
+    "timing_sizes": [
+      "0.5B"
+    ],
+    "batch": 2,
+    "seq_len": 256,
+    "warmup_steps": 1,
+    "timed_steps": 2,
+    "lora_rank": 16,
+    "lora_alpha": 32.0,
+    "lr": 1e-05,
+    "base_when_needed": false
+  },
+  "measured": {
+    "Qwen/Qwen2.5-0.5B-Instruct": {
+      "model": "Qwen/Qwen2.5-0.5B-Instruct",
+      "ours_right": 0,
+      "ours_n": 3,
+      "bfcl_right": 1,
+      "bfcl_n": 4,
+      "mixed": 1,
+      "groups": 3
+    },
+    "Qwen/Qwen2.5-0.5B": {
+      "model": "Qwen/Qwen2.5-0.5B",
+      "ours_right": 1,
+      "ours_n": 3,
+      "bfcl_right": 0,
+      "bfcl_n": 4,
+      "mixed": 0,
+      "groups": 3
+    }
+  },
+  "skipped": {},
+  "probe_results": [
+    {
+      "size": "0.5B",
+      "method": "LoRA r16",
+      "trainable": 8798208,
+      "total": 494032768,
+      "seconds_per_step": 1.5346286460007832,
+      "peak_bytes": 2085529600,
+      "losses": [
+        1.597379446029663,
+        0.797967255115509,
+        1.652174472808838
+      ],
+      "note": ""
+    },
+    {
+      "size": "0.5B",
+      "method": "full",
+      "trainable": 494032768,
+      "total": 494032768,
+      "seconds_per_step": 3.7435709579985996,
+      "peak_bytes": 6580297216,
+      "losses": [
+        1.597379446029663,
+        0.9879680275917053,
+        1.4727941751480103
+      ],
+      "note": ""
+    }
+  ],
+  "verdict": "no verdict: Qwen/Qwen2.5-1.5B-Instruct was not scored, and the rule reaches it"
+}

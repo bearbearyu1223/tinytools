@@ -264,6 +264,24 @@ def item_seed(seed: int, item_id: str) -> int:
     return (seed + zlib.crc32(item_id.encode())) % (2**31)
 
 
+END_OF_TURN = "<|im_end|>"
+
+
+def stop_ids(model_eos, end_of_turn: int | None) -> list[int]:
+    """The ids generation stops at: the model's own, then the chat template's end of turn.
+
+    Qwen2.5-Instruct's config already lists ``<|im_end|>`` (151645) first, so for
+    instruct models this returns their list unchanged. A base model's config stops
+    only at ``<|endoftext|>``, so without the end of turn a base model's reply
+    would run past its turn into an invented next one. Pure.
+    """
+    ids = list(model_eos) if isinstance(model_eos, (list, tuple)) else [model_eos]
+    ids = [i for i in ids if i is not None]
+    if end_of_turn is not None and end_of_turn >= 0 and end_of_turn not in ids:
+        ids.append(end_of_turn)
+    return ids
+
+
 def generation_config(tok, model, samples: int, temperature: float):
     """Decoding exactly as stated: greedy, or plain temperature sampling.
 
@@ -275,7 +293,8 @@ def generation_config(tok, model, samples: int, temperature: float):
 
     common = dict(
         max_new_tokens=MAX_NEW_TOKENS,
-        eos_token_id=model.generation_config.eos_token_id,
+        eos_token_id=stop_ids(model.generation_config.eos_token_id,
+                              tok.convert_tokens_to_ids(END_OF_TURN)),
         pad_token_id=tok.pad_token_id,
         repetition_penalty=1.0,
         top_p=1.0,

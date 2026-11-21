@@ -19,6 +19,11 @@ uv run tinytools score --split test --limit 30              # greedy, 30 per kin
 uv run tinytools score --split test --limit 10 --samples 8 --temperature 1.0
 uv run tinytools rescore --replies outputs/score-<...>-replies.jsonl      # no model
 uv run tinytools sft-data --seeds 1,2,3  # SFT sets -> data/sft/ (r4a, r4b)
+uv run tinytools milestone0 --quick      # Milestone 0 end to end, 0.5B, a few items (Mac check)
+uv run tinytools milestone0              # six models on the dev split, the rule's verdict (H100)
+scripts/lambda.sh doctor                 # Lambda settings, SSH key, API; launches nothing
+scripts/lambda.sh estimate milestone0    # price x hours against the experiment's cap
+scripts/lambda.sh run milestone0         # up -> setup -> run -> fetch -> down (docs/lambda-playbook.md)
 uv run pytest -q && uvx ruff check --select F,E9,B
 ```
 
@@ -27,6 +32,12 @@ writes the same report to `outputs/`. `bfcl-score` also writes every reply, its
 outcome and BFCL's error type to `outputs/bfcl-<model>-<mode>-limit<N>-replies.jsonl`.
 `data/` (converted ToolACE) and `bfcl_project/` (bfcl-eval's scratch directories)
 are gitignored.
+
+GPU runs go through `scripts/lambda.sh` and `experiments/<name>.toml`, as
+`docs/lambda-playbook.md` describes: an approved estimate, a hard time limit, termination
+through Lambda's API whatever happens, and a record in `runs/<date>-<exp>/run.json` and
+`runs/ledger.csv`. Settings and keys live in `lambda.env` (gitignored; see
+`lambda.env.example`).
 
 Environment: `TINYTOOLS_DEVICE=cpu|mps|cuda` overrides the device (default cuda >
 mps > cpu); `TINYTOOLS_QUIET=1` silences progress.

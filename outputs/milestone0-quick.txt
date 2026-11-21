@@ -1,0 +1,213 @@
+==========================================================================
+tinytools milestone0 --quick (not for publication)
+==========================================================================
+device        : mps (Apple arm64)
+torch         : 2.13.0
+platform      : Darwin 24.6.0 (arm64)
+device memory : 17.2 GB
+
+--------------------------------------------------------------------------
+Setup
+--------------------------------------------------------------------------
+  models                             2, in this order:
+    Qwen/Qwen2.5-0.5B-Instruct   comparison
+    Qwen/Qwen2.5-0.5B            comparison
+  our tasks                          dev split, seed 0
+    sha256 (first 16)                fabf92cbf4ea84fe
+    scored                           3 (first 1 of each kind)
+  BFCL                               dev slice, 10% per category, seed 0
+    scored                           first 1 per category
+  decoding                           greedy; and 8 samples at T=1 (ours)
+  top_p / top_k / repetition penalty 1.0 / off / 1.0
+  max new tokens                     512
+  stop at                            the model's eos, and <|im_end|>
+  seed                               0 (+ crc32 of each item id)
+  dtype                              float32
+  determinism                        not set on mps (the CUDA flags only)
+  torch                              2.13.0
+  transformers                       5.14.1
+  bfcl-eval                          2025.12.17
+  numpy                              1.26.4
+  python                             3.12.11
+  platform                           Darwin 24.6.0 (arm64)
+  cuda (torch build)                 -
+
+--------------------------------------------------------------------------
+0.5B instruct (comparison): Qwen/Qwen2.5-0.5B-Instruct
+--------------------------------------------------------------------------
+  Our dev tasks, greedy: replies by outcome
+  kind         n  no call  unparse  wrong fn  wrong n  bad args  right
+  ----------------------------------------------------------------------
+  choose+fill  1        0        0         1        0         0      0
+  tricky args  1        0        0         1        0         0      0
+  total        2        0        0         2        0         0      0
+
+  kind          n  declined  called anyway
+  ------------------------------------------
+  no tool fits  1         0              1
+
+  kind          right by execution  right by exact match
+  --------------------------------------------------------
+  choose+fill        0 of 1 (0.0%)         0 of 1 (0.0%)
+  tricky args        0 of 1 (0.0%)         0 of 1 (0.0%)
+  no tool fits       0 of 1 (0.0%)         0 of 1 (0.0%)
+  total              0 of 3 (0.0%)         0 of 3 (0.0%)
+
+  BFCL dev slice, greedy: replies by outcome
+  category   n  no call  unparse  wrong fn  wrong n  bad args  right
+  --------------------------------------------------------------------
+  simple     1        0        0         0        0         0      1
+  multiple   1        0        1         0        0         0      0
+  parallel   1        0        0         0        0         1      0
+  par_multi  1        0        0         0        1         0      0
+
+  category     n  declined  called anyway
+  -----------------------------------------
+  irrelevance  1         0              1
+
+  BFCL right, call categories        1 of 4 (25.0%)
+  BFCL reference answers pass        5 of 5 (100.0%)
+
+  Our dev tasks, 8 samples at T=1: groups with signal
+  kind          tasks  all wrong  mixed  all right   share  per 1k
+  ------------------------------------------------------------------
+  choose+fill       1          1      0          0    0.0%     0.0
+  tricky args       1          1      0          0    0.0%     0.0
+  no tool fits      1          0      1          0  100.0%   125.0
+  total             3          2      1          0   33.3%    41.7
+
+  Wall clock (varies run to run)
+  pass         items  s/item  new tokens/item  hit token cap
+  ------------------------------------------------------------
+  ours greedy      3    3.24               48              0
+  ours x8          3   11.23              423              0
+  bfcl greedy      5    3.09               51              0
+
+--------------------------------------------------------------------------
+The same greedy pass twice
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-0.5B-Instruct
+  tasks                              3 of our dev tasks, greedy
+  replies byte-identical             3 of 3
+  outcomes that changed              0
+  Both passes ran in one process, one after the other; a second
+  process (a rerun of the command) is the stronger test.
+
+--------------------------------------------------------------------------
+Training step timing: LoRA vs full fine-tuning
+--------------------------------------------------------------------------
+  rows                               data/sft/real.jsonl (8504 rows)
+    used                             6, the first with 256+ tokens
+  batch x sequence length            2 x 256, no padding
+    scored tokens in those rows      133
+  Each row is cut to its last 256 tokens (its assistant turn is
+  at the end); masked tokens as in training (sft.py).
+  steps                              1 warm-up + 2 timed
+  A step: forward, backward, AdamW update; timed after a sync.
+  dtype (weights, grads, optimizer)  float32
+  LoRA                               rank 16, alpha 32, attention + MLP
+  LoRA on q, k, v, o, gate, up and down in every layer.
+  gradient checkpointing             off
+  model                              the instruct model of each size
+
+  size    method  trainable  s/step  GB now*  loss, step 1
+  ----------------------------------------------------------
+  0.5B  LoRA r16       8.8M   1.535      2.1         1.597
+  0.5B      full     494.0M   3.744      6.6         1.597
+  * MPS has no peak counter: memory allocated after the last step,
+    a lower bound on the peak.
+
+  One epoch of 8504 rows at this rate, if every batch had this
+  shape (4252 steps of 2); arithmetic, not a measurement:
+  size    method  hours per epoch
+  ---------------------------------
+  0.5B  LoRA r16             1.81
+  0.5B      full             4.42
+
+--------------------------------------------------------------------------
+0.5B base (comparison): Qwen/Qwen2.5-0.5B
+--------------------------------------------------------------------------
+  Our dev tasks, greedy: replies by outcome
+  kind         n  no call  unparse  wrong fn  wrong n  bad args  right
+  ----------------------------------------------------------------------
+  choose+fill  1        1        0         0        0         0      0
+  tricky args  1        1        0         0        0         0      0
+  total        2        2        0         0        0         0      0
+
+  kind          n  declined  called anyway
+  ------------------------------------------
+  no tool fits  1         1              0
+
+  kind          right by execution  right by exact match
+  --------------------------------------------------------
+  choose+fill        0 of 1 (0.0%)         0 of 1 (0.0%)
+  tricky args        0 of 1 (0.0%)         0 of 1 (0.0%)
+  no tool fits     1 of 1 (100.0%)       1 of 1 (100.0%)
+  total             1 of 3 (33.3%)        1 of 3 (33.3%)
+
+  BFCL dev slice, greedy: replies by outcome
+  category   n  no call  unparse  wrong fn  wrong n  bad args  right
+  --------------------------------------------------------------------
+  simple     1        1        0         0        0         0      0
+  multiple   1        1        0         0        0         0      0
+  parallel   1        1        0         0        0         0      0
+  par_multi  1        1        0         0        0         0      0
+
+  category     n  declined  called anyway
+  -----------------------------------------
+  irrelevance  1         1              0
+
+  BFCL right, call categories        0 of 4 (0.0%)
+  BFCL reference answers pass        5 of 5 (100.0%)
+
+  Our dev tasks, 8 samples at T=1: groups with signal
+  kind          tasks  all wrong  mixed  all right  share  per 1k
+  -----------------------------------------------------------------
+  choose+fill       1          1      0          0   0.0%     0.0
+  tricky args       1          1      0          0   0.0%     0.0
+  no tool fits      1          0      0          1   0.0%     0.0
+  total             3          2      0          1   0.0%     0.0
+
+  Wall clock (varies run to run)
+  pass         items  s/item  new tokens/item  hit token cap
+  ------------------------------------------------------------
+  ours greedy      3   36.25              512              3
+  ours x8          3   59.12             2332              9
+  bfcl greedy      5   21.56              419              4
+
+--------------------------------------------------------------------------
+The rule (fixed before these numbers)
+--------------------------------------------------------------------------
+  (a) our dev tasks, greedy, right by execution: at most 70%
+  (b) BFCL dev slice, call categories, right: at most 80%
+  (c) our dev tasks, 8 samples at T=1, mixed groups: at least 10%
+  Pick the smaller of 1.5B / 3B instruct meeting all three; else
+  base 1.5B, then base 3B; else stop and bring it to the author.
+
+  model                role  (a) our dev tasks, greedy right  met
+  -----------------------------------------------------------------
+  0.5B instruct  comparison                    0 of 3 (0.0%)  yes
+  0.5B base      comparison                   1 of 3 (33.3%)  yes
+
+  model                role  (b) BFCL dev calls, greedy right  met
+  ------------------------------------------------------------------
+  0.5B instruct  comparison                    1 of 4 (25.0%)  yes
+  0.5B base      comparison                     0 of 4 (0.0%)  yes
+
+  model                role  (c) mixed groups of 8  met
+  -------------------------------------------------------
+  0.5B instruct  comparison         1 of 3 (33.3%)  yes
+  0.5B base      comparison          0 of 3 (0.0%)   no
+
+  model                role  (a)  (b)  (c)  qualifies
+  -----------------------------------------------------
+  0.5B instruct  comparison  yes  yes  yes        yes
+  0.5B base      comparison  yes  yes   no         no
+
+  verdict                            incomplete
+    no verdict: Qwen/Qwen2.5-1.5B-Instruct was not scored, and the rule
+    reaches it
+  --quick: 0.5B only, a few items each; no verdict is meant.
+
+  >> no verdict: Qwen/Qwen2.5-1.5B-Instruct was not scored, and the rule
+     reaches it.
