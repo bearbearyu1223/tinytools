@@ -34,6 +34,7 @@ cap_usd = 10                         # refuse to launch past this total for the 
 commands = [
   "uv run tinytools toolace-convert",       # data/ is not in git: the SFT rows the probe needs
   "uv run tinytools sft-data --seeds 1",
+  "uv run tinytools engine-check --quick",   # preflight: the batched engine's first CUDA bf16 run, against the one-at-a-time engine
   'uv run tinytools milestone0 --base-when-needed --deadline-epoch "$TINYTOOLS_DEADLINE_EPOCH"',
 ]
 # Only files these commands write (fetch also skips any not written during the run).
@@ -43,5 +44,6 @@ fetch = [
   "outputs/milestone0-Qwen2.5-*-replies.jsonl",
   "outputs/toolace-convert.txt",
   "outputs/sft-data.txt",
+  "outputs/engine-check-quick.txt",
 ]
 setup_record = "outputs/milestone0-setup.json"
