@@ -41,56 +41,56 @@ The data the tools run on
 --------------------------------------------------------------------------
 Tasks by kind
 --------------------------------------------------------------------------
-  kind          test  dev  train  train-r6a
-  -------------------------------------------
-  choose+fill    600  120   3000        300
-  tricky args    200   40   1000        100
-  no tool fits   200   40   1000        100
-  total         1000  200   5000        500
-  seed 0; train-r6a is a seeded sample of train (post 10's
+  kind          test  dev  train  train-sample
+  ----------------------------------------------
+  choose+fill    600  120   3000           300
+  tricky args    200   40   1000           100
+  no tool fits   200   40   1000           100
+  total         1000  200   5000           500
+  seed 0; train-sample is a seeded sample of train (post 10's
   ready-for-RL measurement), the same 60/20/20 mix.
 
 --------------------------------------------------------------------------
 Tasks by tool
 --------------------------------------------------------------------------
-  tool                                 kind  test  dev  train  train-r6a
-  ------------------------------------------------------------------------
-  calculator                    choose+fill   120   24    600         45
-  search_contacts               choose+fill   120   24    600         72
-  get_calendar_event            choose+fill   120   24    600         61
-  create_calendar_event         choose+fill   120   24    600         59
-  search_documents              choose+fill   120   24    600         63
-  calculator                    tricky args    50   10    250         28
-  search_contacts               tricky args    50   10    250         21
-  get_calendar_event            tricky args    50   10    250         23
-  create_calendar_event         tricky args    50   10    250         28
-  needs send_email             no tool fits    34    7    167         16
-  needs delete_calendar_event  no tool fits    34    7    167         22
-  needs get_weather            no tool fits    33    7    167         23
-  needs set_reminder           no tool fits    33    7    167         10
-  needs get_stock_price        no tool fits    33    6    166         13
-  needs translate_text         no tool fits    33    6    166         16
+  tool needed                    kind  test  dev  train  train-sample
+  ---------------------------------------------------------------------
+  calculator              choose+fill   120   24    600            45
+  search_contacts         choose+fill   120   24    600            72
+  get_calendar_event      choose+fill   120   24    600            61
+  create_calendar_event   choose+fill   120   24    600            59
+  search_documents        choose+fill   120   24    600            63
+  calculator              tricky args    50   10    250            28
+  search_contacts         tricky args    50   10    250            21
+  get_calendar_event      tricky args    50   10    250            23
+  create_calendar_event   tricky args    50   10    250            28
+  send_email             no tool fits    34    7    167            16
+  delete_calendar_event  no tool fits    34    7    167            22
+  get_weather            no tool fits    33    7    167            23
+  set_reminder           no tool fits    33    7    167            10
+  get_stock_price        no tool fits    33    6    166            13
+  translate_text         no tool fits    33    6    166            16
   no tool fits: the tool the request needs, which is never offered.
 
 --------------------------------------------------------------------------
 Tools offered per task
 --------------------------------------------------------------------------
-  split      min  max  mean  with a distractor
-  ----------------------------------------------
-  test         3    5  3.98                939
-  dev          3    5  4.01                189
-  train        3    5  4.00               4738
-  train-r6a    3    5  3.97                462
+  split         min  max  mean  with a distractor
+  -------------------------------------------------
+  test            3    5  3.98                939
+  dev             3    5  4.01                189
+  train           3    5  4.00               4738
+  train-sample    3    5  3.97                462
 
 --------------------------------------------------------------------------
 Unique requests, and overlap between splits
 --------------------------------------------------------------------------
-  split      tasks  unique request texts
-  ----------------------------------------
-  test        1000                  1000
-  dev          200                   200
-  train       5000                  5000
-  train-r6a    500                   500
+  split         tasks  unique request texts
+  -------------------------------------------
+  test           1000                  1000
+  dev             200                   200
+  train          5000                  5000
+  train-sample    500                   500
   splits        same text  same template+slots
   ----------------------------------------------
   test / dev            0                    0
@@ -100,10 +100,10 @@ Unique requests, and overlap between splits
 --------------------------------------------------------------------------
 Files (regenerated byte for byte from the seed)
 --------------------------------------------------------------------------
-  split      tasks  sha256 (first 16)
-  -------------------------------------
-  test        1000   ef5f1ae004e76b72
-  dev          200   fabf92cbf4ea84fe
-  train       5000   d44888a0368a1b0a
-  train-r6a    500   fd6c706bd0e1bfe7
+  split         tasks  sha256 (first 16)
+  ----------------------------------------
+  test           1000   ef5f1ae004e76b72
+  dev             200   fabf92cbf4ea84fe
+  train          5000   d44888a0368a1b0a
+  train-sample    500   fd6c706bd0e1bfe7
   files: data/tasks/<split>.jsonl

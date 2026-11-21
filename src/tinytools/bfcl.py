@@ -20,8 +20,10 @@ built with the model's own chat template, and the outcome split
 from __future__ import annotations
 
 import os
+import random
 import time
 import zlib
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -72,18 +74,61 @@ class Item:
         return [name for call in self.ground_truth or [] for name in call]
 
 
-def load_items(category: str, limit: int | None) -> list[Item]:
-    """The first ``limit`` items of a category, in bfcl-eval's file order."""
+# The dev slice: about 10% of each category, drawn with this seed, used only by
+# Milestone 0 and held out of every published BFCL number (split "eval").
+DEV_SEED = 0
+DEV_SHARE = 10  # percent
+SPLITS = ("eval", "dev", "all")
+
+
+def dev_ids(ids: list[str], category: str, seed: int = DEV_SEED) -> list[str]:
+    """The dev slice of one category: round(10%) of its ids (at least one), drawn
+    with ``Random("<seed>:bfcl-dev:<category>")``, in the order given. Pure."""
+    if not ids:
+        return []
+    n = max(1, (len(ids) * DEV_SHARE + 50) // 100)
+    picked = set(random.Random(f"{seed}:bfcl-dev:{category}").sample(sorted(ids), n))
+    return [i for i in ids if i in picked]
+
+
+def in_split(ids: list[str], dev: list[str], split: str) -> list[str]:
+    """``ids`` restricted to a split: dev (the slice), eval (all minus it) or all. Pure."""
+    if split not in SPLITS:
+        raise ValueError(f"unknown split {split!r}; choose from {SPLITS}")
+    d = set(dev)
+    return [i for i in ids if split == "all" or (i in d) == (split == "dev")]
+
+
+def category_ids(category: str) -> list[str]:
+    """Every item id of a category, in bfcl-eval's file order."""
+    from bfcl_eval.utils import load_dataset_entry
+
+    return [e["id"] for e in load_dataset_entry(CATEGORIES[category],
+                                                include_language_specific_hint=False)]
+
+
+def dev_slice(category: str, seed: int = DEV_SEED) -> list[str]:
+    """The seeded dev slice of a BFCL category (item ids, in file order)."""
+    return dev_ids(category_ids(category), category, seed)
+
+
+def load_items(category: str, limit: int | None, split: str = "all",
+               dev_seed: int = DEV_SEED) -> list[Item]:
+    """The first ``limit`` items of a category's split, in bfcl-eval's file order."""
     from bfcl_eval.utils import load_dataset_entry, load_ground_truth_entry
 
     name = CATEGORIES[category]
     hinted = load_dataset_entry(name, include_language_specific_hint=True)
     plain = load_dataset_entry(name, include_prereq=False, include_language_specific_hint=False)
     truth = None if category == "irrelevance" else load_ground_truth_entry(name)
+    ids = [h["id"] for h in hinted]
+    keep = set(in_split(ids, dev_ids(ids, category, dev_seed), split))
     items = []
     for i, (h, p) in enumerate(zip(hinted, plain, strict=True)):
-        if limit is not None and i >= limit:
+        if limit is not None and len(items) >= limit:
             break
+        if h["id"] not in keep:
+            continue
         assert h["id"] == p["id"]
         gt = None
         if truth is not None:
@@ -294,38 +339,79 @@ class CategoryResult:
     outcomes: dict = field(default_factory=lambda: {o: 0 for o in OUTCOMES})
     bfcl_right: int = 0
     hit_cap: int = 0
-    new_tokens: int = 0
-    seconds: float = 0.0
+    capped_outcomes: Counter = field(default_factory=Counter)  # outcome of each capped reply
+    new_tokens: int | None = 0  # None: not recorded (a rescore of an older replies file)
+    seconds: float | None = 0.0
     right_per_task: list[int] = field(default_factory=list)  # sampling mode
     oracle_right: int = 0
     oracle_n: int = 0
 
+    def add_reply(self, v: Verdict, capped: bool) -> bool:
+        """Count one reply; return whether it is right."""
+        self.n += 1
+        self.outcomes[v.outcome] += 1
+        self.bfcl_right += v.bfcl_valid
+        if capped:
+            self.hit_cap += 1
+            self.capped_outcomes[v.outcome] += 1
+        return is_right(v.outcome)
+
+    def add_oracle(self, h, item: Item) -> None:
+        """The reference-answer control for one item."""
+        o = judge(h, item, oracle_reply(item))
+        self.oracle_n += 1
+        self.oracle_right += o.bfcl_valid and is_right(o.outcome)
+
 
 def score(tok, model, items: list[Item], *, samples: int, temperature: float, seed: int,
-          on_item=None, records: list | None = None) -> CategoryResult:
+          on_item=None, records: list | None = None, setup: dict | None = None) -> CategoryResult:
+    """Generate and judge every item. ``records`` collects one dict per reply (with
+    ``setup``'s fields, e.g. dtype and device, so ``bfcl-rescore`` can print them)."""
     h = handler()
     cfg = generation_config(tok, model, samples, temperature)
     res = CategoryResult(items[0].category if items else "")
     for k, item in enumerate(items, start=1):
         g = generate(tok, model, item, cfg, seed)
         res.seconds += g.seconds
-        res.hit_cap += sum(g.capped)
         res.new_tokens += sum(g.new_tokens)
         right = 0
-        for text, capped in zip(g.texts, g.capped, strict=True):
+        for i, (text, capped, n_new) in enumerate(zip(g.texts, g.capped, g.new_tokens,
+                                                      strict=True)):
             v = judge(h, item, text)
-            res.n += 1
-            res.outcomes[v.outcome] += 1
-            res.bfcl_right += v.bfcl_valid
-            right += is_right(v.outcome)
+            right += res.add_reply(v, capped)
             if records is not None:
-                records.append({"id": item.id, "category": item.category, "reply": text,
-                                "outcome": v.outcome, "bfcl_valid": v.bfcl_valid,
-                                "bfcl_error_type": v.error_type, "hit_cap": capped})
+                records.append({"id": item.id, "category": item.category, "sample": i,
+                                "reply": text, "outcome": v.outcome,
+                                "bfcl_valid": v.bfcl_valid, "bfcl_error_type": v.error_type,
+                                "hit_cap": capped, "new_tokens": n_new,
+                                "task_seconds": g.seconds, **(setup or {})})
         res.right_per_task.append(right)
-        o = judge(h, item, oracle_reply(item))
-        res.oracle_n += 1
-        res.oracle_right += o.bfcl_valid and is_right(o.outcome)
+        res.add_oracle(h, item)
+        if on_item:
+            on_item(k)
+    return res
+
+
+def rejudge(items: list[Item], rows: list[list[dict]], on_item=None) -> CategoryResult:
+    """Judge saved replies again (no model): ``rows[k]`` are item ``k``'s replies,
+    in sample order. Updates each row's verdict fields in place."""
+    h = handler()
+    res = CategoryResult(items[0].category if items else "")
+    timed = all("new_tokens" in r and "task_seconds" in r for rs in rows for r in rs)
+    if not timed:
+        res.new_tokens, res.seconds = None, None
+    for k, (item, rs) in enumerate(zip(items, rows, strict=True), start=1):
+        right = 0
+        for r in rs:
+            v = judge(h, item, r["reply"])
+            right += res.add_reply(v, r["hit_cap"])
+            r.update(outcome=v.outcome, bfcl_valid=v.bfcl_valid, bfcl_error_type=v.error_type)
+            if timed:
+                res.new_tokens += r["new_tokens"]
+        if timed:
+            res.seconds += rs[0]["task_seconds"]
+        res.right_per_task.append(right)
+        res.add_oracle(h, item)
         if on_item:
             on_item(k)
     return res

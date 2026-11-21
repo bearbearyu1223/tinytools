@@ -110,3 +110,37 @@ def test_census_counts_hand_made_rows():
     assert c.by_assistant_turns == {2: 1, 1: 1}
     assert (c.two_plus_tools, c.two_plus_tools_with_call) == (2, 1)
     assert [o.index for o in out] == [0, 1]
+
+
+HEAD = ("You are an expert in composing functions.\nIf none of the function can be used, "
+        "point it out.\nHere are the tools you can use:\n")
+
+
+@pytest.mark.parametrize("body, fmt", [
+    ("\\begin{tabular}{|l|l|}\n\\hline\ntool_name & definition \\\\", toolace.F_LATEX),
+    ("<table border='1'>\n<tr><th>tool_name</th>", toolace.F_HTML),
+    ("<tool_name>Get Order</tool_name>\n<definition>x</definition>", toolace.F_XML),
+    ("- **tool_name**: Get Reviews\n- **definition**: x", toolace.F_MARKDOWN),
+    ("tool_name: Get States by FIPS\ndefinition: x\narguments:\n- parameter_name: fips",
+     toolace.F_YAML),
+    ('{"tool_name": "Get Stocks", "definition": "x", "arguments": []}', toolace.F_REKEYED),
+    ('[{"tool_name": "Get Stocks"}]', toolace.F_REKEYED),
+    ("Some other layout", toolace.F_OTHER),
+])
+def test_tool_list_format(body, fmt):
+    assert toolace.tool_list_format(HEAD + body) == fmt
+
+
+def test_tool_list_format_without_a_list():
+    assert toolace.tool_list_format("You are an expert in composing functions. When invoking "
+                                    "tools, ensure the output only contains...") == toolace.F_NONE
+
+
+def test_census_counts_not_json_rows_by_format():
+    rows = [{"system": HEAD + "- **tool_name**: A\n- **definition**: x",
+             "conversations": [{"from": "user", "value": "hi"}]},
+            {"system": HEAD + "tool_name: B\ndefinition: y",
+             "conversations": [{"from": "user", "value": "hi"}]}]
+    c, out = toolace.census_and_convert(rows)
+    assert out == [] and c.failures[toolace.NOT_JSON] == 2
+    assert c.not_json_formats == {toolace.F_MARKDOWN: 1, toolace.F_YAML: 1}

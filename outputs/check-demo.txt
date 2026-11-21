@@ -78,4 +78,4 @@ Call 3: fails both: a broader search that includes the answer
     {"documents": [{"id": "doc-001", "title": "Q1 sales report"}, {"id": \
     "doc-002", "title": "Q2 sales report"}, {"id": "doc-003", "title": \
     "Q3 sales report"}, {"id": "doc-004", "title": "Q4 sales report"}]}
-  execution match compared           id sets: 1 vs 4, different
+  execution match compared           documents found: 1 vs 4 (different)

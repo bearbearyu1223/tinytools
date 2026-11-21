@@ -16,6 +16,8 @@ Setup
   decoding                           greedy (argmax)
   top_p / top_k / repetition penalty 1.0 / off / 1.0
   max new tokens                     512
+  dtype                              float32
+  determinism                        not set on mps (the CUDA flags only)
   seed                               0 (+ crc32 of each task id)
   right means                        execution match (exact beside it)
   checked by                         rescore of the saved replies
@@ -109,13 +111,22 @@ The model's reply, parsed and run
 --------------------------------------------------------------------------
 Tasks that need a call: every reply
 --------------------------------------------------------------------------
-  kind           n  no call  unparse  wrong fn  wrong n  wrong arg  right
-  -------------------------------------------------------------------------
-  choose+fill  600       59        1        79        0         97    364
-  tricky args  200       39        1        23        0         79     58
-  total        800       98        2       102        0        176    422
+  kind           n  no call  unparse  wrong fn  wrong n  bad args  right
+  ------------------------------------------------------------------------
+  choose+fill  600       59        1        79        0        97    364
+  tricky args  200       39        1        23        0        79     58
+  total        800       98        2       102        0       176    422
   wrong fn: another tool; wrong n: the right tool, more than one
-  call; right: execution match.
+  call; bad args: the right tool, arguments that fail execution
+  match; right: execution match.
+
+  kind         hit token cap  counted above as
+  ----------------------------------------------
+  choose+fill              0                 -
+  tricky args              1         unparse 1
+  total                    1         unparse 1
+  hit token cap: the model's reply ran to max new tokens (Setup)
+  and was cut off there; it is counted in the table above.
 
 --------------------------------------------------------------------------
 Tasks where no tool fits: every reply
@@ -124,6 +135,14 @@ Tasks where no tool fits: every reply
   --------------------------------------------
   no tool fits  200        94            106
   declined: no <tool_call> tag (right); called anyway: any tag.
+
+  kind                outcome  replies  of which hit token cap
+  --------------------------------------------------------------
+  no tool fits       declined       94                       0
+  no tool fits  called anyway      106                       0
+  hit token cap: the model's reply ran to max new tokens (Setup)
+  and was cut off there. Cut off before any <tool_call> tag, it
+  counts as declined.
 
 --------------------------------------------------------------------------
 Right by execution and by exact match

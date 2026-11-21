@@ -6,7 +6,9 @@ Both arms start from the converted English ToolACE (``data/toolace-en-qwen.jsonl
 and a call, and every row with no call at all, whatever its tool list (one tool, or
 an empty list): those are the declining and asking examples, and they go into both
 arms unchanged and identical. Rows with one tool and a call stay out (the control
-would always draw the right tool there).
+would always draw the right tool there). Of those, rows whose truncated
+conversation has an empty assistant turn, or a text turn with a bracket-syntax
+call to a listed tool, are dropped from both arms (:func:`drop_reason`).
 
 **Truncation (both arms).** Each conversation is cut right after its first
 assistant turn that makes a call; any not-calling assistant turn before it (asking
@@ -107,6 +109,31 @@ def row_type(n_tools: int, messages: list[dict]) -> str:
     if first_call_index(messages) is not None:
         return R_CALL if n_tools >= MIN_TOOLS else R_OUT
     return R_NO_CALL_2 if n_tools >= 2 else R_NO_CALL_1 if n_tools == 1 else R_NO_CALL_0
+
+
+# Training rows dropped from both arms (review round 1, fd99c4190), by reason.
+D_EMPTY = "an empty assistant turn"
+D_BRACKET = "a bracket-syntax call in a text turn"
+DROP_REASONS = (D_EMPTY, D_BRACKET)
+
+
+def drop_reason(tools: list[dict], messages: list[dict]) -> str | None:
+    """Why a (truncated) training row is dropped from both arms, or None. Pure.
+
+    An assistant turn with no call and no text would teach the model to end its
+    turn at once. A text turn holding ToolACE's ``[Name(...)`` syntax for a listed
+    tool (a call written in prose) would be trained as plain text: the model
+    would learn to write calls the parser never sees. Checked in that order.
+    """
+    texts = [m.get("content") or "" for m in messages
+             if m["role"] == "assistant" and not m.get("tool_calls")]
+    if any(not t.strip() for t in texts):
+        return D_EMPTY
+    names = [t["name"] for t in tools]
+    for t in texts:
+        if any(f"[{n}(" in t or f"[{n} (" in t for n in names):
+            return D_BRACKET
+    return None
 
 
 def is_empty(value: Any) -> bool:
@@ -502,6 +529,8 @@ class Sets:
     cut_train: Cut
     rows_converted: Counter  # by ROW_TYPES
     rows_trained: Counter
+    rows_dropped: Counter  # by ROW_TYPES: rows of a training type dropped (drop_reason)
+    dropped: dict[str, list[str]]  # by DROP_REASONS: the row ids
 
 
 STRUCTURE = ("rows", "assistant_turns", "call_turns", "parallel_turns", "calls",
@@ -526,7 +555,7 @@ def build_sets(converted: list[dict], seeds: tuple[int, ...], tokenizer,
     """
     pool = Pool.build(converted)
     s = Sets([], {seed: ControlSet(seed) for seed in seeds}, Shape(), Shape(), Shape(),
-             Cut(), Cut(), Counter(), Counter())
+             Cut(), Cut(), Counter(), Counter(), Counter(), {r: [] for r in DROP_REASONS})
     for done, rec in enumerate(converted, start=1):
         tools = unwrap(rec)
         before = rec["messages"]
@@ -540,7 +569,11 @@ def build_sets(converted: list[dict], seeds: tuple[int, ...], tokenizer,
         s.cut_all.add(before, after, *cut)
         kind = row_type(len(tools), after)
         s.rows_converted[kind] += 1
-        if kind != R_OUT:
+        reason = drop_reason(tools, after) if kind != R_OUT else None
+        if reason is not None:
+            s.rows_dropped[kind] += 1
+            s.dropped[reason].append(rec["id"])
+        elif kind != R_OUT:
             s.rows_trained[kind] += 1
             s.cut_train.add(before, after, *cut)
             s.shape_real.add(after, real["n_tokens"], real["n_trained"])

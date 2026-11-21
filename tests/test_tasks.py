@@ -17,11 +17,13 @@ def splits():
 
 # Pinned: regenerating the splits with seed 0 must give these bytes. A change to a
 # template, the data or the generator shows up here first; update deliberately.
+# (train-sample was train-r6a until review round 1; the file name is not part of the
+# hash input, so its hash did not change with the rename.)
 PINNED_SHA256 = {
     "test": "ef5f1ae004e76b72d10ff6f87053f93360d92c6d22c06fa98f8723b629a45cd4",
     "dev": "fabf92cbf4ea84fecef3fcffd9051a67520bcdff539f13d4744d1d5796bcb83c",
     "train": "d44888a0368a1b0a718c53b40c83c248441fd265ce3be66dee0f856db71c61ea",
-    "train-r6a": "fd6c706bd0e1bfe7c35c831cce11581f4f087187b44fbc6073bf05c4307c5651",
+    "train-sample": "fd6c706bd0e1bfe7c35c831cce11581f4f087187b44fbc6073bf05c4307c5651",
 }
 
 
@@ -33,7 +35,7 @@ def test_regenerating_gives_the_same_bytes(splits):
 
 
 def test_sizes_and_mix(splits):
-    for name, sizes in [*tasks.SPLITS.items(), ("train-r6a", tasks.R6A)]:
+    for name, sizes in [*tasks.SPLITS.items(), (tasks.SAMPLE_SPLIT, tasks.SAMPLE_SIZES)]:
         got = Counter(t["kind"] for t in splits[name])
         assert [got[k] for k in tasks.KINDS] == list(sizes), name
 
@@ -50,7 +52,7 @@ def test_splits_disjoint_by_text_and_by_template_slots(splits):
             assert not keys[a][0] & keys[b][0]
             assert not keys[a][1] & keys[b][1]
     train_ids = {t["id"] for t in splits["train"]}
-    assert {t["id"] for t in splits["train-r6a"]} <= train_ids
+    assert {t["id"] for t in splits[tasks.SAMPLE_SPLIT]} <= train_ids
 
 
 def test_offered_tools(splits):

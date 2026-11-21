@@ -84,11 +84,48 @@ class ConvertError(ValueError):
         self.reason = reason
 
 
+# The format-variation rows write their tool list after this sentence, in one of
+# these formats (or give no tool list at all). Detected from the list's opening.
+_LIST_INTRO = re.compile(r"Here are the tools you can use:\s*")
+NOT_JSON = "tool list not JSON (format-variation row)"
+F_LATEX = "LaTeX tabular"
+F_HTML = "HTML table"
+F_XML = "XML-like tags"
+F_MARKDOWN = "Markdown list"
+F_YAML = "YAML-like lines"
+F_REKEYED = "JSON with other keys"
+F_NONE = "no tool list at all"
+F_OTHER = "other"
+LIST_FORMATS = (F_YAML, F_MARKDOWN, F_LATEX, F_HTML, F_REKEYED, F_XML, F_NONE, F_OTHER)
+
+
+def tool_list_format(system: str) -> str:
+    """Which format a non-JSON tool list is written in, from how it starts. Pure.
+
+    LaTeX ``\\begin{tabular}``, an HTML ``<table``, XML-like ``<tool_name>``
+    tags, a Markdown ``- **tool_name**`` list, YAML-like ``tool_name:`` lines,
+    JSON objects keyed ``"tool_name"`` / ``"definition"`` instead of ``name`` /
+    ``description`` ("JSON with other keys"), or no tool list in the prompt.
+    """
+    m = _LIST_INTRO.search(system)
+    if m is None:
+        return F_NONE
+    head = system[m.end():m.end() + 40]
+    for prefix, name in (("\\begin{tabular}", F_LATEX), ("<table", F_HTML),
+                         ("<tool_name>", F_XML), ("- **tool_name**", F_MARKDOWN),
+                         ("tool_name:", F_YAML)):
+        if head.startswith(prefix):
+            return name
+    if re.match(r'[\[{]\s*\{?\s*"tool_name"\s*:', head):
+        return F_REKEYED
+    return F_OTHER
+
+
 def extract_tools(system: str) -> list[dict]:
     """The JSON tool list that follows the anchor sentence in the system prompt."""
     m = _ANCHOR.search(system)
     if not m:
-        raise ConvertError("tool list not JSON (format-variation row)")
+        raise ConvertError(NOT_JSON)
     try:
         tools, _ = json.JSONDecoder().raw_decode(system, m.end())
     except ValueError:
@@ -233,6 +270,7 @@ class Census:
     any_cjk: int = 0
     english: int = 0
     failures: Counter = field(default_factory=Counter)
+    not_json_formats: Counter = field(default_factory=Counter)  # NOT_JSON rows, by format
     converted: int = 0
     empty_tool_list: int = 0
     context_kept: int = 0
@@ -266,6 +304,8 @@ def census_and_convert(rows: list[dict]) -> tuple[Census, list[Converted]]:
             conv = convert_row(i, row)
         except ConvertError as err:
             c.failures[err.reason] += 1
+            if err.reason == NOT_JSON:
+                c.not_json_formats[tool_list_format(row["system"])] += 1
             continue
         out.append(conv)
         c.converted += 1

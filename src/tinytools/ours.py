@@ -12,12 +12,14 @@ The summaries below are model-free and tested in ``tests/test_ours.py``.
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from dataclasses import dataclass, field
+from decimal import ROUND_HALF_UP, Decimal
 
 from . import tasks
 from .checkers import Check, check_reply
-from .classify import OUTCOMES
+from .classify import OUTCOMES, is_right
 
 # r1a/r1b's task: the first test task (by id) of this kind and tool. A relative
 # date, a 12-hour time and a worded duration, so the prompt's clock line matters.
@@ -115,7 +117,7 @@ class Scored:
 
     @property
     def right(self) -> int:
-        return sum(c.execution for c in self.checks)
+        return sum(is_right(c.outcome) for c in self.checks)
 
 
 def score(tok, model, items: list[dict], *, samples: int, temperature: float, seed: int,
@@ -155,8 +157,21 @@ def outcome_rows(results: list[Scored]) -> list[KindRow]:
                 row.n += 1
                 row.outcomes[c.outcome] = row.outcomes.get(c.outcome, 0) + 1
                 row.exact += c.exact
-                row.execution += c.execution
+                row.execution += is_right(c.outcome)
     return [rows[k] for k in tasks.KINDS if rows[k].n] + [total]
+
+
+def capped_by_kind(results: list[Scored]) -> dict[str, tuple[int, Counter]]:
+    """Per kind: (replies that hit the token cap, their outcomes)."""
+    out: dict[str, tuple[int, Counter]] = {k: (0, Counter()) for k in tasks.KINDS}
+    for r in results:
+        n, c = out[r.task["kind"]]
+        for check, cap in zip(r.checks, r.capped, strict=True):
+            if cap:
+                n += 1
+                c[check.outcome] += 1
+        out[r.task["kind"]] = (n, c)
+    return out
 
 
 def total_row(rows: list[KindRow], label: str = "total") -> KindRow:
@@ -189,14 +204,65 @@ def histogram(right_counts: list[int], samples: int) -> list[int]:
     return [c.get(k, 0) for k in range(samples + 1)]
 
 
-def per_thousand(mixed: int, tasks_n: int, samples: int) -> float:
-    """Post 8's unit: mixed groups per 1,000 answers generated = (1000 / G) x mixed share."""
-    return 1000 * mixed / (tasks_n * samples) if tasks_n else 0.0
+class HalfUp(Decimal):
+    """An exact ratio whose ``f`` formats round half up (2.5 -> "3"), as a reader would.
+
+    Python rounds floats (and plain Decimals, by default) half to even, so 2.5
+    would print "2" and 0.25 would print "0.2".
+    """
+
+    def __format__(self, spec: str) -> str:
+        m = re.fullmatch(r"([^.]*)\.(\d+)f", spec)
+        if m is None:
+            return super().__format__(spec)
+        q = Decimal(1).scaleb(-int(m.group(2)))
+        return format(Decimal(self).quantize(q, rounding=ROUND_HALF_UP), spec)
+
+
+def ratio(k: int, n: int, scale: int = 1) -> HalfUp:
+    """``scale * k / n`` as a :class:`HalfUp` (exact to 28 digits)."""
+    return HalfUp(Decimal(scale * k) / Decimal(n)) if n else HalfUp(0)
+
+
+def per_thousand(mixed: int, tasks_n: int, samples: int) -> HalfUp:
+    """Post 8's unit: mixed groups per 1,000 answers generated = (1000 / G) x mixed share.
+
+    Compares equal to the float (``per_thousand(2, 100, 8) == 2.5``); printed
+    with one decimal, rounded half up.
+    """
+    return ratio(1000 * mixed, tasks_n * samples)
 
 
 def pct(k: int, n: int) -> str:
-    """``57 of 120 (47.5%)``, the plan's format for a share."""
-    return f"{k} of {n} ({100 * k / n:.1f}%)" if n else f"{k} of 0"
+    """``57 of 120 (47.5%)``, the plan's format for a share (half up: 1 of 400 is 0.3%)."""
+    return f"{k} of {n} ({share(k, n)})" if n else f"{k} of 0"
+
+
+def share(k: int, n: int) -> str:
+    """``47.5%``: k / n as a percentage, one decimal, rounded half up."""
+    return f"{ratio(100 * k, n):.1f}%"
+
+
+MIXED_HEADERS = ("tasks", "all wrong", "mixed", "all right", "share", "per 1k")
+
+
+def mixed_rows(groups: list[tuple[str, list[int]]], samples: int) -> list[list]:
+    """The "groups with signal" table's rows (after a label column, :data:`MIXED_HEADERS`),
+    in the one format ``score`` and ``bfcl-score`` both print.
+
+    ``groups`` is ``(label, right count per task)``; each row is label, tasks,
+    all wrong, mixed, all right, share (mixed / tasks) and per 1k (mixed groups
+    per 1,000 answers), both rounded half up.
+    """
+    from .classify import mixed_share
+
+    rows = []
+    for label, rc in groups:
+        none, mixed, every = mixed_share(rc, samples)
+        rows.append([label, len(rc), none, mixed, every, share(mixed, len(rc)),
+                     f"{per_thousand(mixed, len(rc), samples):.1f}"])
+    return rows
+
 
 
 def pass_at_k(right_counts: list[int]) -> int:

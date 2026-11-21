@@ -40,6 +40,10 @@ __all__ = [
     "HardwareInfo",
     "hardware_info",
     "require_cuda",
+    "set_determinism",
+    "determinism_label",
+    "dtype_name",
+    "CUBLAS_WORKSPACE",
 ]
 
 
@@ -87,6 +91,38 @@ def preferred_dtype(device: torch.device | None = None) -> torch.dtype:
     if device.type == "cuda" and torch.cuda.is_bf16_supported():
         return torch.bfloat16
     return torch.float32
+
+
+def dtype_name(dtype: torch.dtype) -> str:
+    """``torch.float32`` -> ``"float32"``, as the Setup blocks print it."""
+    return str(dtype).removeprefix("torch.")
+
+
+# cuBLAS needs a fixed workspace for deterministic matmuls (PyTorch's
+# reproducibility notes); ":4096:8" is the setting those notes give.
+CUBLAS_WORKSPACE = ":4096:8"
+
+
+def determinism_label(device_type: str) -> str:
+    """What :func:`set_determinism` does on this device type, as Setup prints it."""
+    if device_type == "cuda":
+        return f"deterministic algorithms on, CUBLAS_WORKSPACE_CONFIG={CUBLAS_WORKSPACE}"
+    return f"not set on {device_type} (the CUDA flags only)"
+
+
+def set_determinism(device: torch.device | None = None) -> str:
+    """The one place the determinism flags are set; returns the line Setup prints.
+
+    On CUDA: ``CUBLAS_WORKSPACE_CONFIG`` (before cuBLAS starts, so call this
+    before loading a model) and ``torch.use_deterministic_algorithms(True)``.
+    Elsewhere a no-op: MPS and CPU have no such flags here, and a Mac run is
+    only ever compared with itself.
+    """
+    device = device or get_device()
+    if device.type == "cuda":
+        os.environ["CUBLAS_WORKSPACE_CONFIG"] = CUBLAS_WORKSPACE
+        torch.use_deterministic_algorithms(True)
+    return determinism_label(device.type)
 
 
 def sync(device: torch.device | None = None) -> None:

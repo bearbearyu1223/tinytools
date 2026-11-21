@@ -28,6 +28,22 @@ English rows that do not convert, by reason
   reason                                     rows
   -------------------------------------------------
   tool list not JSON (format-variation row)   500
+
+  The 500 rows whose tool list is not JSON, by how the list is
+  written (detected from its first characters):
+  format                rows
+  ----------------------------
+  YAML-like lines        151
+  Markdown list           76
+  LaTeX tabular           73
+  HTML table              63
+  JSON with other keys    62
+  XML-like tags           61
+  no tool list at all     14
+  other                    0
+  JSON with other keys: "tool_name", "definition", "arguments"
+  in place of the name / description / parameters schema.
+
   rows converted                     10782
     with an empty tool list          248
     with tool results                797
@@ -70,6 +86,8 @@ Rows the random-call control can use
 Masking, tokenized with Qwen/Qwen2.5-0.5B-Instruct
 --------------------------------------------------------------------------
   tokens, all converted rows         7925395
-  tokens trained (assistant turns)   1137261
-  share trained                      0.1435
+  tokens scored (assistant turns)    1137261
+  share scored                       0.1435
+  scored: the tokens the loss is computed on, each assistant turn
+  from after its '<|im_start|>assistant' header through <|im_end|>.
   tokens straddling a mask edge      0

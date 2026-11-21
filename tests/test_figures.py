@@ -262,3 +262,84 @@ def test_kv_needs_the_exact_label(capsys):
     assert F.kv(text.splitlines(), "execution match", "t") == "yes"
     with pytest.raises(F.CaptureError):
         F.kv(text.splitlines(), "exact match", "t")
+
+
+# -- review round 1: two-checks note, F3 order and colours, the funnel ---------------------
+
+def test_compared_label():
+    assert F.compared_label("documents found: 1 vs 4 (different)") == "documents found: 1 vs 4"
+    assert F.compared_label("9396 vs 9396") == "9396 vs 9396"
+    assert F.compared_label("calendar after the call: same") == "calendar after the call: same"
+    with pytest.raises(F.CaptureError):
+        F.compared_label("documents found: 1 vs 4; different")
+
+
+def _lstar(hexcolour):
+    r, g, b = (int(hexcolour[i:i + 2], 16) / 255 for i in (1, 3, 5))
+    lin = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in (r, g, b)]
+    y = 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+    return 116 * y ** (1 / 3) - 16 if y > 0.008856 else 903.3 * y
+
+
+def test_outcome_colours_right_has_most_contrast_and_args_vs_count_apart():
+    from tinytools.classify import RIGHT, WRONG_ARGUMENTS, WRONG_COUNT
+    from tinytools.plotting import THEMES
+
+    for theme in THEMES:
+        c = F.outcome_colours(theme)
+        bg = _lstar(theme.surface)
+        dist = {o: abs(_lstar(v) - bg) for o, v in c.items()}
+        assert dist[RIGHT] == max(dist.values()), theme.name
+        assert abs(_lstar(c[WRONG_ARGUMENTS]) - _lstar(c[WRONG_COUNT])) >= 14.9, theme.name
+
+
+def test_outcome_groups_ours_first(capsys):
+    ours = F.parse_score_outcomes(printed(capsys, score_capture))
+    groups = F.outcome_groups(ours, ours)  # the order only depends on the group roles
+    assert [g for g, _ in groups] == ["Our tasks, a call is needed", "BFCL, a call is needed",
+                                      "No tool fits: declining is right"]
+    assert groups[2][1][0][0].startswith("ours: ")
+
+
+def stats_capture(rep, not_json_rows=None):
+    rep.section("The file")
+    rep.kv("rows", 11300)
+    rep.section("Language")
+    rep.kv("Chinese rows (dropped)", 18)
+    rep.kv("English rows", 11282)
+    rep.section("English rows that do not convert, by reason")
+    rep.table(["reason", "rows"], not_json_rows or [[F.NOT_JSON_LABEL, 500]])
+    rep.blank()
+    rep.kv("rows converted", 10782)
+
+
+def rows_capture(rep, each_arm=8504):
+    rep.section("Which rows train")
+    rep.table(["row type", "converted", "dropped", "each arm"], [
+        [F.R_CALL_LABEL, 6980, 5, 6975], [F.R_NO_CALL_LABELS[0], 773, 6, 767],
+        [F.R_NO_CALL_LABELS[1], 517, 3, 514], [F.R_NO_CALL_LABELS[2], 248, 0, 248],
+        [F.R_OUT_LABEL, 2264, "-", 0], ["total", 10782, 14, each_arm]])
+    rep.note("dropped: from both arms, by reason (checked after truncation):")
+    rep.table(["reason", "rows"], [["an empty assistant turn", 5],
+                                   ["a bracket-syntax call in a text turn", 9],
+                                   ["total", 14]])
+
+
+def _two(capsys, each_arm=8504, not_json_rows=None):
+    return (printed(capsys, lambda rep: stats_capture(rep, not_json_rows)),
+            printed(capsys, lambda rep: rows_capture(rep, each_arm)))
+
+
+def test_funnel(capsys):
+    fn = F.parse_funnel(*_two(capsys))
+    assert (fn.total, fn.english, fn.converted, fn.offered, fn.each_arm) == \
+        (11300, 11282, 10782, 8518, 8504)
+    assert (fn.with_call, fn.no_call, fn.left_out) == (6975, 1529, 2264)
+    assert [k for _, k in fn.dropped] == [5, 9]
+
+
+def test_funnel_checks_its_subtractions(capsys):
+    with pytest.raises(F.CaptureError, match="offered - dropped"):
+        F.parse_funnel(*_two(capsys, each_arm=8505))
+    with pytest.raises(F.CaptureError, match="not-JSON drop"):
+        F.parse_funnel(*_two(capsys, not_json_rows=[[F.NOT_JSON_LABEL, 499], ["other", 1]]))

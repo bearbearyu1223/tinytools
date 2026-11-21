@@ -24,8 +24,9 @@ splits are disjoint by both, and test never depends on how big train is.
 
 Sizes (choose+fill / tricky / no tool fits): test 600/200/200, dev 120/40/40,
 train 3000/1000/1000 (the 60/20/20 mix, frozen for post 10). Within a kind,
-tasks are dealt round-robin over its tools. ``train-r6a`` is a seeded sample
-of train with the same mix (300/100/100).
+tasks are dealt round-robin over its tools. ``train-sample`` is a seeded
+sample of train with the same mix (300/100/100), for post 10's ready-for-RL
+measurement.
 
 Offered tools: k from {3, 4, 5} uniformly; the right tool plus k - 1 others
 drawn from the other real tools and the distractors (for no tool fits: k drawn
@@ -56,7 +57,9 @@ KINDS = (CHOOSE, TRICKY, NO_FIT)
 SHORT_KIND = {CHOOSE: "choose+fill", TRICKY: "tricky args", NO_FIT: "no tool fits"}
 
 SPLITS = {"test": (600, 200, 200), "dev": (120, 40, 40), "train": (3000, 1000, 1000)}
-R6A = (300, 100, 100)
+# The seeded sample of train that post 10's ready-for-RL measurement scores.
+SAMPLE_SPLIT = "train-sample"
+SAMPLE_SIZES = (300, 100, 100)
 DEFAULT_SEED = 0
 
 KIND_TOOLS = {
@@ -519,7 +522,7 @@ def _offer(rng: random.Random, right: str | None, needs: str | None) -> list[str
 
 
 def generate(seed: int = DEFAULT_SEED) -> dict[str, list[dict]]:
-    """All splits: ``{"test": [...], "dev": [...], "train": [...], "train-r6a": [...]}``."""
+    """All splits: ``{"test": [...], "dev": [...], "train": [...], "train-sample": [...]}``."""
     chosen: dict[str, list[tuple[str, str, Candidate]]] = {s: [] for s in SPLITS}
     seen_text: set[str] = set()
     seen_key: set[str] = set()
@@ -558,15 +561,19 @@ def generate(seed: int = DEFAULT_SEED) -> dict[str, list[dict]]:
                 "tools": _offer(rng, right, None if right else tool), "reference": c.reference,
             })
         out[split] = records
-    out["train-r6a"] = r6a_sample(out["train"], seed)
+    out[SAMPLE_SPLIT] = train_sample(out["train"], seed)
     return out
 
 
-def r6a_sample(train: list[dict], seed: int) -> list[dict]:
-    """500 train tasks for the ready-for-RL measurement, 300/100/100 by kind, in id order."""
+def train_sample(train: list[dict], seed: int) -> list[dict]:
+    """500 train tasks for the ready-for-RL measurement, 300/100/100 by kind, in id order.
+
+    The generator's seed string keeps the split's old name ("r6a") so the sample,
+    its order and its bytes are unchanged by the rename to ``train-sample``.
+    """
     rng = random.Random(f"{seed}:r6a")
     picked = []
-    for kind, n in zip(KINDS, R6A, strict=True):
+    for kind, n in zip(KINDS, SAMPLE_SIZES, strict=True):
         picked += rng.sample([t for t in train if t["kind"] == kind], n)
     return sorted(picked, key=lambda t: t["id"])
 

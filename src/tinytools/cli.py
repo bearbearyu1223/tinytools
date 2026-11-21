@@ -10,6 +10,7 @@ Commands (``tinytools <command> --help`` for each one's flags):
     check-demo      three calls checked by exact match and by execution match
     score           score a model on our tool tasks, outcome by outcome; or sample 8
     rescore         re-check a score replies file with the current checkers (no model)
+    bfcl-rescore    re-judge a bfcl-score replies file with bfcl's checker (no model)
     sft-data        the SFT sets: ToolACE truncated (real), random-call per seed (control)
     figures         the post's figures, parsed from the captures, into figures/
 
@@ -23,12 +24,15 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
+import textwrap
 import time
+from collections import Counter
 from pathlib import Path
 
 from . import __version__, progress
-from .report import Report
+from .report import WIDTH, Report
 
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUTS = ROOT / "outputs"
@@ -111,6 +115,15 @@ def _print_census(rep: Report, c, sha: str, tok_id: str) -> None:
     rep.section("English rows that do not convert, by reason")
     if c.failures:
         rep.table(["reason", "rows"], sorted(c.failures.items(), key=lambda kv: (-kv[1], kv[0])))
+    if c.failures[toolace.NOT_JSON]:
+        rep.blank()
+        rep.note(f"The {c.failures[toolace.NOT_JSON]} rows whose tool list is not JSON, by how "
+                 "the list is")
+        rep.note("written (detected from its first characters):")
+        rep.table(["format", "rows"], [[f, c.not_json_formats[f]] for f in toolace.LIST_FORMATS])
+        rep.note("JSON with other keys: \"tool_name\", \"definition\", \"arguments\"")
+        rep.note("in place of the name / description / parameters schema.")
+        rep.blank()
     rep.kv("rows converted", c.converted)
     rep.kv("  with an empty tool list", c.empty_tool_list)
     rep.kv("  with tool results", c.tool_turn_rows)
@@ -138,8 +151,10 @@ def _print_census(rep: Report, c, sha: str, tok_id: str) -> None:
 
     rep.section(f"Masking, tokenized with {tok_id}")
     rep.kv("tokens, all converted rows", c.tokens_total)
-    rep.kv("tokens trained (assistant turns)", c.tokens_trainable)
-    rep.kv("share trained", round(c.tokens_trainable / max(1, c.tokens_total), 4))
+    rep.kv("tokens scored (assistant turns)", c.tokens_trainable)
+    rep.kv("share scored", round(c.tokens_trainable / max(1, c.tokens_total), 4))
+    rep.note("scored: the tokens the loss is computed on, each assistant turn")
+    rep.note("from after its '<|im_start|>assistant' header through <|im_end|>.")
     rep.kv("tokens straddling a mask edge", c.tokens_straddling)
 
 
@@ -179,43 +194,119 @@ def _short_cat(cat: str) -> str:
     return {"parallel_multiple": "par_multi"}.get(cat, cat)
 
 
-def cmd_bfcl_score(args) -> None:
-    _quiet_hf()
-    from . import bfcl
-    from .classify import CALL_OUTCOMES, NO_FIT_OUTCOMES, mixed_share, short_label
-    from .device import get_device
+def _mixed_table(rep: Report, first: str, groups: list[tuple[str, list[int]]],
+                 samples: int) -> None:
+    """Groups with signal: one table, one format, in ``score`` and ``bfcl-score``."""
+    from .ours import MIXED_HEADERS, mixed_rows
 
-    cats = [c.strip() for c in args.categories.split(",") if c.strip()]
-    unknown = [c for c in cats if c not in bfcl.CATEGORIES]
-    if unknown:
-        sys.exit(f"unknown categories {unknown}; choose from {list(bfcl.CATEGORIES)}")
-    sampling = args.samples > 1
-    if sampling and args.temperature <= 0:
-        sys.exit("--samples > 1 needs --temperature > 0")
-    mode = f"samples{args.samples}-t{args.temperature:g}" if sampling else "greedy"
-    tag = f"{args.model.split('/')[-1]}-{mode}-limit{args.limit}"
-    rep = Report(f"tinytools bfcl-score ({mode})", out=OUTPUTS / f"bfcl-{tag}.txt")
+    rep.section("Groups with signal (some right, some wrong)")
+    rep.table([first, *MIXED_HEADERS], mixed_rows(groups, samples))
+    rep.note("share: mixed groups / tasks.")
+    rep.note(f"per 1k: mixed groups per 1,000 answers = (1000 / {samples}) x share.")
+    rep.note("Both rounded half up.")
+
+
+def _bfcl_tag(model: str, split: str, mode: str, limit: int | None) -> str:
+    """The capture's name; split "all" keeps the name captures had before splits existed."""
+    part = "" if split == "all" else f"{split}-"
+    return f"{model.split('/')[-1]}-{part}{mode}-limit{limit if limit is not None else 'all'}"
+
+
+BFCL_REPLIES = re.compile(r"bfcl-(?P<model>.+?)-(?:(?P<split>dev|eval)-)?"
+                          r"(?P<mode>greedy|samples(?P<g>\d+)-t(?P<t>[0-9.]+))"
+                          r"-limit(?P<limit>\d+|all)-replies\.jsonl")
+
+
+def parse_bfcl_replies_name(name: str) -> dict | None:
+    """What a ``bfcl-score`` replies file's name says: model, split, mode, samples,
+    temperature, limit; ``None`` if it is not such a name."""
+    m = BFCL_REPLIES.fullmatch(name)
+    if m is None:
+        return None
+    sampling = m.group("g") is not None
+    return {"model": m.group("model"), "split": m.group("split") or "all",
+            "mode": m.group("mode"), "samples": int(m.group("g")) if sampling else 1,
+            "temperature": float(m.group("t")) if sampling else 0.0,
+            "limit": None if m.group("limit") == "all" else int(m.group("limit"))}
+
+
+def _bfcl_setup(rep: Report, *, model: str, split: str, limit: int | None, sampling: bool,
+                samples: int, temperature: float, seed: int, dtype: str,
+                determinism: str) -> None:
+    from . import bfcl
+
     rep.header()
     rep.section("Setup")
-    rep.kv("model", args.model)
+    rep.kv("model", model)
     rep.kv("bfcl-eval", bfcl.bfcl_version())
-    rep.kv("items per category", f"first {args.limit} in bfcl's order")
+    rep.kv("split", {"eval": "eval: every item minus the dev slice",
+                     "dev": "dev: the dev slice only",
+                     "all": "all: every item, dev slice included"}[split])
+    rep.kv("  dev slice", f"{bfcl.DEV_SHARE}% of each category, seed {bfcl.DEV_SEED}")
+    if split == "all":
+        rep.note("WARNING: this split includes the dev slice, which is held out of")
+        rep.note("every published BFCL number; publish from --split eval.")
+    rep.kv("items per category", "all in the split" if limit is None
+           else f"first {limit} in bfcl's order")
     rep.kv("decoding", "greedy" if not sampling else
-           f"{args.samples} samples, temperature {args.temperature:g}")
+           f"{samples} samples, temperature {temperature:g}")
     rep.kv("top_p / top_k / repetition penalty", "1.0 / off / 1.0")
     rep.kv("max new tokens", bfcl.MAX_NEW_TOKENS)
-    rep.kv("seed", f"{args.seed} (+ crc32 of each item id)")
+    rep.kv("dtype", dtype)
+    rep.kv("determinism", determinism)
+    rep.kv("seed", f"{seed} (+ crc32 of each item id)")
 
-    device = get_device()
-    progress.status(f"loading {args.model} on {device}")
-    tok, model = bfcl.load_model(args.model, device)
-    results, records = [], []
-    for cat in cats:
-        items = bfcl.load_items(cat, args.limit)
-        on_item = progress.items(f"{cat}, {mode}", len(items))
-        results.append(bfcl.score(tok, model, items, samples=args.samples,
-                                  temperature=args.temperature, seed=args.seed,
-                                  on_item=on_item, records=records))
+
+def _check_sampling(samples: int, temperature: float) -> None:
+    """Greedy is ``--samples 1`` at temperature 0; sampling needs more than one sample."""
+    if samples > 1 and temperature <= 0:
+        sys.exit("--samples > 1 needs --temperature > 0")
+    if samples == 1 and temperature > 0:
+        sys.exit("--samples 1 with --temperature > 0 would sample one reply but be labelled "
+                 "greedy; use --temperature 0 for greedy, or --samples 2 or more")
+
+
+def _cap_table(rep: Report, first: str, rows: list[tuple[str, int, Counter]]) -> None:
+    """Under a call-needing outcome table: per category, the model's replies cut off at
+    the token cap, and the outcome each was counted as in the table above."""
+    from .classify import OUTCOMES, short_label
+
+    def counted(c: Counter) -> str:
+        return ", ".join(f"{short_label(o)} {c[o]}" for o in OUTCOMES if c[o]) or "-"
+
+    total = Counter()
+    for _, _, c in rows:
+        total.update(c)
+    rep.blank()
+    rep.table([first, "hit token cap", "counted above as"],
+              [[label, n, counted(c)] for label, n, c in rows]
+              + [["total", sum(n for _, n, _ in rows), counted(total)]])
+    rep.note("hit token cap: the model's reply ran to max new tokens (Setup)")
+    rep.note("and was cut off there; it is counted in the table above.")
+
+
+def _no_fit_cap_lines(rep: Report, first: str, rows: list[tuple[str, dict, Counter]]) -> None:
+    """Under a no-tool-fits table: of the declined and called-anyway replies, how many
+    hit the token cap. ``rows``: (label, outcome counts, capped replies' outcomes)."""
+    from .classify import NO_FIT_OUTCOMES
+
+    rep.blank()
+    rep.table([first, "outcome", "replies", "of which hit token cap"],
+              [[label, o, counts.get(o, 0), c[o]] for label, counts, c in rows
+               for o in NO_FIT_OUTCOMES])
+    rep.note("hit token cap: the model's reply ran to max new tokens (Setup)")
+    rep.note("and was cut off there. Cut off before any <tool_call> tag, it")
+    rep.note("counts as declined.")
+
+
+def _bfcl_body(rep: Report, results: list, *, sampling: bool, samples: int,
+               wall: list[str] | None) -> None:
+    """Everything ``bfcl-score`` prints after Setup, from judged replies (no model needed).
+
+    ``wall`` replaces the wall-clock table with an earlier capture's lines when the
+    replies carry no timings (``bfcl-rescore`` of an older file).
+    """
+    from .classify import CALL_OUTCOMES, NO_FIT_OUTCOMES, short_label
 
     calls = [r for r in results if r.category != "irrelevance"]
     no_fit = [r for r in results if r.category == "irrelevance"]
@@ -228,8 +319,11 @@ def cmd_bfcl_score(args) -> None:
                      *[sum(r.outcomes[o] for r in calls) for o in CALL_OUTCOMES]])
         rep.table(["category", "n", *[short_label(o) for o in CALL_OUTCOMES]], rows)
         rep.note("wrong fn: names differ as a set; wrong n: the right names, too")
-        rep.note("many or too few calls; right: BFCL's checker accepts the reply")
-        rep.note("(BFCL's accuracy on these categories).")
+        rep.note("many or too few calls; bad args: the right calls, arguments the")
+        rep.note("checker rejects; right: BFCL's checker accepts the reply (BFCL's")
+        rep.note("accuracy on these categories).")
+        _cap_table(rep, "category", [(_short_cat(r.category), r.hit_cap, r.capped_outcomes)
+                                     for r in calls])
     if no_fit:
         rep.section("Tasks where no tool fits: every reply" + tail)
         rep.table(["category", "n", *[short_label(o) for o in NO_FIT_OUTCOMES], "bfcl right"],
@@ -238,32 +332,34 @@ def cmd_bfcl_score(args) -> None:
         rep.note("declined: no <tool_call> tag (right); called anyway: any tag.")
         rep.note("bfcl right: BFCL's own verdict, which also passes a reply whose")
         rep.note("<tool_call> fails to decode (here it called anyway).")
+        _no_fit_cap_lines(rep, "category", [(_short_cat(r.category), r.outcomes,
+                                             r.capped_outcomes) for r in no_fit])
 
     rep.section("Controls")
-    rep.table(["category", "items", "reference passes", "replies hit token cap"],
-              [[_short_cat(r.category), r.oracle_n, r.oracle_right, r.hit_cap] for r in results])
+    rep.table(["category", "items", "reference passes"],
+              [[_short_cat(r.category), r.oracle_n, r.oracle_right] for r in results])
     rep.note("reference passes: BFCL's own answer, written in Qwen's format and")
     rep.note("scored by the same checker (the harness can give full marks).")
-    rep.note("hit token cap: replies cut off mid-generation.")
 
     if sampling:
-        rep.section(f"Groups of {args.samples}: how many samples are right per task")
+        rep.section(f"Groups of {samples}: how many samples are right per task")
         dist = [[_short_cat(r.category),
-                 *[sum(1 for x in r.right_per_task if x == k) for k in range(args.samples + 1)]]
+                 *[sum(1 for x in r.right_per_task if x == k) for k in range(samples + 1)]]
                 for r in results]
-        rep.table(["category", *[str(k) for k in range(args.samples + 1)]], dist)
-        rep.section("Groups with signal (some right, some wrong)")
-        mix = []
-        for r in results:
-            none, mixed, every = mixed_share(r.right_per_task, args.samples)
-            mix.append([_short_cat(r.category), len(r.right_per_task), none, mixed, every,
-                        f"{mixed / max(1, len(r.right_per_task)):.2f}"])
-        allc = [x for r in results for x in r.right_per_task]
-        none, mixed, every = mixed_share(allc, args.samples)
-        mix.append(["total", len(allc), none, mixed, every, f"{mixed / max(1, len(allc)):.2f}"])
-        rep.table(["category", "tasks", "all wrong", "mixed", "all right", "mixed share"], mix)
+        rep.table(["category", *[str(k) for k in range(samples + 1)]], dist)
+        _mixed_table(rep, "category",
+                     [*[(_short_cat(r.category), r.right_per_task) for r in results],
+                      ("total", [x for r in results for x in r.right_per_task])], samples)
 
-    rep.section("Wall clock (varies run to run)")
+    rep.section(WALL_CLOCK)
+    if any(r.seconds is None for r in results):
+        if wall:
+            for line in wall:
+                rep.print(line)
+        else:
+            rep.note("(not recorded: the replies file has no timings and there is no")
+            rep.note("earlier capture to carry them over from)")
+        return
     tsec = sum(r.seconds for r in results)
     titems = sum(len(r.right_per_task) for r in results)
     rep.table(["category", "tasks", "s/task", "new tokens/task"],
@@ -272,13 +368,128 @@ def cmd_bfcl_score(args) -> None:
                 f"{r.new_tokens / max(1, len(r.right_per_task)):.0f}"] for r in results]
               + [["total", titems, f"{tsec / max(1, titems):.2f}",
                   f"{sum(r.new_tokens for r in results) / max(1, titems):.0f}"]])
-    rep.close()
 
+
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def cmd_bfcl_score(args) -> None:
+    _quiet_hf()
+    from . import bfcl
+    from .device import dtype_name, get_device, preferred_dtype, set_determinism
+
+    cats = [c.strip() for c in args.categories.split(",") if c.strip()]
+    unknown = [c for c in cats if c not in bfcl.CATEGORIES]
+    if unknown:
+        sys.exit(f"unknown categories {unknown}; choose from {list(bfcl.CATEGORIES)}")
+    _check_sampling(args.samples, args.temperature)
+    sampling = args.samples > 1
+    mode = f"samples{args.samples}-t{args.temperature:g}" if sampling else "greedy"
+    tag = _bfcl_tag(args.model, args.split, mode, args.limit)
+    device = get_device()
+    determinism = set_determinism(device)
+    dtype = dtype_name(preferred_dtype(device))
+    rep = Report(f"tinytools bfcl-score ({mode})", out=OUTPUTS / f"bfcl-{tag}.txt")
+    _bfcl_setup(rep, model=args.model, split=args.split, limit=args.limit, sampling=sampling,
+                samples=args.samples, temperature=args.temperature, seed=args.seed,
+                dtype=dtype, determinism=determinism)
+
+    progress.status(f"loading {args.model} on {device}")
+    tok, model = bfcl.load_model(args.model, device)
+    results, records = [], []
+    for cat in cats:
+        items = bfcl.load_items(cat, args.limit, args.split)
+        on_item = progress.items(f"{cat}, {mode}", len(items))
+        results.append(bfcl.score(tok, model, items, samples=args.samples,
+                                  temperature=args.temperature, seed=args.seed,
+                                  on_item=on_item, records=records,
+                                  setup={"dtype": dtype, "device": device.type}))
+    _bfcl_body(rep, results, sampling=sampling, samples=args.samples, wall=None)
+    rep.close()
     items_path = OUTPUTS / f"bfcl-{tag}-replies.jsonl"
-    with open(items_path, "w", encoding="utf-8") as f:
-        for rec in records:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    _write_jsonl(items_path, records)
     progress.status(f"replies written to {items_path.relative_to(ROOT)}")
+
+
+def recorded_setup(rows: list[dict], earlier: str | None) -> tuple[str, str]:
+    """(device type, dtype) a replies file was generated with: from its rows, else from
+    the header of the capture it came with (files written before rows carried them).
+
+    The dtype is the one :func:`device.preferred_dtype` picks: float32 on mps and
+    cpu; a CUDA capture without the field can't say (bf16 or not), so that raises.
+    """
+    dev = {r.get("device") for r in rows}
+    dt = {r.get("dtype") for r in rows}
+    if None not in dev and None not in dt:
+        if len(dev) != 1 or len(dt) != 1:
+            raise ValueError(f"mixed setups in one replies file: {dev}, {dt}")
+        return dev.pop(), dt.pop()
+    m = re.search(r"^device {8}: (\w+)", earlier or "", re.MULTILINE)
+    if m is None:
+        raise ValueError("the replies don't record their device and dtype, and there is no "
+                         "earlier capture whose header says the device")
+    if m.group(1) == "cuda":
+        raise ValueError("a CUDA capture without a recorded dtype (bf16 or fp32?)")
+    return m.group(1), "float32"
+
+
+def cmd_bfcl_rescore(args) -> None:
+    """Re-judge a ``bfcl-score`` replies file (no model); write ``bfcl-score``'s capture."""
+    _quiet_hf()
+    from . import bfcl
+    from .device import determinism_label
+
+    path = args.replies.resolve()
+    name = parse_bfcl_replies_name(path.name)
+    if name is None:
+        sys.exit(f"{path.name}: not a bfcl-score replies file name "
+                 "(bfcl-<model>-[dev-|eval-]<mode>-limit<N>-replies.jsonl)")
+    if name["model"] != args.model.split("/")[-1]:
+        sys.exit(f"{path.name} was scored with {name['model']}; pass --model for it")
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    if not rows:
+        sys.exit(f"{path}: no replies")
+    sampling, samples = name["samples"] > 1, name["samples"]
+    tag = _bfcl_tag(args.model, name["split"], name["mode"], name["limit"])
+    out = OUTPUTS / f"bfcl-{tag}.txt"
+    earlier = out.read_text(encoding="utf-8") if out.exists() else None
+    try:
+        device_type, dtype = recorded_setup(rows, earlier)
+    except ValueError as e:
+        sys.exit(f"{path.name}: {e}")
+
+    by_cat: dict[str, dict[str, list[dict]]] = {}
+    for r in rows:
+        by_cat.setdefault(r["category"], {}).setdefault(r["id"], []).append(r)
+    results, ordered = [], []
+    for cat, group in by_cat.items():
+        items = bfcl.load_items(cat, name["limit"], name["split"])
+        if [it.id for it in items] != list(group):
+            sys.exit(f"{path.name}: the {cat} replies are not the first "
+                     f"{name['limit'] or 'all'} items of split {name['split']}, in order")
+        if any(len(rs) != samples for rs in group.values()):
+            sys.exit(f"{path.name}: expected {samples} replies per {cat} item")
+        reps = [sorted(rs, key=lambda r: r.get("sample", 0)) for rs in group.values()]
+        for rs in reps:
+            for i, r in enumerate(rs):
+                r.setdefault("sample", i)
+                r.update(dtype=dtype, device=device_type)
+        ordered += [r for rs in reps for r in rs]
+        results.append(bfcl.rejudge(items, reps, progress.items(f"rescore, {cat}", len(items))))
+    wall = section_lines(earlier, WALL_CLOCK) if earlier else None
+
+    rep = Report(f"tinytools bfcl-score ({name['mode']})", out=out)
+    _bfcl_setup(rep, model=args.model, split=name["split"], limit=name["limit"],
+                sampling=sampling, samples=samples, temperature=name["temperature"],
+                seed=args.seed, dtype=dtype, determinism=determinism_label(device_type))
+    rep.kv("checked by", "bfcl-rescore of the saved replies")
+    _bfcl_body(rep, results, sampling=sampling, samples=samples, wall=wall)
+    rep.close()
+    _write_jsonl(path, ordered)
+    progress.status(f"verdicts in {path.relative_to(ROOT)} updated (replies unchanged)")
 
 
 # -- our tool tasks --------------------------------------------------------------
@@ -289,7 +500,6 @@ TASKS_DIR = DATA / "tasks"
 def _block(rep: Report, text: str, indent: int = 4) -> None:
     """Print text inside the report, long lines broken with a trailing backslash."""
     from .ours import wrap_lines
-    from .report import WIDTH
 
     for line in wrap_lines(text, WIDTH - indent):
         rep.print((" " * indent + line).rstrip())
@@ -348,18 +558,17 @@ def cmd_tasks(args) -> None:
             for k in tasks.KINDS]
     rows.append(["total", *[len(splits[s]) for s in names]])
     rep.table(["kind", *names], rows)
-    rep.note(f"seed {args.seed}; train-r6a is a seeded sample of train (post 10's")
+    rep.note(f"seed {args.seed}; {tasks.SAMPLE_SPLIT} is a seeded sample of train (post 10's")
     rep.note("ready-for-RL measurement), the same 60/20/20 mix.")
 
     rep.section("Tasks by tool")
     rows = []
     for k in tasks.KINDS:
         for tool in tasks.KIND_TOOLS[k]:
-            label = tool if k != tasks.NO_FIT else f"needs {tool}"
-            rows.append([label[:27], tasks.SHORT_KIND[k],
+            rows.append([tool, tasks.SHORT_KIND[k],
                          *[sum(t["kind"] == k and t["tool"] == tool for t in splits[s])
                            for s in names]])
-    rep.table(["tool", "kind", *names], rows)
+    rep.table(["tool needed", "kind", *names], rows)
     rep.note("no tool fits: the tool the request needs, which is never offered.")
 
     rep.section("Tools offered per task")
@@ -464,8 +673,10 @@ def _compared(name: str, c) -> str:
         same = c.reference_run.compared == c.reply_run.compared
         return f"calendar after the call: {'same' if same else 'different'}"
     same = c.reference_run.compared == c.reply_run.compared
-    return (f"id sets: {len(c.reference_run.compared)} vs {len(c.reply_run.compared)}, "
-            f"{'same' if same else 'different'}")
+    noun = {"search_documents": "documents", "search_contacts": "contacts",
+            "get_calendar_event": "events"}[name]
+    return (f"{noun} found: {len(c.reference_run.compared)} vs {len(c.reply_run.compared)} "
+            f"({'the same' if same else 'different'})")
 
 
 def _tagname(model: str, split: str, mode: str, limit) -> str:
@@ -473,7 +684,8 @@ def _tagname(model: str, split: str, mode: str, limit) -> str:
 
 
 def _score_setup(rep: Report, *, model: str, split: str, splits: dict, limit, sampling: bool,
-                 samples: int, temperature: float, seed: int) -> None:
+                 samples: int, temperature: float, seed: int, dtype: str,
+                 determinism: str) -> None:
     from . import bfcl, tasks
 
     rep.header()
@@ -486,6 +698,8 @@ def _score_setup(rep: Report, *, model: str, split: str, splits: dict, limit, sa
            f"{samples} samples, temperature {temperature:g}")
     rep.kv("top_p / top_k / repetition penalty", "1.0 / off / 1.0")
     rep.kv("max new tokens", bfcl.MAX_NEW_TOKENS)
+    rep.kv("dtype", dtype)
+    rep.kv("determinism", determinism)
     rep.kv("seed", f"{seed} (+ crc32 of each task id)")
     rep.kv("right means", "execution match (exact beside it)")
 
@@ -493,22 +707,23 @@ def _score_setup(rep: Report, *, model: str, split: str, splits: dict, limit, sa
 def cmd_score(args) -> None:
     _quiet_hf()
     from . import bfcl, ours, tasks
-    from .device import get_device
+    from .device import dtype_name, get_device, preferred_dtype, set_determinism
 
+    _check_sampling(args.samples, args.temperature)
     sampling = args.samples > 1
-    if sampling and args.temperature <= 0:
-        sys.exit("--samples > 1 needs --temperature > 0")
     mode = f"samples{args.samples}-t{args.temperature:g}" if sampling else "greedy"
     tag = _tagname(args.model, args.split, mode, args.limit)
     splits = _load_or_make_tasks(tasks.DEFAULT_SEED)
     items = ours.limit_per_kind(splits[args.split], args.limit)
 
+    device = get_device()
+    determinism = set_determinism(device)
+    dtype = dtype_name(preferred_dtype(device))
     rep = Report(f"tinytools score ({args.split}, {mode})", out=OUTPUTS / f"score-{tag}.txt")
     _score_setup(rep, model=args.model, split=args.split, splits=splits, limit=args.limit,
                  sampling=sampling, samples=args.samples, temperature=args.temperature,
-                 seed=args.seed)
+                 seed=args.seed, dtype=dtype, determinism=determinism)
 
-    device = get_device()
     progress.status(f"loading {args.model} on {device}")
     tok, model = bfcl.load_model(args.model, device)
 
@@ -529,7 +744,7 @@ def cmd_score(args) -> None:
                 split=args.split, wall=_wall_rows(greedy, sampled, mode))
     rep.close()
     path = OUTPUTS / f"score-{tag}-replies.jsonl"
-    _write_replies(path, greedy, sampled, mode)
+    _write_replies(path, greedy, sampled, mode, {"dtype": dtype, "device": device.type})
     progress.status(f"replies written to {path.relative_to(ROOT)}")
 
 
@@ -546,7 +761,7 @@ def _wall_rows(greedy, sampled, mode: str) -> list[list] | None:
     return rows
 
 
-def _write_replies(path: Path, greedy, sampled, mode: str) -> None:
+def _write_replies(path: Path, greedy, sampled, mode: str, setup: dict) -> None:
     """Every reply with its checks, one JSON line each; ``rescore`` reads this back."""
     with open(path, "w", encoding="utf-8") as f:
         for label, res in [("greedy", greedy)] + ([(mode, sampled)] if sampled is not None else []):
@@ -559,6 +774,7 @@ def _write_replies(path: Path, greedy, sampled, mode: str) -> None:
                         "outcome": c.outcome, "execution": c.execution, "exact": c.exact,
                         "hit_cap": capped,
                         "result": c.reply_run.result if c.reply_run else None,
+                        **setup,
                     }
                     if s.seconds is not None and s.new_tokens is not None:
                         row["task_seconds"] = s.seconds  # the task's whole group, all samples
@@ -575,11 +791,12 @@ def _score_body(rep: Report, *, greedy, sampled, mode: str, samples: int, split:
     """
     from . import ours, tasks
     from .checkers import call_text, check_reply
-    from .classify import CALL_OUTCOMES, NO_FIT_OUTCOMES, mixed_share, short_label
+    from .classify import CALL_OUTCOMES, NO_FIT_OUTCOMES, short_label
 
     sampling = sampled is not None
     main = sampled if sampling else greedy
     rows = ours.outcome_rows(main)
+    capped = ours.capped_by_kind(main)
     calls = [r for r in rows if r.kind != tasks.NO_FIT and r.kind != "total"]
     no_fit = [r for r in rows if r.kind == tasks.NO_FIT]
     tail = " (all samples)" if sampling else ""
@@ -590,13 +807,18 @@ def _score_body(rep: Report, *, greedy, sampled, mode: str, samples: int, split:
                   [[tasks.SHORT_KIND.get(r.kind, r.kind), r.n,
                     *[r.outcomes.get(o, 0) for o in CALL_OUTCOMES]] for r in [*calls, total]])
         rep.note("wrong fn: another tool; wrong n: the right tool, more than one")
-        rep.note("call; right: execution match.")
+        rep.note("call; bad args: the right tool, arguments that fail execution")
+        rep.note("match; right: execution match.")
+        _cap_table(rep, "kind", [(tasks.SHORT_KIND.get(r.kind, r.kind), *capped[r.kind])
+                                 for r in calls])
     if no_fit:
         rep.section("Tasks where no tool fits: every reply" + tail)
         rep.table(["kind", "n", *[short_label(o) for o in NO_FIT_OUTCOMES]],
                   [[tasks.SHORT_KIND.get(r.kind, r.kind), r.n,
                     *[r.outcomes.get(o, 0) for o in NO_FIT_OUTCOMES]] for r in no_fit])
         rep.note("declined: no <tool_call> tag (right); called anyway: any tag.")
+        _no_fit_cap_lines(rep, "kind", [(tasks.SHORT_KIND.get(r.kind, r.kind), r.outcomes,
+                                         capped[r.kind][1]) for r in no_fit])
     rep.section("Right by execution and by exact match" + tail)
     rep.table(["kind", "right by execution", "right by exact match"],
               [[tasks.SHORT_KIND.get(r.kind, r.kind), ours.pct(r.execution, r.n),
@@ -641,16 +863,8 @@ def _score_body(rep: Report, *, greedy, sampled, mode: str, samples: int, split:
         rep.table(["kind", *[str(k) for k in range(g + 1)]],
                   [[tasks.SHORT_KIND[k], *ours.histogram(right[k], g)] for k in tasks.KINDS
                    if right[k]] + [["total", *ours.histogram(allr, g)]])
-        rep.section("Groups with signal (some right, some wrong)")
-        rows = []
-        for label, rc in [*[(tasks.SHORT_KIND[k], right[k]) for k in tasks.KINDS if right[k]],
-                          ("total", allr)]:
-            none, mixed, every = mixed_share(rc, g)
-            rows.append([label, len(rc), none, mixed, every,
-                         f"{100 * mixed / len(rc):.1f}%", f"{ours.per_thousand(mixed, len(rc), g):.0f}"])
-        rep.table(["kind", "tasks", "all wrong", "mixed", "all right", "share", "per 1k"], rows)
-        rep.note("share: mixed groups / tasks.")
-        rep.note(f"per 1k: mixed groups per 1,000 answers = (1000 / {g}) x share.")
+        _mixed_table(rep, "kind", [*[(tasks.SHORT_KIND[k], right[k]) for k in tasks.KINDS
+                                     if right[k]], ("total", allr)], g)
         rep.section(f"Greedy right vs pass@{g}")
         rows = []
         for k in [*tasks.KINDS, "total"]:
@@ -756,9 +970,17 @@ def cmd_rescore(args) -> None:
     if wall is None and out.exists():  # timings live only in the capture these replies came from
         wall = section_lines(out.read_text(encoding="utf-8"), WALL_CLOCK)
 
+    try:
+        device_type, dtype = recorded_setup(rows, out.read_text(encoding="utf-8")
+                                            if out.exists() else None)
+    except ValueError as e:
+        sys.exit(f"{path.name}: {e}")
+    from .device import determinism_label
+
     rep = Report(f"tinytools score ({args.split}, {mode})", out=out)
     _score_setup(rep, model=args.model, split=args.split, splits=splits, limit=limit,
-                 sampling=sampling, samples=samples, temperature=temperature, seed=args.seed)
+                 sampling=sampling, samples=samples, temperature=temperature, seed=args.seed,
+                 dtype=dtype, determinism=determinism_label(device_type))
     rep.kv("checked by", "rescore of the saved replies")
     if not sampling:
         task = ours.r1_task(splits["test"])
@@ -774,7 +996,7 @@ def cmd_rescore(args) -> None:
     _score_body(rep, greedy=greedy, sampled=sampled, mode=mode, samples=samples,
                 split=args.split, wall=wall)
     rep.close()
-    _write_replies(path, greedy, sampled, mode)
+    _write_replies(path, greedy, sampled, mode, {"dtype": dtype, "device": device_type})
     progress.status(f"verdicts in {path.relative_to(ROOT)} updated (replies unchanged)")
 
 
@@ -829,7 +1051,9 @@ SFT_DIR = DATA / "sft"
 
 
 def _of(n: int, total: int) -> str:
-    return f"{n} of {total} ({100 * n / max(1, total):.1f}%)"
+    from .ours import pct
+
+    return pct(n, total)
 
 
 def parse_seeds(text: str) -> tuple[int, ...]:
@@ -890,9 +1114,21 @@ def cmd_sft_data(args) -> None:
     rep.note("Rows with 2+ tools and a call, and every row with no call (any")
     rep.note("tool list). No-call rows go into both arms unchanged; rows with")
     rep.note("one tool and a call are left out.")
-    rep.table(["row type", "converted", "each arm"],
-              [[t, s.rows_converted[t], s.rows_trained[t]] for t in sft.ROW_TYPES]
-              + [["total", sum(s.rows_converted.values()), sum(s.rows_trained.values())]])
+    rep.table(["row type", "converted", "dropped", "each arm"],
+              [[t, s.rows_converted[t], s.rows_dropped[t] if t != sft.R_OUT else "-",
+                s.rows_trained[t]] for t in sft.ROW_TYPES]
+              + [["total", sum(s.rows_converted.values()), sum(s.rows_dropped.values()),
+                  sum(s.rows_trained.values())]])
+    rep.note("dropped: from both arms, by reason (checked after truncation):")
+    rep.table(["reason", "rows"], [[r, len(s.dropped[r])] for r in sft.DROP_REASONS]
+              + [["total", sum(len(v) for v in s.dropped.values())]])
+    for r in sft.DROP_REASONS:
+        if s.dropped[r]:
+            rep.note(f"{r}:")
+            for line in textwrap.wrap(", ".join(s.dropped[r]), WIDTH - 4):
+                rep.print("    " + line)
+    rep.note("An empty turn would teach the model to end its turn at once; a")
+    rep.note("[Name(...)] call written in a text turn would train as plain text.")
 
     rep.section("Truncation: each row cut after its first call turn")
     rep.note("Both arms. Not-calling assistant turns before the first call stay;")
@@ -905,7 +1141,7 @@ def cmd_sft_data(args) -> None:
         ["  of them assistant turns", s.cut_all.assistant_turns_removed,
          s.cut_train.assistant_turns_removed],
         ["tokens removed", s.cut_all.tokens_removed, s.cut_train.tokens_removed],
-        ["  of them trained", s.cut_all.trained_removed, s.cut_train.trained_removed],
+        ["  of them scored", s.cut_all.trained_removed, s.cut_train.trained_removed],
     ])
 
     rep.section("Turns in each arm, beside the full set")
@@ -930,14 +1166,16 @@ def cmd_sft_data(args) -> None:
 
     rep.section("Tokens, real vs control (the chat template's rendering)")
     trows = [["tokens", s.shape_real.tokens, *[c.shape.tokens for c in ctl]],
-             ["tokens trained", s.shape_real.trained, *[c.shape.trained for c in ctl]],
+             ["tokens scored", s.shape_real.trained, *[c.shape.trained for c in ctl]],
              ["control / real, all", "", *[f"{c.shape.tokens / s.shape_real.tokens:.4f}"
                                            for c in ctl]],
-             ["control / real, trained", "", *[f"{c.shape.trained / s.shape_real.trained:.4f}"
-                                               for c in ctl]]]
+             ["control / real, scored", "", *[f"{c.shape.trained / s.shape_real.trained:.4f}"
+                                              for c in ctl]]]
     rep.table(["", "real arm", *cols], trows)
-    rep.note("trained = inside assistant turns. The no-call rows are the same in")
-    rep.note("both arms, so only call turns can move the ratio.")
+    rep.note("scored: the tokens the loss is computed on: each assistant turn")
+    rep.note("from after its '<|im_start|>assistant' header through its")
+    rep.note("<|im_end|>. The header is masked. The no-call rows are the same")
+    rep.note("in both arms, so only call turns can move the ratio.")
 
     rep.section("Control: does the drawn tool match the call it replaced?")
     rep.note("Each call's tool is drawn uniformly from the row's k tools, so it")
@@ -1014,8 +1252,10 @@ def _r4b(rep: Report, s, tok, sft, seed: int) -> None:
         rows.append(["total", rec["n_tokens"], rec["n_trained"],
                      rec["n_tokens"] - rec["n_trained"]])
         rep.table(["turn", "tokens", "scored", "masked"], rows)
-    rep.note("The system turn holds the date line and the tool list. An")
-    rep.note("assistant turn's '<|im_start|>assistant' header is masked.")
+    rep.note("The system turn holds the date line and the tool list. scored:")
+    rep.note("the tokens the loss is computed on. In an assistant turn, the")
+    rep.note("'<|im_start|>assistant' header line and the newline after")
+    rep.note("<|im_end|> are masked; the rest, through <|im_end|>, is scored.")
     rep.blank()
     user = next(m["content"] for m in real["messages"] if m["role"] == "user")
     rep.note("user:")
@@ -1061,11 +1301,22 @@ def main(argv: list[str] | None = None) -> None:
     s = sub.add_parser("bfcl-score", help="score a model on BFCL, split by outcome")
     s.add_argument("--model", default="Qwen/Qwen2.5-0.5B-Instruct")
     s.add_argument("--categories", default="simple,multiple,parallel,parallel_multiple,irrelevance")
-    s.add_argument("--limit", type=int, default=20, help="first N items per category")
+    s.add_argument("--split", choices=["eval", "dev", "all"], default="eval",
+                   help="eval: all items minus the dev slice (published numbers); dev: the "
+                        "slice (Milestone 0); all: both (prints a warning)")
+    s.add_argument("--limit", type=int, default=None,
+                   help="first N items of the split per category (default: all)")
     s.add_argument("--samples", type=int, default=1, help="1 = greedy; >1 = sampled group")
     s.add_argument("--temperature", type=float, default=0.0)
     s.add_argument("--seed", type=int, default=0)
     s.set_defaults(fn=cmd_bfcl_score)
+
+    s = sub.add_parser("bfcl-rescore", help="re-judge a bfcl-score replies file (no model)")
+    s.add_argument("--replies", type=Path, required=True,
+                   help="a bfcl-...-replies.jsonl; its verdict fields are rewritten")
+    s.add_argument("--model", default="Qwen/Qwen2.5-0.5B-Instruct", help="the model it was scored with")
+    s.add_argument("--seed", type=int, default=0, help="the seed it was scored with (printed only)")
+    s.set_defaults(fn=cmd_bfcl_rescore)
 
     s = sub.add_parser("tasks", help="generate our tool tasks (test, dev, train) and count them")
     s.add_argument("--seed", type=int, default=0)
@@ -1076,7 +1327,7 @@ def main(argv: list[str] | None = None) -> None:
 
     s = sub.add_parser("score", help="score a model on our tool tasks, split by outcome")
     s.add_argument("--model", default="Qwen/Qwen2.5-0.5B-Instruct")
-    s.add_argument("--split", choices=["test", "dev", "train-r6a"], default="test")
+    s.add_argument("--split", choices=["test", "dev", "train-sample"], default="test")
     s.add_argument("--limit", type=int, default=None, help="first N tasks of each kind, by id")
     s.add_argument("--samples", type=int, default=1, help="1 = greedy; >1 = sampled group")
     s.add_argument("--temperature", type=float, default=0.0)
@@ -1087,7 +1338,7 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--replies", type=Path, required=True,
                    help="a score-...-replies.jsonl; its verdict fields are rewritten")
     s.add_argument("--model", default="Qwen/Qwen2.5-0.5B-Instruct", help="the model it was scored with")
-    s.add_argument("--split", choices=["test", "dev", "train-r6a"], default="test")
+    s.add_argument("--split", choices=["test", "dev", "train-sample"], default="test")
     s.add_argument("--seed", type=int, default=0, help="the seed it was scored with (printed only)")
     s.set_defaults(fn=cmd_rescore)
 

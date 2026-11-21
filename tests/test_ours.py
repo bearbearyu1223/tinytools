@@ -44,6 +44,34 @@ def test_group_summaries():
     assert ours.pct(57, 120) == "57 of 120 (47.5%)"
 
 
+def test_half_up_rounding():
+    assert ours.pct(1, 400) == "1 of 400 (0.3%)"  # 0.25% exactly
+    assert ours.pct(1, 8) == "1 of 8 (12.5%)" and ours.pct(1, 3) == "1 of 3 (33.3%)"
+    assert ours.share(1, 16) == "6.3%"  # 6.25
+    assert ours.per_thousand(2, 100, 8) == 2.5
+    assert f"{ours.per_thousand(2, 100, 8):.0f}" == "3"
+    assert f"{ours.per_thousand(1, 400, 8):.1f}" == "0.3"  # 0.3125
+    assert f"{ours.per_thousand(5, 16, 8):.1f}" == "39.1"  # 39.0625
+    assert ours.per_thousand(0, 0, 8) == 0
+
+
+def test_mixed_rows_one_format():
+    rows = ours.mixed_rows([("a", [0, 3, 8, 8]), ("b", [0, 0])], 8)
+    assert rows == [["a", 4, 1, 1, 2, "25.0%", "31.3"], ["b", 2, 2, 0, 0, "0.0%", "0.0"]]
+    assert len(ours.MIXED_HEADERS) == len(rows[0]) - 1
+
+
+def test_capped_by_kind():
+    task = {"id": "t", "kind": tasks.TRICKY, "tool": "calculator",
+            "reference": {"name": "calculator", "arguments": {"expression": "1 + 1"}}}
+    s = ours.Scored(task, ["<tool_call>\n{", "no"],
+                    [check_reply("<tool_call>\n{", task["reference"]),
+                     check_reply("no", task["reference"])], [True, False], 0, 0.0)
+    got = ours.capped_by_kind([s])
+    assert got[tasks.TRICKY][0] == 1 and dict(got[tasks.TRICKY][1]) == {"unparseable": 1}
+    assert got[tasks.CHOOSE][0] == 0
+
+
 def _scored(task, replies):
     return ours.Scored(task, replies, [check_reply(r, task["reference"]) for r in replies],
                        [False] * len(replies), 0, 0.0)

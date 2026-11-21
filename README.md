@@ -11,11 +11,13 @@ uv run tinytools toolace-stats      # count ToolACE; check the conversion and ma
 uv run tinytools toolace-convert    # write data/toolace-en-qwen.jsonl
 uv run tinytools bfcl-score --model Qwen/Qwen2.5-0.5B-Instruct \
     --categories simple,multiple,parallel,parallel_multiple,irrelevance --limit 20
-uv run tinytools bfcl-score --limit 20 --samples 8 --temperature 1.0
+uv run tinytools bfcl-score --split dev --samples 8 --temperature 1.0
+uv run tinytools bfcl-rescore --replies outputs/bfcl-<...>-replies.jsonl  # no model
 uv run tinytools tasks              # our tool tasks -> data/tasks/, counts (r2a)
 uv run tinytools check-demo         # three calls checked both ways (r2b)
 uv run tinytools score --split test --limit 30              # greedy, 30 per kind
 uv run tinytools score --split test --limit 10 --samples 8 --temperature 1.0
+uv run tinytools rescore --replies outputs/score-<...>-replies.jsonl      # no model
 uv run tinytools sft-data --seeds 1,2,3  # SFT sets -> data/sft/ (r4a, r4b)
 uv run pytest -q && uvx ruff check --select F,E9,B
 ```
@@ -55,9 +57,12 @@ Source: HF `Team-ACE/ToolACE` (Apache-2.0), `data.json` at revision `6bda777c88d
 * **Language.** A row is Chinese if the first 200 characters of its system prompt
   contain a CJK ideograph. Those rows are dropped.
 * **Tool list.** The JSON list after "...in JSON format that you can invoke:". Rows
-  whose tools are written another way (Markdown, XML, YAML, HTML or LaTeX tables:
-  ToolACE's format-variation rows, which also use other call syntaxes) are counted and
-  dropped.
+  whose tools are written another way (ToolACE's format-variation rows, which also
+  use other call syntaxes) are counted and dropped; `toolace-stats` counts them by
+  format, detected from the list's first characters (`toolace.tool_list_format`):
+  YAML-like lines, a Markdown list, a LaTeX tabular, an HTML table, JSON keyed
+  `tool_name` / `definition` instead of `name` / `description`, XML-like tags, no
+  tool list at all, and "other" (0 in this revision).
 * **Calls.** `[Name(arg=value, ...), ...]`, parsed by `calls.py`. Names may contain
   spaces, slashes, dots, parentheses and apostrophes (`Daily Forecast (10 days)`),
   so names are matched against the tool list, longest first.
@@ -104,9 +109,36 @@ Tasks where no tool fits (BFCL irrelevance; our "no tool fits"):
 The reports print the two groups as separate tables. "right" equals BFCL's
 accuracy on the AST categories. On irrelevance BFCL also passes a reply whose
 `<tool_call>` doesn't decode (here it called anyway); the report prints BFCL's
-count beside ours. Two controls print with every run: BFCL's own reference answer
-written in Qwen's format (shows the harness can give full marks), and how many
-replies hit the 512-token cap.
+count beside ours. A control prints with every run: BFCL's own reference answer
+written in Qwen's format (shows the harness can give full marks). Under each outcome
+table, the model's replies that hit the token cap (max new tokens, in Setup) are
+counted per category with the outcome they were given: a reply cut off before any
+`<tool_call>` tag counts as declined on irrelevance, so the report prints "declined,
+of which hit token cap".
+
+**Splits.** `--split eval` (the default) is every item minus a seeded dev slice
+(`bfcl.dev_slice(category, seed=0)`: round(10%) of each category, drawn with
+`Random("0:bfcl-dev:<category>")`), the set published numbers come from; `--split
+dev` is the slice alone (Milestone 0); `--split all` is both, and its Setup prints a
+warning. `--limit N` takes the first N of the split in bfcl's order (default: all).
+The capture's name carries the split (`bfcl-<model>-eval-greedy-limitall.txt`),
+except `all`, which keeps the name captures had before splits existed.
+
+**Setup** prints the dtype (`device.preferred_dtype`: float32 on mps and cpu,
+bfloat16 on a bf16-capable GPU, so a Mac capture and a Lambda capture can differ)
+and the determinism flags (`device.set_determinism`, the one place they are set:
+on CUDA `torch.use_deterministic_algorithms(True)` and
+`CUBLAS_WORKSPACE_CONFIG=:4096:8`; a no-op on mps and cpu). Every reply row records
+`dtype` and `device`, so `rescore` and `bfcl-rescore` print them too (for files
+written before that, from the device line of the capture they came with).
+`--samples 1` with `--temperature > 0` is refused (it would sample but be labelled
+greedy). Shares print rounded half up (1 of 400 is 0.3%); "per 1k" prints one
+decimal.
+
+**`bfcl-rescore --replies <file>`** re-judges a replies file with bfcl's checker
+(no model) and rewrites the capture `bfcl-score` would have written; its split,
+mode and limit come from the file name. Timings come from the replies, or are
+carried over from the earlier capture.
 
 Decoding is set explicitly: greedy is argmax (Qwen's `generation_config.json` would
 otherwise add repetition penalty 1.1, top-p 0.8, top-k 20), and `--samples N
@@ -145,8 +177,9 @@ times and worded durations, unit conversions and percentages, names with a
 confusable neighbour or an unusual spelling), no tool fits (right = no call). Splits,
 disjoint by request text and by (template, slot values): test 600/200/200, dev
 120/40/40 (Milestone 0 only), train 3000/1000/1000 (post 10; the 60/20/20 mix is
-frozen), and `train-r6a`, a seeded 300/100/100 sample of train for the
-ready-for-RL measurement. Each task offers 3-5 tools. The splits are written to
+frozen), and `train-sample`, a seeded 300/100/100 sample of train for the
+ready-for-RL measurement (named `train-r6a` until review round 1; same tasks, same
+order, same bytes). Each task offers 3-5 tools. The splits are written to
 `data/tasks/*.jsonl` (gitignored: regenerated byte for byte; `tests/test_tasks.py`
 pins their sha256).
 
@@ -188,7 +221,11 @@ gitignored, regenerated byte for byte, sha256 pinned in `tests/test_sft.py`.
 * **Rows (both arms).** Every row with 2+ tools and a call, and every row with no
   call, whatever its tool list (one tool or none): the declining and asking
   examples. No-call rows are identical in both arms. Rows with one tool and a call
-  are left out (the control would always draw the right tool).
+  are left out (the control would always draw the right tool). Then some rows are
+  dropped from both arms, counted by reason in the capture: an assistant turn with
+  no call and no text, or a text turn holding ToolACE's `[Name(...)]` syntax
+  for a listed tool, which would train a call as plain text
+  (`sft.drop_reason`, checked after truncation).
 * **Truncation (both arms).** Each conversation is cut right after its first
   assistant turn that makes a call; not-calling turns before it stay; a row with no
   call is kept whole. No row keeps a tool result.
@@ -207,7 +244,9 @@ gitignored, regenerated byte for byte, sha256 pinned in `tests/test_sft.py`.
   tool drawn, the argument source, the donor row, and each built parameter's
   source and donor row (empty for no-call rows).
 
-Records have the `toolace-convert` shape plus `n_tokens` and `n_trained`. The report
+Records have the `toolace-convert` shape plus `n_tokens` and `n_trained` (the
+scored tokens: each assistant turn from after its `<|im_start|>assistant` header
+through its `<|im_end|>`; the reports call them "scored"). The report
 (`outputs/sft-data.txt`) prints which rows train by type, the truncation, the turns
 in each arm beside the full set, tokens and the control/real token ratio per seed,
 each seed's hit rate against chance by k, the argument sources and how built

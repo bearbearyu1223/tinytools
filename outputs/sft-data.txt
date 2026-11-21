@@ -24,14 +24,27 @@ Which rows train
   Rows with 2+ tools and a call, and every row with no call (any
   tool list). No-call rows go into both arms unchanged; rows with
   one tool and a call are left out.
-  row type                        converted  each arm
-  -----------------------------------------------------
-  2+ tools, with a call                6980      6980
-  no call, 2+ tools                     773       773
-  no call, 1 tool                       517       517
-  no call, empty tool list              248       248
-  1 tool, with a call (left out)       2264         0
-  total                               10782      8518
+  row type                        converted  dropped  each arm
+  --------------------------------------------------------------
+  2+ tools, with a call                6980        5      6975
+  no call, 2+ tools                     773        6       767
+  no call, 1 tool                       517        3       514
+  no call, empty tool list              248        0       248
+  1 tool, with a call (left out)       2264        -         0
+  total                               10782       14      8504
+  dropped: from both arms, by reason (checked after truncation):
+  reason                                rows
+  --------------------------------------------
+  an empty assistant turn                  5
+  a bracket-syntax call in a text turn     9
+  total                                   14
+  an empty assistant turn:
+    toolace-27, toolace-30, toolace-162, toolace-163, toolace-263
+  a bracket-syntax call in a text turn:
+    toolace-1383, toolace-1929, toolace-4716, toolace-5826, toolace-6774,
+    toolace-7224, toolace-7605, toolace-9833, toolace-10539
+  An empty turn would teach the model to end its turn at once; a
+  [Name(...)] call written in a text turn would train as plain text.
 
 --------------------------------------------------------------------------
 Truncation: each row cut after its first call turn
@@ -41,25 +54,25 @@ Truncation: each row cut after its first call turn
   results, answers, later requests) are removed.
                              all converted  training rows
   ---------------------------------------------------------
-  rows                               10782           8518
-  rows cut                             797            797
-  turns removed                       4894           4894
-    of them assistant turns           2447           2447
-  tokens removed                    531780         531780
-    of them trained                 303217         303217
+  rows                               10782           8504
+  rows cut                             797            792
+  turns removed                       4894           4870
+    of them assistant turns           2447           2435
+  tokens removed                    531780         529731
+    of them scored                  303217         302030
 
 --------------------------------------------------------------------------
 Turns in each arm, beside the full set
 --------------------------------------------------------------------------
                            converted  truncated  real arm  control
   ------------------------------------------------------------------
-  rows                         10782      10782      8518     8518
-  assistant turns              13301      10854      8590     8590
-    call turns                  9964       9244      6980     6980
+  rows                         10782      10782      8504     8504
+  assistant turns              13301      10854      8571     8571
+    call turns                  9964       9244      6975     6975
       parallel (2+ calls)       4127       4079      3257     3257
-    not-calls after user        2303       1610      1610     1610
+    not-calls after user        2303       1610      1596     1596
     not-calls after tool        1034          0         0        0
-  calls                        18161      17386     13555    13555
+  calls                        18161      17386     13550    13550
   tool results                  1367          0         0        0
   converted: all 10782 rows as toolace-convert wrote them;
   truncated: the same rows cut; real arm: the training rows;
@@ -70,36 +83,38 @@ Turns in each arm, beside the full set
 --------------------------------------------------------------------------
 Tokens, real vs control (the chat template's rendering)
 --------------------------------------------------------------------------
-                           real arm   seed 1   seed 2   seed 3
-  --------------------------------------------------------------
-  tokens                    6294519  6267266  6270445  6268705
-  tokens trained             608405   581152   584331   582591
-  control / real, all                 0.9957   0.9962   0.9959
-  control / real, trained             0.9552   0.9604   0.9576
-  trained = inside assistant turns. The no-call rows are the same in
-  both arms, so only call turns can move the ratio.
+                          real arm   seed 1   seed 2   seed 3
+  -------------------------------------------------------------
+  tokens                   6286011  6258846  6262049  6260289
+  tokens scored             607322   580157   583360   581600
+  control / real, all                0.9957   0.9962   0.9959
+  control / real, scored             0.9553   0.9605   0.9576
+  scored: the tokens the loss is computed on: each assistant turn
+  from after its '<|im_start|>assistant' header through its
+  <|im_end|>. The header is masked. The no-call rows are the same
+  in both arms, so only call turns can move the ratio.
 
 --------------------------------------------------------------------------
 Control: does the drawn tool match the call it replaced?
 --------------------------------------------------------------------------
   Each call's tool is drawn uniformly from the row's k tools, so it
   matches the replaced call's tool with chance 1/k.
-  control calls (every seed)         13555
-  expected to draw it (sum of 1/k)   3745.4 (sd 50.0)
+  control calls (every seed)         13550
+  expected to draw it (sum of 1/k)   3744.4 (sd 49.9)
 
   control set  drew the replaced call's tool
   --------------------------------------------
-  seed 1               3786 of 13555 (27.9%)
-  seed 2               3721 of 13555 (27.5%)
-  seed 3               3713 of 13555 (27.4%)
+  seed 1               3785 of 13550 (27.9%)
+  seed 2               3719 of 13550 (27.4%)
+  seed 3               3711 of 13550 (27.4%)
 
   tools offered (k)  rows  calls  expected  seed 1  seed 2  seed 3
   ------------------------------------------------------------------
   2                  1408   2620    1310.0    1308    1314    1348
   3                  1410   2424     808.0     803     796     782
-  4                  1266   2186     546.5     563     540     556
-  5                  1264   2387     477.4     495     465     430
-  6                  1156   2333     388.8     402     387     371
+  4                  1265   2185     546.2     563     540     555
+  5                  1263   2386     477.2     494     464     430
+  6                  1153   2330     388.3     402     386     370
   7                   257    857     122.4     119     119     133
   8                   190    656      82.0      85      90      80
   9                    29     92      10.2      11      10      13
@@ -115,14 +130,14 @@ Control: where each call's arguments came from
   No argument ever comes from the row itself.
   control calls                     seed 1  seed 2  seed 3
   ----------------------------------------------------------
-  another row                         5836    5830    5816
+  another row                         5833    5828    5812
   another row, other schema            514     505     487
-  built                               7205    7220    7252
-    built, drew the replaced tool     2378    2322    2340
-  total                              13555   13555   13555
+  built                               7203    7217    7251
+    built, drew the replaced tool     2377    2321    2340
+  total                              13550   13550   13550
   taken from the row itself              0       0       0
-  equal to the real call               300     278     268
-    another row                        180     168     150
+  equal to the real call               300     277     267
+    another row                        180     167     149
     another row, other schema            0       0       0
     built                              120     110     118
     any source, tool takes no args     164     138     150
@@ -135,7 +150,7 @@ Control: where each call's arguments came from
   built calls' parameters, from     seed 1  seed 2  seed 3
   ----------------------------------------------------------
   enum value of the schema             207     219     216
-  same-named argument, another row    7902    7900    7852
+  same-named argument, another row    7898    7898    7852
   schema default                        70      54      70
   same-typed argument, another row    2156    2123    2228
   empty values (placeholders)            0       0       0
@@ -144,7 +159,7 @@ Control: where each call's arguments came from
 
   mean chars change          seed 1  seed 2  seed 3
   ---------------------------------------------------
-  another row                  -0.6    -0.4    -0.1
+  another row                  -0.5    -0.4    -0.1
   another row, other schema    -0.4    -3.4    -5.0
   built                        -8.8    -7.9    -8.3
   all calls                    -4.9    -4.5    -4.7
@@ -171,8 +186,10 @@ One training row and its control twin (toolace-4231, seed 1)
   user           19       0      19
   assistant      29      25       4
   total         334      25     309
-  The system turn holds the date line and the tool list. An
-  assistant turn's '<|im_start|>assistant' header is masked.
+  The system turn holds the date line and the tool list. scored:
+  the tokens the loss is computed on. In an assistant turn, the
+  '<|im_start|>assistant' header line and the newline after
+  <|im_end|> are masked; the rest, through <|im_end|>, is scored.
 
   user:
     I've been diagnosed with hypertension. Can you recommend some \
@@ -189,7 +206,7 @@ Files (regenerated byte for byte from the input and seeds)
 --------------------------------------------------------------------------
   file                          records  sha256 (first 16)
   ----------------------------------------------------------
-  data/sft/real.jsonl              8518   deaded1a159d3db2
-  data/sft/control-seed1.jsonl     8518   d4213d60748cca29
-  data/sft/control-seed2.jsonl     8518   406312685403cfcb
-  data/sft/control-seed3.jsonl     8518   ddf751e64e9688a6
+  data/sft/real.jsonl              8504   2cf7f25a4545d4d0
+  data/sft/control-seed1.jsonl     8504   1a8b98c21361edc3
+  data/sft/control-seed2.jsonl     8504   08d89acedda694f5
+  data/sft/control-seed3.jsonl     8504   f5968d457419f1a8

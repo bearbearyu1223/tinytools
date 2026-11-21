@@ -385,14 +385,50 @@ def test_no_call_rows_go_into_both_arms_unchanged():
     assert s.real[0]["messages"][-1]["role"] == "assistant"  # truncated after the call
 
 
+def test_drop_reason():
+    tools = [A, B]
+    assert sft.drop_reason(tools, [user("x"), call(("A", {"q": "x"}))]) is None
+    assert sft.drop_reason(tools, [user("x"), say(""), call(("A", {"q": "x"}))]) == sft.D_EMPTY
+    assert sft.drop_reason(tools, [user("x"), say("  \n")]) == sft.D_EMPTY
+    bracket = say('I will call two.\n\n[A(q="x"), A(q="y")]')
+    assert sft.drop_reason(tools, [user("x"), bracket]) == sft.D_BRACKET
+    # brackets around anything but a listed tool's call are prose
+    assert sft.drop_reason(tools, [user("x"), say("See [1] and [C(q=1)].")]) is None
+    # an empty turn wins over a bracket call
+    assert sft.drop_reason(tools, [user("x"), bracket, say("")]) == sft.D_EMPTY
+
+
+def test_dropped_rows_leave_both_arms():
+    tok = _tokenizer()
+    rows = [
+        _converted(tok, "keep", [A, B], [user("find x"), call(("A", {"q": "x"}), ("B", {"n": 2}))]),
+        _converted(tok, "empty", [A, B], [user("find y"), say(""), call(("A", {"q": "y"}))]),
+        _converted(tok, "prose", [A, B], [user("weather?"), say('Try [B(n=2)] later.')]),
+        _converted(tok, "donor", [A, B], [user("z"), call(("A", {"q": "z"}), ("B", {"n": 4}))]),
+    ]
+    s = sft.build_sets(rows, (1,), tok)
+    assert [r["id"] for r in s.real] == ["keep", "donor"]
+    assert [r["id"] for r in s.controls[1].records] == ["keep", "donor"]
+    assert s.dropped == {sft.D_EMPTY: ["empty"], sft.D_BRACKET: ["prose"]}
+    assert s.rows_dropped == {sft.R_CALL: 1, sft.R_NO_CALL_2: 1}
+    assert s.rows_trained[sft.R_CALL] == 2 and s.rows_converted[sft.R_CALL] == 3
+
+
 # -- the files, pinned ------------------------------------------------------------
 
 ROOT = Path(__file__).resolve().parents[1]
+# Re-pinned after the review round 1 drops (fd99c4190): 14 rows out of both arms.
 PINNED_SHA256 = {
-    "real": "deaded1a159d3db23cea4b6ced0247796cbe70b9f45c027cdd2a84a71aea4bf8",
-    1: "d4213d60748cca29ee1edfacd89dc1e155b0d08c85ecc122b20126bf14f8ab22",
-    2: "406312685403cfcb0f82d20c2b7d8f6b4421b5f7941b9e14681ae59688425df5",
-    3: "ddf751e64e9688a65afc73a537ba40471dce82ab1c0c2fec2b18f45a2fbb1205",
+    "real": "2cf7f25a4545d4d01dfa3c2f5d678c5d9194e20724ca417d2464b31cbdf1cdb8",
+    1: "1a8b98c21361edc3dcc3d0e37e238b74c97e43d2dfc37c7a4f58ea83f1ec5f7f",
+    2: "08d89acedda694f5ead4b943f42c866c245a5423e1e9964abc3ea406411a4fcb",
+    3: "f5968d457419f1a89afa7582dc54acb1cb204b468c05fc2f878d09db4f2dea68",
+}
+DROPPED = {
+    sft.D_EMPTY: ["toolace-27", "toolace-30", "toolace-162", "toolace-163", "toolace-263"],
+    sft.D_BRACKET: ["toolace-1383", "toolace-1929", "toolace-4716", "toolace-5826",
+                    "toolace-6774", "toolace-7224", "toolace-7605", "toolace-9833",
+                    "toolace-10539"],
 }
 
 
@@ -406,6 +442,8 @@ def test_sets_regenerate_byte_for_byte():
     converted = [json.loads(line) for line in raw.decode("utf-8").splitlines()]
     s = sft.build_sets(converted, sft.DEFAULT_SEEDS, tok)
     assert hashlib.sha256(sft.jsonl_bytes(s.real)).hexdigest() == PINNED_SHA256["real"]
+    assert s.dropped == DROPPED
+    assert not {r["id"] for r in s.real} & {i for ids in DROPPED.values() for i in ids}
     for seed in sft.DEFAULT_SEEDS:
         cs = s.controls[seed]
         assert hashlib.sha256(sft.jsonl_bytes(cs.records)).hexdigest() == PINNED_SHA256[seed]

@@ -1,6 +1,6 @@
 """Figures for post 9 (teaching a small model to call tools).
 
-Four figures, in the post's order:
+Five figures, in the post's order:
 
 * ``tool-call-round-trip`` (section 1, :func:`figure_round_trip`): one call's
   round trip. A program renders the tool list and the request into the
@@ -14,6 +14,9 @@ Four figures, in the post's order:
   category and per kind of our tasks. From the greedy ``score`` and
   ``bfcl-score`` captures; skipped with a message while either is missing or
   still being written.
+* ``toolace-funnel`` (section 4, :func:`figure_toolace_funnel`): ToolACE's rows
+  down to the ones each arm trains on, bars sized by row count. From the
+  ``toolace-stats`` and ``sft-data`` captures.
 * ``what-sft-trains`` (section 4, :func:`figure_what_sft_trains`): the
   ``sft-data`` example row, its turns as blocks sized by token count, scored
   vs masked, above its random-call control twin.
@@ -566,22 +569,31 @@ def parse_bfcl_outcomes(text: str) -> Outcomes:
 MONO = "DejaVu Sans Mono"  # ships with matplotlib, so a Mac and a Linux box draw alike
 MONO_ADVANCE = 0.602       # DejaVu Sans Mono's advance width, in ems
 
-# The outcome ramp, shared by both themes and by F3 and F5: right darkest,
-# lighter the further a reply is from right. Warm neutrals, so they never read
-# as an arm's colour (grey untrained, blue SFT, green control, orange post 10).
-# On no-tool-fits tasks "declined" is right and takes right's colour, and
-# "called anyway" (a function where none fits) takes wrong function's: the two
-# never share a bar with the call-needing failures, and F3 keys them apart.
-OUTCOME_COLOURS = {
-    RIGHT: "#4a4038",
-    DECLINED: "#4a4038",
-    WRONG_ARGUMENTS: "#7a6e62",
-    WRONG_COUNT: "#9c9184",
-    WRONG_FUNCTION: "#bcb2a4",
-    CALLED_ANYWAY: "#bcb2a4",
-    UNPARSEABLE: "#d6cfc3",
-    NO_CALL: "#ece8e0",
+# The outcome ramps, one per theme: warm neutrals (never an arm's colour: grey
+# untrained, blue SFT, green control, orange post 10), stepped in CIE L* so the
+# right answer is the highest-contrast fill on either surface. Light theme: right
+# darkest (L* 28), then 44, 59, 71, 82, no call palest (92). Dark theme, reversed:
+# right lightest (L* 89), then 74, 59, 48, 39, no call darkest (30; every bar has a
+# 1 px mid-grey outline, so its end stays visible). Wrong arguments and wrong
+# number of calls, side by side in BFCL's parallel rows, are 15 L* apart in both.
+# On no-tool-fits tasks "declined" is right and takes right's colour, and "called
+# anyway" (a function where none fits) takes wrong function's: the two never share
+# a bar with the call-needing failures, and F3 keys them apart.
+_RAMP_ORDER = (RIGHT, WRONG_ARGUMENTS, WRONG_COUNT, WRONG_FUNCTION, UNPARSEABLE, NO_CALL)
+_RAMPS = {
+    "light": ("#494137", "#70665d", "#978c82", "#b7aca1", "#d5cabf", "#f2e6db"),
+    "dark": ("#e9ded2", "#bfb4a9", "#978c82", "#7a7066", "#645a51", "#4e453c"),
 }
+
+
+def outcome_colours(theme: Theme) -> dict[str, str]:
+    """Each outcome's fill on this theme's surface (see the ramps above)."""
+    out = dict(zip(_RAMP_ORDER, _RAMPS[theme.name], strict=True))
+    out[DECLINED] = out[RIGHT]
+    out[CALLED_ANYWAY] = out[WRONG_FUNCTION]
+    return out
+
+
 # Drawn left to right: right first, so every bar's right share starts at 0.
 CALL_ORDER = (RIGHT, WRONG_ARGUMENTS, WRONG_COUNT, WRONG_FUNCTION, UNPARSEABLE, NO_CALL)
 NO_FIT_ORDER = (DECLINED, CALLED_ANYWAY)
@@ -695,6 +707,10 @@ def mono_height(text: str, width: int, size: float) -> float:
 # --------------------------------------------------------------------------
 
 
+# The dark theme's tool-list bar: the light theme's muted grey, 4.8:1 on the dark surface.
+TOOL_LIST_DARK = "#898781"
+
+
 def figure_round_trip(theme: Theme, rt: RoundTrip, out: Path | None = None) -> Path:
     """Program lane left, model lane right; every crossing between them is text."""
     ink, sec = theme.ink, theme.secondary
@@ -769,11 +785,18 @@ def figure_round_trip(theme: Theme, rt: RoundTrip, out: Path | None = None) -> P
     bx0 = px0 + 0.18
     bar_w = inner - 2.3
     per = bar_w / rt.prompt_tokens
+    # light: the prompt solid grey, the tool list a pale band; dark: the prompt an
+    # outline and the tool list filled (>= 3:1 on the surface), so both bars read
+    if theme.name == "light":
+        bar_style = ((grey, "none"), (band, theme.axis))
+    else:
+        bar_style = (("none", grey), (TOOL_LIST_DARK, "none"))
     for k, (n, label) in enumerate(((rt.prompt_tokens, "tokens in the prompt"),
                                     (rt.tool_list_tokens, "of them, the tool list"))):
         y = by - k * 0.36
-        ax.add_patch(Rectangle((bx0, y - 0.11), n * per, 0.22, facecolor=band if k else grey,
-                               edgecolor=theme.axis if k else "none", lw=0.8, zorder=3))
+        fill, edge = bar_style[k]
+        ax.add_patch(Rectangle((bx0, y - 0.11), n * per, 0.22, facecolor=fill,
+                               edgecolor=edge, lw=1.0, zorder=3))
         ax.text(bx0 + n * per + 0.1, y, f"{n:,} {label}", ha="left", va="center",
                 fontsize=10.5, color=ink, zorder=5)
     c1_bottom = c1_top - c1_h
@@ -781,14 +804,16 @@ def figure_round_trip(theme: Theme, rt: RoundTrip, out: Path | None = None) -> P
     # -- 2: the model writes text -------------------------------------------------
     mchars = int((mx1 - mx0 - 0.36) / cw)
     reply_h = mono_height(rt.reply, mchars, size)
-    c2_h = 0.55 + reply_h + 0.55
+    note2 = [f"it picks {rt.call[0]},", f"one of the {count_tools(rt.prompt)} tools offered"]
+    c2_h = 0.55 + reply_h + 0.55 + 0.2 * (len(note2) - 1)
     c2_top = c1_bottom + 1.35
     model_fill = theme.grid
     card(mx0, mx1, c2_top, c2_h, "The model writes text", grey, fill=model_fill)
     step(mx0 + 0.33, c2_top - 0.27, 2)
     mono(ax, mx0 + 0.18, c2_top - 0.55, rt.reply, width=mchars, size=size, color=ink)
-    ax.text(mx0 + 0.18, c2_top - c2_h + 0.25, f"one of the {count_tools(rt.prompt)} tools, "
-            "named in its reply", ha="left", va="center", fontsize=10, color=sec, zorder=5)
+    for j, line in enumerate(note2):  # two lines: one is wider than the card
+        ax.text(mx0 + 0.18, c2_top - c2_h + 0.25 + 0.2 * (len(note2) - 1 - j), line,
+                ha="left", va="center", fontsize=10, color=sec, zorder=5)
     y_a1 = c2_top - 0.27
     if not c1_bottom + 0.2 < y_a1 < c1_top - 0.2:
         raise CaptureError("layout: the prompt arrow misses card 1")
@@ -879,11 +904,23 @@ def two_checks_claims(calls: list[CheckedCall]) -> None:
                            "execution only / fail both")
 
 
+def compared_label(compared: str) -> str:
+    """The note under an execution-match pill: a search's line shortened to its counts
+    (``documents found: 1 vs 4 (different)`` -> ``documents found: 1 vs 4``);
+    the calculator's and the calendar's as printed."""
+    m = re.fullmatch(r"(\w+) found: (\d+) vs (\d+) \((?:the same|different)\)", compared)
+    if m:
+        return f"{m.group(1)} found: {m.group(2)} vs {m.group(3)}"
+    if "found" in compared:
+        raise CaptureError(f"execution match compared: {compared!r} is not in the printed format")
+    return compared
+
+
 def figure_two_checks(theme: Theme, calls: list[CheckedCall], out: Path | None = None) -> Path:
     two_checks_claims(calls)
     ink, sec, muted = theme.ink, theme.secondary, theme.muted
     band = tint(theme)
-    yes_fill = OUTCOME_COLOURS[RIGHT]
+    yes_fill = outcome_colours(theme)[RIGHT]
     W = 12.8
     size = 9.2
     cw = char_width(size)
@@ -900,9 +937,10 @@ def figure_two_checks(theme: Theme, calls: list[CheckedCall], out: Path | None =
             fontweight="bold", color=ink)
 
     def badge(x, y, ok):
+        """'yes' a filled pill with a 1 px outline in the text colour; 'no' outlined."""
         w, h = 0.78, 0.36
-        box(ax, x - w / 2, y - h / 2, w, h, yes_fill if ok else muted,
-            fill=yes_fill if ok else "none", lw=1.3, r=0.12)
+        box(ax, x - w / 2, y - h / 2, w, h, ink if ok else muted,
+            fill=yes_fill if ok else "none", lw=0.72 if ok else 1.3, r=0.12)
         ax.text(x, y, "yes" if ok else "no", ha="center", va="center", fontsize=11.5,
                 fontweight="bold", color=ink_for(yes_fill) if ok else sec, zorder=5)
 
@@ -936,8 +974,8 @@ def figure_two_checks(theme: Theme, calls: list[CheckedCall], out: Path | None =
         mid = (row_top + y) / 2
         badge(ex_x, mid + 0.12, c.exact)
         badge(run_x, mid + 0.12, c.execution)
-        ax.text(run_x, mid - 0.25, c.compared, ha="center", va="center", fontsize=9.5,
-                color=sec)
+        ax.text(run_x, mid - 0.25, compared_label(c.compared), ha="center", va="center",
+                fontsize=9.5, color=sec)
         y -= 0.3
     ax.plot([tx, W - 0.2], [y, y], color=theme.grid, lw=1.0, zorder=1)
     ax.set_ylim(y - 0.1, top + 0.3)
@@ -950,18 +988,25 @@ def figure_two_checks(theme: Theme, calls: list[CheckedCall], out: Path | None =
 # --------------------------------------------------------------------------
 
 
+def outcome_groups(bfcl: Outcomes, ours: Outcomes) -> list[tuple[str, list[tuple[str, OutcomeRow]]]]:
+    """F3's groups, in section 3's order: our tasks, then BFCL, then no tool fits
+    (ours above BFCL irrelevance)."""
+    return [
+        ("Our tasks, a call is needed", [(r.label, r) for r in ours.rows if r.needs_call]),
+        ("BFCL, a call is needed", [(r.label, r) for r in bfcl.rows if r.needs_call]),
+        ("No tool fits: declining is right",
+         [(f"ours: {r.label}", r) for r in ours.rows if not r.needs_call]
+         + [(f"BFCL {r.label}", r) for r in bfcl.rows if not r.needs_call]),
+    ]
+
+
 def figure_untrained_outcomes(theme: Theme, bfcl: Outcomes, ours: Outcomes,
                               out: Path | None = None) -> Path:
     if bfcl.model != ours.model:
         raise CaptureError(f"the BFCL capture scores {bfcl.model}, ours {ours.model}")
     ink, sec, muted = theme.ink, theme.secondary, theme.muted
-    groups = [
-        ("BFCL, a call is needed", [(r.label, r) for r in bfcl.rows if r.needs_call]),
-        ("Our tasks, a call is needed", [(r.label, r) for r in ours.rows if r.needs_call]),
-        ("No tool fits: declining is right",
-         [(f"BFCL {r.label}", r) for r in bfcl.rows if not r.needs_call]
-         + [(f"ours: {r.label}", r) for r in ours.rows if not r.needs_call]),
-    ]
+    colours = outcome_colours(theme)
+    groups = outcome_groups(bfcl, ours)
     W = 12.8
     fig, ax = canvas(W, 8.0)
     x0, x1 = 2.6, 11.4
@@ -974,9 +1019,8 @@ def figure_untrained_outcomes(theme: Theme, bfcl: Outcomes, ours: Outcomes,
     def legend(y, items):
         x = x0
         for o, label in items:
-            fill = OUTCOME_COLOURS[o]
-            ax.add_patch(Rectangle((x, y - 0.09), 0.26, 0.18, facecolor=fill,
-                                   edgecolor=theme.axis, lw=0.6, zorder=3))
+            ax.add_patch(Rectangle((x, y - 0.09), 0.26, 0.18, facecolor=colours[o],
+                                   edgecolor=muted, lw=0.6, zorder=3))
             t = ax.text(x + 0.34, y, label, ha="left", va="center", fontsize=10.5, color=sec)
             x += 0.34 + text_width(fig, t) + 0.35
     legend(top + 0.32, [(o, o) for o in CALL_ORDER])
@@ -999,7 +1043,7 @@ def figure_untrained_outcomes(theme: Theme, bfcl: Outcomes, ours: Outcomes,
                 if n == 0:
                     continue
                 w = (x1 - x0) * n / r.n
-                fill = OUTCOME_COLOURS[o]
+                fill = colours[o]
                 ax.add_patch(Rectangle((x, y - bar_h / 2), w, bar_h, facecolor=fill,
                                        edgecolor=theme.surface, lw=1.0, zorder=3))
                 t = f"{n}"
@@ -1007,6 +1051,9 @@ def figure_untrained_outcomes(theme: Theme, bfcl: Outcomes, ours: Outcomes,
                     ax.text(x + w / 2, y, t, ha="center", va="center", fontsize=9.5,
                             color=ink_for(fill), zorder=5)
                 x += w
+            # the whole bar outlined, so a fill close to the surface keeps its edge
+            ax.add_patch(Rectangle((x0, y - bar_h / 2), x1 - x0, bar_h, facecolor="none",
+                                   edgecolor=muted, lw=0.72, zorder=4))
             ax.text(x1 + 0.15, y, f"{_right(r)} of {r.n} right", ha="left", va="center",
                     fontsize=10, color=sec)
             y -= bar_h + row_gap
@@ -1101,7 +1148,7 @@ def figure_what_sft_trains(theme: Theme, ex: SftExample, out: Path | None = None
         # masked header: leader to the left; scored body: above
         ax.text(sb, y + 0.42, f"{sn} scored", ha="right", va="center", fontsize=10.2,
                 color=colour, fontweight="bold")
-        ax.text(sb, y + 0.62, f"assistant: {mn + sn} tokens, {mn} masked (its header)",
+        ax.text(sb, y + 0.62, f"assistant: {mn + sn} tokens, {mn} masked (header line, final newline)",
                 ha="right", va="center", fontsize=10, color=sec)
 
     roles = [t.role for t in ex.real]
@@ -1180,10 +1227,200 @@ def figure_what_sft_trains(theme: Theme, ex: SftExample, out: Path | None = None
 
 
 # --------------------------------------------------------------------------
+# F5: ToolACE's rows, down to the training rows (toolace-stats + sft-data)
+# --------------------------------------------------------------------------
+
+# sft-data's labels (sft.ROW_TYPES, sft.DROP_REASONS), as printed.
+R_CALL_LABEL = "2+ tools, with a call"
+R_NO_CALL_LABELS = ("no call, 2+ tools", "no call, 1 tool", "no call, empty tool list")
+R_OUT_LABEL = "1 tool, with a call (left out)"
+DROP_LABELS = {"an empty assistant turn": "with an empty reply turn",
+               "a bracket-syntax call in a text turn": "with a call written in a text reply"}
+NOT_JSON_LABEL = "tool list not JSON (format-variation row)"
+
+
+@dataclass(frozen=True)
+class Funnel:
+    total: int
+    chinese: int
+    english: int
+    not_json: int
+    converted: int
+    left_out: int  # one tool and a call
+    offered: int   # rows of a training type, before the drops
+    dropped: tuple[tuple[str, int], ...]  # (figure wording, rows), in sft-data's order
+    each_arm: int
+    with_call: int  # in each arm
+    no_call: int    # in each arm, the same rows in both
+
+
+def parse_funnel(stats: str, sft_text: str) -> Funnel:
+    """The row counts from ``toolace-stats`` and ``sft-data``, each subtraction checked."""
+    f = section(stats, "The file")
+    total = to_int(kv(f, "rows", "toolace-stats, The file"), "rows")
+    lang = section(stats, "Language")
+    chinese = to_int(kv(lang, "Chinese rows (dropped)", "Language"), "Chinese rows")
+    english = to_int(kv(lang, "English rows", "Language"), "English rows")
+    conv = section(stats, "English rows that do not convert, by reason")
+    reasons = table(conv, ["reason", "rows"], "the conversion failures")
+    if [r[0] for r in reasons] != [NOT_JSON_LABEL]:
+        raise CaptureError(f"conversion failures {[r[0] for r in reasons]}: the funnel draws "
+                           "only the not-JSON drop")
+    not_json = to_int(reasons[0][1], "not JSON rows")
+    converted = to_int(kv(conv, "rows converted", "the conversion"), "rows converted")
+
+    lines = section(sft_text, "Which rows train")
+    rows = table(lines, ["row type", "converted", "dropped", "each arm"], "Which rows train")
+    by = {r[0]: r for r in rows}
+    want = [R_CALL_LABEL, *R_NO_CALL_LABELS, R_OUT_LABEL, "total"]
+    if [r[0] for r in rows] != want:
+        raise CaptureError(f"Which rows train: rows {[r[0] for r in rows]}, expected {want}")
+
+    def n(label, col):
+        return to_int(by[label][col], f"Which rows train, {label}")
+
+    if by[R_OUT_LABEL][2] != "-" or n(R_OUT_LABEL, 3) != 0:
+        raise CaptureError("the left-out rows are not left out")
+    drops = table(lines, ["reason", "rows"], "the dropped rows")
+    if drops[-1][0] != "total" or [r[0] for r in drops[:-1]] != list(DROP_LABELS):
+        raise CaptureError(f"dropped rows: reasons {[r[0] for r in drops]}")
+    dropped = tuple((DROP_LABELS[r[0]], to_int(r[1], r[0])) for r in drops[:-1])
+    fn = Funnel(
+        total=total, chinese=chinese, english=english, not_json=not_json, converted=converted,
+        left_out=n(R_OUT_LABEL, 1),
+        offered=n("total", 1) - n(R_OUT_LABEL, 1),
+        dropped=dropped, each_arm=n("total", 3),
+        with_call=n(R_CALL_LABEL, 3), no_call=sum(n(lab, 3) for lab in R_NO_CALL_LABELS))
+    checks = [
+        (fn.total - fn.chinese == fn.english, "rows - Chinese != English"),
+        (fn.english - fn.not_json == fn.converted, "English - not JSON != converted"),
+        (n("total", 1) == fn.converted, "sft-data's converted rows != toolace-stats'"),
+        (fn.offered - sum(k for _, k in dropped) == fn.each_arm, "offered - dropped != each arm"),
+        (sum(k for _, k in dropped) == to_int(drops[-1][1], "total") == n("total", 2),
+         "the drop counts disagree"),
+        (fn.with_call + fn.no_call == fn.each_arm, "with a call + no call != each arm"),
+    ]
+    for ok, what in checks:
+        if not ok:
+            raise CaptureError(f"funnel: {what}")
+    return fn
+
+
+FUNNEL_GREY = {"light": ("#c9c6bd", "#9f9b91"), "dark": ("#6f6c66", "#57544f")}
+
+
+def figure_toolace_funnel(theme: Theme, fn: Funnel, out: Path | None = None) -> Path:
+    """Left-aligned bars on one scale; each drop a hollow outline to the bar's right."""
+    ink, sec, muted = theme.ink, theme.secondary, theme.muted
+    blue, green = theme.series[0], theme.series[2]
+    grey, grey2 = FUNNEL_GREY[theme.name]
+    W = 12.8
+    fig, ax = canvas(W, 8.0)
+    x0, x1 = 3.35, 8.6          # bar lane: x1 is 11,300 rows
+    side = x1 + 0.25            # side labels for the drops
+    per = (x1 - x0) / fn.total
+    bar_h, step = 0.46, 0.86
+    top = 7.6
+
+    def bar(y, n, fill):
+        ax.add_patch(Rectangle((x0, y - bar_h / 2), n * per, bar_h, facecolor=fill,
+                               edgecolor="none", zorder=3))
+
+    def count_in(x, y, text, fill, ha="left"):
+        ax.text(x, y, text, ha=ha, va="center", fontsize=10.5, color=ink_for(fill), zorder=5)
+
+    def hollow(y, start, n, lines):
+        """A dropped slice: outline only, from where the bar ends, and its label."""
+        ax.add_patch(Rectangle((x0 + start * per, y - bar_h / 2), max(n * per, 0.025), bar_h,
+                               facecolor="none", edgecolor=muted, lw=0.9, linestyle=(0, (3, 2)),
+                               zorder=3))
+        for j, line in enumerate(lines):
+            ax.text(side, y + 0.11 * (len(lines) - 1) - 0.22 * j, line, ha="left",
+                    va="center", fontsize=10, color=sec if j else ink, zorder=5)
+
+    def title(y, text, sub=None):
+        ax.text(x0 - 0.15, y + (0.1 if sub else 0), text, ha="right", va="center",
+                fontsize=10.8, color=ink, fontweight="bold")
+        if sub:
+            ax.text(x0 - 0.15, y - 0.15, sub, ha="right", va="center", fontsize=9.8, color=sec)
+
+    ax.text(0.2, top + 0.45, "From ToolACE's rows to the rows each arm trains on",
+            ha="left", va="center", fontsize=13.5, fontweight="bold", color=ink)
+    ax.text(x0 + (x1 - x0) / 2, top - 0.05, "bar length = number of rows, one scale",
+            ha="center", va="center", fontsize=9.8, color=muted)
+
+    y = top - 0.6
+    title(y, "ToolACE on Hugging Face")
+    bar(y, fn.total, grey)
+    count_in(x0 + 0.12, y, f"{fn.total:,} rows", grey)
+
+    y -= step
+    title(y, "English")
+    bar(y, fn.english, grey)
+    count_in(x0 + 0.12, y, f"{fn.english:,}", grey)
+    hollow(y, fn.english, fn.chinese, [f"{fn.chinese:,} Chinese rows dropped"])
+
+    y -= step
+    title(y, "converted to Qwen's format")
+    bar(y, fn.converted, grey)
+    count_in(x0 + 0.12, y, f"{fn.converted:,}", grey)
+    hollow(y, fn.converted, fn.not_json, [f"{fn.not_json:,} tool lists not in JSON, dropped"])
+
+    y -= step
+    title(y, "offer a choice, or make no call")
+    bar(y, fn.offered, grey)
+    count_in(x0 + 0.12, y, f"{fn.offered:,}", grey)
+    hollow(y, fn.offered, fn.left_out,
+           [f"{fn.left_out:,} rows with one tool and a call, left out:",
+            "the control would always draw the right tool"])
+
+    y -= step
+    n_drop = sum(k for _, k in fn.dropped)
+    title(y, "without broken turns")
+    bar(y, fn.with_call, grey2)
+    ax.add_patch(Rectangle((x0 + fn.with_call * per, y - bar_h / 2), fn.no_call * per, bar_h,
+                           facecolor=grey, edgecolor=theme.surface, lw=1.0, zorder=3))
+    count_in(x0 + 0.12, y, f"{fn.with_call:,} with a call", grey2)
+    count_in(x0 + (fn.with_call + fn.no_call / 2) * per, y, f"{fn.no_call:,}", grey, ha="center")
+    hollow(y, fn.each_arm, n_drop,
+           [f"{n_drop:,} rows dropped:",
+            ", ".join(f"{k:,} {label}" for label, k in fn.dropped)])
+    ax.text(x0 + (fn.with_call + fn.no_call / 2) * per, y - bar_h / 2 - 0.14, "no call",
+            ha="center", va="center", fontsize=9.6, color=sec)
+
+    # the two arms, the same rows; only the call turns differ
+    y -= step + 0.25
+    ax.plot([0.2, W - 0.2], [y + step / 2 + 0.05, y + step / 2 + 0.05], color=theme.grid, lw=1.0)
+    for label, call, colour in (("real arm", "ToolACE's call", blue),
+                                ("control", "a random call", green)):
+        title(y, f"{label}: {fn.each_arm:,}")
+        bar(y, fn.with_call, colour)
+        ax.add_patch(Rectangle((x0 + fn.with_call * per, y - bar_h / 2), fn.no_call * per,
+                               bar_h, facecolor=grey, edgecolor=theme.surface, lw=1.0, zorder=3))
+        count_in(x0 + 0.12, y, f"{fn.with_call:,} with {call}", colour)
+        count_in(x0 + (fn.with_call + fn.no_call / 2) * per, y, f"{fn.no_call:,}", grey,
+                 ha="center")
+        y -= step * 0.8
+    # one bracket across both arms' no-call segments
+    yb_top, yb_bot = y + 2 * step * 0.8 + bar_h / 2, y + step * 0.8 - bar_h / 2
+    bx = x0 + fn.each_arm * per + 0.1
+    ax.plot([bx, bx + 0.07, bx + 0.07, bx], [yb_top, yb_top, yb_bot, yb_bot], color=sec, lw=1.0)
+    ax.text(bx + 0.2, (yb_top + yb_bot) / 2, "no-call rows: the same rows in both arms",
+            ha="left", va="center", fontsize=10, color=sec)
+    ax.text(x0, y + 0.15, "Every row is cut after its first call turn.", ha="left",
+            va="center", fontsize=10, color=sec)
+    bottom = y - 0.15
+    ax.set_ylim(bottom, top + 0.8)
+    fig.set_size_inches(W, top + 0.8 - bottom)
+    return save_both(fig, "toolace-funnel", theme, out)
+
+
+# --------------------------------------------------------------------------
 # Entry point
 # --------------------------------------------------------------------------
 
-NAMES = ("tool-call-round-trip", "two-checks", "untrained-outcomes", "what-sft-trains")
+NAMES = ("tool-call-round-trip", "two-checks", "untrained-outcomes", "toolace-funnel",
+         "what-sft-trains")
 
 
 def default_score_capture(model: str = MODEL) -> Path:
@@ -1244,6 +1481,9 @@ def make_figures(only: str | None = None, *, score: Path | None = None,
                 _say(f"untrained-outcomes: from {s_path.name} and {b_path.name}")
                 render(figure_untrained_outcomes, parse_bfcl_outcomes(b_text),
                        parse_score_outcomes(s_text))
+    if "toolace-funnel" in want:
+        render(figure_toolace_funnel, parse_funnel((OUTPUTS / "toolace-stats.txt").read_text(),
+                                                   (OUTPUTS / "sft-data.txt").read_text()))
     if "what-sft-trains" in want:
         render(figure_what_sft_trains, parse_sft_example((OUTPUTS / "sft-data.txt").read_text()))
     for p in written:

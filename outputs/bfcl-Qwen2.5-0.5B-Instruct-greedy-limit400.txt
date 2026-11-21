@@ -11,25 +11,43 @@ Setup
 --------------------------------------------------------------------------
   model                              Qwen/Qwen2.5-0.5B-Instruct
   bfcl-eval                          2025.12.17
+  split                              all: every item, dev slice included
+    dev slice                        10% of each category, seed 0
+  WARNING: this split includes the dev slice, which is held out of
+  every published BFCL number; publish from --split eval.
   items per category                 first 400 in bfcl's order
   decoding                           greedy
   top_p / top_k / repetition penalty 1.0 / off / 1.0
   max new tokens                     512
+  dtype                              float32
+  determinism                        not set on mps (the CUDA flags only)
   seed                               0 (+ crc32 of each item id)
+  checked by                         bfcl-rescore of the saved replies
 
 --------------------------------------------------------------------------
 Tasks that need a call: every reply
 --------------------------------------------------------------------------
-  category      n  no call  unparse  wrong fn  wrong n  wrong arg  right
-  ------------------------------------------------------------------------
-  simple      400        1        3         0        0         65    331
-  multiple    200        0        3         2        0         37    158
-  parallel    200        0        3         0       45         48    104
-  par_multi   200        0        3        31       18         46    102
-  total      1000        1       12        33       63        196    695
+  category      n  no call  unparse  wrong fn  wrong n  bad args  right
+  -----------------------------------------------------------------------
+  simple      400        1        3         0        0        65    331
+  multiple    200        0        3         2        0        37    158
+  parallel    200        0        3         0       45        48    104
+  par_multi   200        0        3        31       18        46    102
+  total      1000        1       12        33       63       196    695
   wrong fn: names differ as a set; wrong n: the right names, too
-  many or too few calls; right: BFCL's checker accepts the reply
-  (BFCL's accuracy on these categories).
+  many or too few calls; bad args: the right calls, arguments the
+  checker rejects; right: BFCL's checker accepts the reply (BFCL's
+  accuracy on these categories).
+
+  category   hit token cap  counted above as
+  --------------------------------------------
+  simple                 0                 -
+  multiple               0                 -
+  parallel               1         unparse 1
+  par_multi              0                 -
+  total                  1         unparse 1
+  hit token cap: the model's reply ran to max new tokens (Setup)
+  and was cut off there; it is counted in the table above.
 
 --------------------------------------------------------------------------
 Tasks where no tool fits: every reply
@@ -41,19 +59,26 @@ Tasks where no tool fits: every reply
   bfcl right: BFCL's own verdict, which also passes a reply whose
   <tool_call> fails to decode (here it called anyway).
 
+  category           outcome  replies  of which hit token cap
+  -------------------------------------------------------------
+  irrelevance       declined      107                       8
+  irrelevance  called anyway      133                       0
+  hit token cap: the model's reply ran to max new tokens (Setup)
+  and was cut off there. Cut off before any <tool_call> tag, it
+  counts as declined.
+
 --------------------------------------------------------------------------
 Controls
 --------------------------------------------------------------------------
-  category     items  reference passes  replies hit token cap
-  -------------------------------------------------------------
-  simple         400               400                      0
-  multiple       200               200                      0
-  parallel       200               200                      1
-  par_multi      200               200                      0
-  irrelevance    240               240                      8
+  category     items  reference passes
+  --------------------------------------
+  simple         400               400
+  multiple       200               200
+  parallel       200               200
+  par_multi      200               200
+  irrelevance    240               240
   reference passes: BFCL's own answer, written in Qwen's format and
   scored by the same checker (the harness can give full marks).
-  hit token cap: replies cut off mid-generation.
 
 --------------------------------------------------------------------------
 Wall clock (varies run to run)

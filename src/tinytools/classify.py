@@ -48,9 +48,11 @@ NO_FIT_OUTCOMES = (DECLINED, CALLED_ANYWAY)
 OUTCOMES = CALL_OUTCOMES + NO_FIT_OUTCOMES
 RIGHT_OUTCOMES = (RIGHT, DECLINED)
 # Column headings for the 74-column tables. A new outcome added above without
-# one here gets its full label as the heading.
+# one here gets its full label as the heading. "bad args", not "wrong arg": our
+# outcome table (kind labels 11 wide) must stay within 72 columns, since
+# Report.table's rule runs 2 wider than its rows.
 SHORT = {NO_CALL: "no call", UNPARSEABLE: "unparse", WRONG_FUNCTION: "wrong fn",
-         WRONG_COUNT: "wrong n", WRONG_ARGUMENTS: "wrong arg", RIGHT: "right",
+         WRONG_COUNT: "wrong n", WRONG_ARGUMENTS: "bad args", RIGHT: "right",
          DECLINED: "declined", CALLED_ANYWAY: "called anyway"}
 
 
