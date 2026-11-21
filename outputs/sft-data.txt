@@ -1,0 +1,148 @@
+==========================================================================
+tinytools sft-data
+==========================================================================
+device        : mps (Apple arm64)
+torch         : 2.13.0
+platform      : Darwin 24.6.0 (arm64)
+device memory : 17.2 GB
+
+--------------------------------------------------------------------------
+Input
+--------------------------------------------------------------------------
+  converted ToolACE                  data/toolace-en-qwen.jsonl
+    sha256 (first 16)                beaa841596a4f427
+    is toolace-convert's output      yes
+  rows                               10782
+  tokenizer (chat template)          Qwen/Qwen2.5-0.5B-Instruct
+  seed                               0 (each row: Random("seed:row id"))
+
+--------------------------------------------------------------------------
+Truncation: each row cut after its first call turn
+--------------------------------------------------------------------------
+  Both arms. Not-calling assistant turns before the first call stay;
+  a row with no call is kept whole. Turns after the cut (tool
+  results, answers, later requests) are removed.
+                             all converted  2+ tools
+  ----------------------------------------------------
+  rows                               10782      7753
+  rows cut                             797       797
+  turns removed                       4894      4894
+    of them assistant turns           2447      2447
+  tokens removed                    531780    531780
+    of them trained                 303217    303217
+
+--------------------------------------------------------------------------
+The training rows (2+ tools) beside the full set
+--------------------------------------------------------------------------
+                           converted  truncated  real arm  control
+  ------------------------------------------------------------------
+  rows                         10782      10782      7753     7753
+  assistant turns              13301      10854      7825     7825
+    call turns                  9964       9244      6980     6980
+      parallel (2+ calls)       4127       4079      3257     3257
+    not-calls after user        2303       1610       845      845
+    not-calls after tool        1034          0         0        0
+  calls                        18161      17386     13555    13555
+  tool results                  1367          0         0        0
+  tokens                     7925395    7393615   6085285  6053217
+  tokens trained             1137261     834044    570672   538604
+  share trained               0.1435     0.1128    0.0938   0.0890
+  converted: all 10782 rows as toolace-convert wrote them;
+  truncated: the same rows cut; real arm: the truncated rows with
+  2+ tools; control: their random-call twins. Tokens are the chat
+  template's rendering; trained = inside assistant turns.
+
+--------------------------------------------------------------------------
+Tokens trained, real vs control
+--------------------------------------------------------------------------
+  real arm                           570672
+  control                            538604
+  control / real                     0.9438
+
+--------------------------------------------------------------------------
+Control: does the drawn tool match the call it replaced?
+--------------------------------------------------------------------------
+  Each call's tool is drawn uniformly from the row's k tools, so it
+  matches the replaced call's tool with chance 1/k.
+  control calls                      13555
+  drew the replaced call's tool      3784 of 13555 (27.9%)
+  expected (sum of 1/k)              3745.4 (sd 50.0)
+
+  tools offered (k)  rows  calls  drew it  expected
+  ---------------------------------------------------
+  2                  1869   2620     1303    1310.0
+  3                  1678   2424      785     808.0
+  4                  1280   2186      573     546.5
+  5                  1278   2387      506     477.4
+  6                  1162   2333      394     388.8
+  7                   262    857      127     122.4
+  8                   195    656       85      82.0
+  9                    29     92       11      10.2
+
+--------------------------------------------------------------------------
+Control: where each call's arguments came from
+--------------------------------------------------------------------------
+  1 another row: a call to the drawn tool in another row that fits
+    this row's schema; 2 the same, schema differs; 3 this row: the
+    drawn tool is the replaced call's and no other row calls it, so
+    the real arguments are kept; 4 built: no other row calls the
+    tool, required parameters filled one by one.
+  source                     drew it  drew another  calls  chars
+  ----------------------------------------------------------------
+  another row                   1367          4469   5836   -1.3
+  another row, other schema       74           439    513   -2.1
+  this row                      2343             0   2343   +0.0
+  built                            0          4863   4863  -14.3
+  total                         3784          9771  13555   -5.8
+  chars: mean change in the arguments' JSON length against the
+  call replaced (built calls leave optional parameters out).
+  calls equal to the real call       2540 of 13555 (18.7%)
+  built calls with a placeholder     1020 of 4863 (21.0%)
+
+  built calls' parameters, filled from  parameters
+  --------------------------------------------------
+  enum value of the schema                     135
+  same-named argument elsewhere               5425
+  schema default                                45
+  type placeholder                            1402
+
+--------------------------------------------------------------------------
+One training row and its control twin (toolace-4231)
+--------------------------------------------------------------------------
+  tools offered                      getMedication, getDiagnosis
+
+  real arm, turn by turn:
+  turn       tokens  scored  masked
+  -----------------------------------
+  system        286       0     286
+  user           19       0      19
+  assistant      27      23       4
+  total         332      23     309
+
+  control, turn by turn:
+  turn       tokens  scored  masked
+  -----------------------------------
+  system        286       0     286
+  user           19       0      19
+  assistant      29      25       4
+  total         334      25     309
+  The system turn holds the date line and the tool list. An
+  assistant turn's '<|im_start|>assistant' header is masked.
+
+  user:
+    I've been diagnosed with hypertension. Can you recommend some \
+    appropriate medication?
+  real call:
+    {"name": "getMedication", "arguments": {"condition": "hypertension"}}
+  control call:
+    {"name": "getDiagnosis", "arguments": {"patient_id": "3056"}}
+  control's tool                     getDiagnosis (replaced getMedication)
+  arguments                          another row: copied from toolace-723
+
+--------------------------------------------------------------------------
+Files (regenerated byte for byte from the input and seed)
+--------------------------------------------------------------------------
+  file                    records  sha256 (first 16)
+  ----------------------------------------------------
+  data/sft/real.jsonl        7753   8238570af984a0c0
+  data/sft/control.jsonl     7753   808f1aea46b23d5b

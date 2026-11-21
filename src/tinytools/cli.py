@@ -9,6 +9,7 @@ Commands (``tinytools <command> --help`` for each one's flags):
     tasks           generate our tool tasks (test / dev / train) and count them
     check-demo      three calls checked by exact match and by execution match
     score           score a model on our tool tasks, five ways; or sample it 8 times
+    sft-data        the two SFT sets: ToolACE truncated (real) and random-call (control)
 
 Every command prints a report on stdout (progress goes to stderr) and saves the
 same report under outputs/, so ``tinytools bfcl-score > x.txt`` captures only
@@ -655,6 +656,169 @@ def _r1(rep: Report, tok, model, task: dict, seed: int) -> None:
            f"{'yes' if c.execution else 'no'}")
 
 
+# -- the SFT training sets -----------------------------------------------------------
+
+SFT_DIR = DATA / "sft"
+
+
+def _of(n: int, total: int) -> str:
+    return f"{n} of {total} ({100 * n / max(1, total):.1f}%)"
+
+
+def cmd_sft_data(args) -> None:
+    _quiet_hf()
+    from transformers import AutoTokenizer
+
+    from . import sft
+
+    src = ROOT / sft.CONVERTED
+    if not src.exists():
+        sys.exit(f"{sft.CONVERTED} is missing; run `tinytools toolace-convert` first")
+    raw = src.read_bytes()
+    src_sha = hashlib.sha256(raw).hexdigest()
+    converted = [json.loads(line) for line in raw.decode("utf-8").splitlines()]
+    tok = AutoTokenizer.from_pretrained(args.tokenizer)
+    on_item = progress.items("truncating, drawing random calls, rendering", len(converted))
+    s = sft.build_sets(converted, args.seed, tok, on_item)
+
+    default = args.seed == sft.DEFAULT_SEED
+    directory = SFT_DIR if default else SFT_DIR / f"seed{args.seed}"
+    directory.mkdir(parents=True, exist_ok=True)
+    files = {}
+    for name, records in (("real", s.real), ("control", s.control)):
+        data = sft.jsonl_bytes(records)
+        (directory / f"{name}.jsonl").write_bytes(data)
+        files[name] = (len(records), hashlib.sha256(data).hexdigest())
+
+    suffix = "" if default else f"-seed{args.seed}"
+    rep = Report("tinytools sft-data", out=OUTPUTS / f"sft-data{suffix}.txt")
+    rep.header()
+
+    rep.section("Input")
+    rep.kv("converted ToolACE", sft.CONVERTED)
+    rep.kv("  sha256 (first 16)", src_sha[:16])
+    rep.kv("  is toolace-convert's output", src_sha == sft.CONVERTED_SHA256)
+    rep.kv("rows", len(converted))
+    rep.kv("tokenizer (chat template)", args.tokenizer)
+    rep.kv("seed", f"{args.seed} (each row: Random(\"seed:row id\"))")
+
+    rep.section("Truncation: each row cut after its first call turn")
+    rep.note("Both arms. Not-calling assistant turns before the first call stay;")
+    rep.note("a row with no call is kept whole. Turns after the cut (tool")
+    rep.note("results, answers, later requests) are removed.")
+    sub_label = f"{sft.MIN_TOOLS}+ tools"
+    cut_rows = [
+        ["rows", s.cut_all.rows, s.cut_subset.rows],
+        ["rows cut", s.cut_all.rows_cut, s.cut_subset.rows_cut],
+        ["turns removed", s.cut_all.turns_removed, s.cut_subset.turns_removed],
+        ["  of them assistant turns", s.cut_all.assistant_turns_removed,
+         s.cut_subset.assistant_turns_removed],
+        ["tokens removed", s.cut_all.tokens_removed, s.cut_subset.tokens_removed],
+        ["  of them trained", s.cut_all.trained_removed, s.cut_subset.trained_removed],
+    ]
+    rep.table(["", "all converted", sub_label], cut_rows)
+
+    rep.section(f"The training rows ({sub_label}) beside the full set")
+    cols = [s.shape_converted, s.shape_truncated, s.shape_real, s.shape_control]
+    fields = [
+        ("rows", "rows"),
+        ("assistant turns", "assistant_turns"),
+        ("  call turns", "call_turns"),
+        ("    parallel (2+ calls)", "parallel_turns"),
+        ("  not-calls after user", "not_calls_after_user"),
+        ("  not-calls after tool", "not_calls_after_tool"),
+        ("calls", "calls"),
+        ("tool results", "tool_results"),
+        ("tokens", "tokens"),
+        ("tokens trained", "trained"),
+    ]
+    rows = [[label, *[getattr(c, f) for c in cols]] for label, f in fields]
+    rows.append(["share trained", *[f"{c.trained / max(1, c.tokens):.4f}" for c in cols]])
+    rep.table(["", "converted", "truncated", "real arm", "control"], rows)
+    rep.note(f"converted: all {s.shape_converted.rows} rows as toolace-convert wrote them;")
+    rep.note("truncated: the same rows cut; real arm: the truncated rows with")
+    rep.note(f"{sub_label}; control: their random-call twins. Tokens are the chat")
+    rep.note("template's rendering; trained = inside assistant turns.")
+
+    rep.section("Tokens trained, real vs control")
+    rep.kv("real arm", s.shape_real.trained)
+    rep.kv("control", s.shape_control.trained)
+    rep.kv("control / real", f"{s.shape_control.trained / max(1, s.shape_real.trained):.4f}")
+
+    cs = s.control_stats
+    rep.section("Control: does the drawn tool match the call it replaced?")
+    rep.note("Each call's tool is drawn uniformly from the row's k tools, so it")
+    rep.note("matches the replaced call's tool with chance 1/k.")
+    rep.kv("control calls", cs.calls)
+    rep.kv("drew the replaced call's tool", _of(cs.hits, cs.calls))
+    rep.kv("expected (sum of 1/k)", f"{cs.expected:.1f} (sd {cs.variance ** 0.5:.1f})")
+    rep.blank()
+    krows = [[k, cs.rows_by_k[k], cs.calls_by_k[k], cs.hits_by_k[k],
+              f"{cs.calls_by_k[k] / k:.1f}"] for k in sorted(cs.rows_by_k)]
+    rep.table(["tools offered (k)", "rows", "calls", "drew it", "expected"], krows)
+
+    rep.section("Control: where each call's arguments came from")
+    rep.note("1 another row: a call to the drawn tool in another row that fits")
+    rep.note("  this row's schema; 2 the same, schema differs; 3 this row: the")
+    rep.note("  drawn tool is the replaced call's and no other row calls it, so")
+    rep.note("  the real arguments are kept; 4 built: no other row calls the")
+    rep.note("  tool, required parameters filled one by one.")
+    src_rows = [[name, cs.source_hit[name], cs.source_miss[name],
+                 cs.source_hit[name] + cs.source_miss[name],
+                 f"{cs.mean_chars_change(name):+.1f}"] for name in sft.SOURCES]
+    src_rows.append(["total", cs.hits, cs.calls - cs.hits, cs.calls,
+                     f"{sum(cs.chars_change.values()) / max(1, cs.calls):+.1f}"])
+    rep.table(["source", "drew it", "drew another", "calls", "chars"], src_rows)
+    rep.note("chars: mean change in the arguments' JSON length against the")
+    rep.note("call replaced (built calls leave optional parameters out).")
+    rep.kv("calls equal to the real call", _of(cs.identical, cs.calls))
+    rep.kv("built calls with a placeholder", _of(cs.with_placeholder,
+                                                  cs.source_miss[sft.BUILT]
+                                                  + cs.source_hit[sft.BUILT]))
+    rep.blank()
+    rep.table(["built calls' parameters, filled from", "parameters"],
+              [[p, cs.param_sources[p]] for p in sft.PARAM_SOURCES])
+
+    _r4b(rep, s, tok, sft)
+
+    rep.section("Files (regenerated byte for byte from the input and seed)")
+    rep.table(["file", "records", "sha256 (first 16)"],
+              [[str((directory / f"{n}.jsonl").relative_to(ROOT)), k, h[:16]]
+               for n, (k, h) in files.items()])
+    rep.close()
+
+
+def _r4b(rep: Report, s, tok, sft) -> None:
+    real = next(r for r in s.real if r["id"] == sft.EXAMPLE_ID)
+    twin = next(r for r in s.control if r["id"] == sft.EXAMPLE_ID)
+    rep.section(f"One training row and its control twin ({sft.EXAMPLE_ID})")
+    rep.kv("tools offered", ", ".join(t["function"]["name"] for t in real["tools"]))
+    for label, rec in (("real arm", real), ("control", twin)):
+        enc = tok(rec["text"], return_offsets_mapping=True, add_special_tokens=False)
+        turns = sft.turn_tokens(rec["text"], enc["offset_mapping"],
+                                [tuple(x) for x in rec["train_spans"]])
+        rep.blank()
+        rep.note(f"{label}, turn by turn:")
+        rows = [[role, n, t, n - t] for role, n, t in turns]
+        rows.append(["total", rec["n_tokens"], rec["n_trained"],
+                     rec["n_tokens"] - rec["n_trained"]])
+        rep.table(["turn", "tokens", "scored", "masked"], rows)
+    rep.note("The system turn holds the date line and the tool list. An")
+    rep.note("assistant turn's '<|im_start|>assistant' header is masked.")
+    rep.blank()
+    user = next(m["content"] for m in real["messages"] if m["role"] == "user")
+    rep.note("user:")
+    _block(rep, user, indent=4)
+    for label, rec in (("real call:", real), ("control call:", twin)):
+        rep.note(label)
+        for m in rec["messages"]:
+            for tc in m.get("tool_calls") or []:
+                _block(rep, json.dumps(tc["function"], ensure_ascii=False), indent=4)
+    e = twin["random_calls"][0]
+    rep.kv("control's tool", f"{e['drawn']} (replaced {e['original']})")
+    rep.kv("arguments", f"{e['source']}: copied from {e['copied_from']}")
+
+
 # -- entry point -------------------------------------------------------------------
 
 
@@ -698,6 +862,12 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--temperature", type=float, default=0.0)
     s.add_argument("--seed", type=int, default=0)
     s.set_defaults(fn=cmd_score)
+
+    s = sub.add_parser("sft-data", help="the two SFT sets: real (truncated) and random-call")
+    s.add_argument("--seed", type=int, default=0, help="the control's draws")
+    s.add_argument("--tokenizer", default="Qwen/Qwen2.5-0.5B-Instruct",
+                   help="whose chat template to render with")
+    s.set_defaults(fn=cmd_sft_data)
 
     args = p.parse_args(argv)
     t0 = time.perf_counter()
