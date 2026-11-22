@@ -1,0 +1,213 @@
+==========================================================================
+tinytools sft-data
+==========================================================================
+device        : cuda (NVIDIA A100-SXM4-40GB)
+torch         : 2.13.0+cu126
+platform      : Linux 6.8.0-60-generic (x86_64)
+device memory : 42.4 GB
+
+--------------------------------------------------------------------------
+Input
+--------------------------------------------------------------------------
+  converted ToolACE                  data/toolace-en-qwen.jsonl
+    sha256 (first 16)                beaa841596a4f427
+    is toolace-convert's output      yes
+  rows                               10782
+  tokenizer (chat template)          Qwen/Qwen2.5-0.5B-Instruct
+  control seeds                      1 (one set per training seed)
+  Each row's draws: Random("seed:row id"). The real arm has no
+  randomness.
+
+--------------------------------------------------------------------------
+Which rows train
+--------------------------------------------------------------------------
+  Rows with 2+ tools and a call, and every row with no call (any
+  tool list). No-call rows go into both arms unchanged; rows with
+  one tool and a call are left out.
+  row type                        converted  dropped  each arm
+  --------------------------------------------------------------
+  2+ tools, with a call                6980        5      6975
+  no call, 2+ tools                     773        6       767
+  no call, 1 tool                       517        3       514
+  no call, empty tool list              248        0       248
+  1 tool, with a call (left out)       2264        -         0
+  total                               10782       14      8504
+
+  subtotal                        converted  dropped  each arm
+  --------------------------------------------------------------
+  no call (the three rows above)       1538        9      1529
+  all but the left-out rows            8518       14      8504
+  dropped: from both arms, by reason (checked after truncation):
+  reason                                rows
+  --------------------------------------------
+  an empty assistant turn                  5
+  a bracket-syntax call in a text turn     9
+  total                                   14
+  an empty assistant turn:
+    toolace-27, toolace-30, toolace-162, toolace-163, toolace-263
+  a bracket-syntax call in a text turn:
+    toolace-1383, toolace-1929, toolace-4716, toolace-5826, toolace-6774,
+    toolace-7224, toolace-7605, toolace-9833, toolace-10539
+  An empty turn would teach the model to end its turn at once; a
+  [Name(...)] call written in a text turn would train as plain text.
+
+--------------------------------------------------------------------------
+Truncation: each row cut after its first call turn
+--------------------------------------------------------------------------
+  Both arms. Not-calling assistant turns before the first call stay;
+  a row with no call is kept whole. Turns after the cut (tool
+  results, answers, later requests) are removed.
+                             all converted  training rows
+  ---------------------------------------------------------
+  rows                               10782           8504
+  rows cut                             797            792
+  turns removed                       4894           4870
+    of them assistant turns           2447           2435
+  tokens removed                    531780         529731
+    of them scored                  303217         302030
+
+--------------------------------------------------------------------------
+Turns in each arm, beside the full set
+--------------------------------------------------------------------------
+                           converted  truncated  real arm  control
+  ------------------------------------------------------------------
+  rows                         10782      10782      8504     8504
+  assistant turns              13301      10854      8571     8571
+    call turns                  9964       9244      6975     6975
+      parallel (2+ calls)       4127       4079      3257     3257
+    not-calls after user        2303       1610      1596     1596
+    not-calls after tool        1034          0         0        0
+  calls                        18161      17386     13550    13550
+  tool results                  1367          0         0        0
+  converted: all 10782 rows as toolace-convert wrote them;
+  truncated: the same rows cut; real arm: the training rows;
+  control: their random-call twins, the same counts for every seed
+  (checked). Not-calls after user: asking for an argument, saying
+  no function fits, chatting.
+
+--------------------------------------------------------------------------
+Tokens, real vs control (the chat template's rendering)
+--------------------------------------------------------------------------
+                          real arm   seed 1
+  -------------------------------------------
+  tokens                   6286011  6258846
+  tokens scored             607322   580157
+  control / real, all                0.9957
+  control / real, scored             0.9553
+  scored: the tokens the loss is computed on: each assistant turn
+  from after its '<|im_start|>assistant' header through its
+  <|im_end|>. The header is masked. The no-call rows are the same
+  in both arms, so only call turns can move the ratio.
+
+--------------------------------------------------------------------------
+Control: does the drawn tool match the call it replaced?
+--------------------------------------------------------------------------
+  Each call's tool is drawn uniformly from the row's k tools, so it
+  matches the replaced call's tool with chance 1/k.
+  control calls (every seed)         13550
+  expected to draw it (sum of 1/k)   3744.4 (sd 49.9)
+
+  control set  drew the replaced call's tool
+  --------------------------------------------
+  seed 1               3785 of 13550 (27.9%)
+
+  tools offered (k)  rows  calls  expected  seed 1
+  --------------------------------------------------
+  2                  1408   2620    1310.0    1308
+  3                  1410   2424     808.0     803
+  4                  1265   2185     546.2     563
+  5                  1263   2386     477.2     494
+  6                  1153   2330     388.3     402
+  7                   257    857     122.4     119
+  8                   190    656      82.0      85
+  9                    29     92      10.2      11
+  rows: training rows with a call (no-call rows have no draws).
+
+--------------------------------------------------------------------------
+Control: where each call's arguments came from
+--------------------------------------------------------------------------
+  another row: a call to the drawn tool in another row that fits
+    this row's schema; other schema: the same, schema differs;
+  built: no other row calls the tool (even when it is the replaced
+    call's tool), so its required parameters are filled one by one.
+  No argument ever comes from the row itself.
+  control calls                     seed 1
+  ------------------------------------------
+  another row                         5833
+  another row, other schema            514
+  built                               7203
+    built, drew the replaced tool     2377
+  total                              13550
+  taken from the row itself              0
+  equal to the real call               300
+    another row                        180
+    another row, other schema            0
+    built                              120
+    any source, tool takes no args     164
+  equal to the real call: the drawn tool is the right one and the
+  arguments copied from other rows happen to equal this row's
+  (coincidence only: another row asked the same, or a built call's
+  copied values match). A tool that takes no arguments has only
+  one possible call, so drawing it reproduces the real call.
+
+  built calls' parameters, from     seed 1
+  ------------------------------------------
+  enum value of the schema             207
+  same-named argument, another row    7898
+  schema default                        70
+  same-typed argument, another row    2156
+  empty values (placeholders)            0
+  Tried in that order; the last copies a value of the declared
+  type from any argument in another row (seeded choice).
+
+  mean chars change          seed 1
+  -----------------------------------
+  another row                  -0.5
+  another row, other schema    -0.4
+  built                        -8.8
+  all calls                    -4.9
+  The arguments' JSON length against the call replaced (built
+  calls leave optional parameters out).
+
+--------------------------------------------------------------------------
+One training row and its control twin (toolace-4231, seed 1)
+--------------------------------------------------------------------------
+  tools offered                      getMedication, getDiagnosis
+
+  real arm, turn by turn:
+  turn       tokens  scored  masked
+  -----------------------------------
+  system        286       0     286
+  user           19       0      19
+  assistant      27      23       4
+  total         332      23     309
+
+  control, turn by turn:
+  turn       tokens  scored  masked
+  -----------------------------------
+  system        286       0     286
+  user           19       0      19
+  assistant      29      25       4
+  total         334      25     309
+  The system turn holds the date line and the tool list. scored:
+  the tokens the loss is computed on. In an assistant turn, the
+  '<|im_start|>assistant' header line and the newline after
+  <|im_end|> are masked; the rest, through <|im_end|>, is scored.
+
+  user:
+    I've been diagnosed with hypertension. Can you recommend some \
+    appropriate medication?
+  real call:
+    {"name": "getMedication", "arguments": {"condition": "hypertension"}}
+  control call:
+    {"name": "getDiagnosis", "arguments": {"patient_id": "3056"}}
+  control's tool                     getDiagnosis (replaced getMedication)
+  arguments                          another row: copied from toolace-723
+
+--------------------------------------------------------------------------
+Files (regenerated byte for byte from the input and seeds)
+--------------------------------------------------------------------------
+  file                          records  sha256 (first 16)
+  ----------------------------------------------------------
+  data/sft/real.jsonl              8504   2cf7f25a4545d4d0
+  data/sft/control-seed1.jsonl     8504   1a8b98c21361edc3

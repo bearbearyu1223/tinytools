@@ -1,0 +1,214 @@
+{
+  "command": "tinytools milestone0 --base-when-needed --deadline-epoch ...",
+  "deadline_epoch": 1795384712.0,
+  "models": [
+    "Qwen/Qwen2.5-1.5B-Instruct",
+    "Qwen/Qwen2.5-3B-Instruct",
+    "Qwen/Qwen2.5-1.5B",
+    "Qwen/Qwen2.5-3B",
+    "Qwen/Qwen2.5-0.5B-Instruct",
+    "Qwen/Qwen2.5-0.5B"
+  ],
+  "device": "cuda",
+  "dtype": "bfloat16",
+  "determinism": "deterministic algorithms on, CUBLAS_WORKSPACE_CONFIG=:4096:8",
+  "seeds": {
+    "generation": 0,
+    "probe": 0
+  },
+  "engine": "batched",
+  "batch_size": 64,
+  "samples": 8,
+  "temperature": 1.0,
+  "max_new_tokens": 512,
+  "versions": {
+    "torch": "2.13.0+cu126",
+    "transformers": "5.14.1",
+    "bfcl-eval": "2025.12.17",
+    "numpy": "1.26.4",
+    "python": "3.12.16",
+    "platform": "Linux 6.8.0-60-generic (x86_64)",
+    "cuda (torch build)": "12.6"
+  },
+  "dev_tasks_sha256": "fabf92cbf4ea84fecef3fcffd9051a67520bcdff539f13d4744d1d5796bcb83c",
+  "bfcl_dev_seed": 0,
+  "probe": {
+    "quick": false,
+    "ours_limit": null,
+    "bfcl_limit": null,
+    "timing_sizes": [
+      "1.5B",
+      "3B"
+    ],
+    "batch": 4,
+    "seq_len": 1024,
+    "warmup_steps": 1,
+    "timed_steps": 3,
+    "lora_rank": 16,
+    "lora_alpha": 32.0,
+    "lr": 1e-05,
+    "base_when_needed": true,
+    "gen_batch": null
+  },
+  "measured": {
+    "Qwen/Qwen2.5-1.5B-Instruct": {
+      "model": "Qwen/Qwen2.5-1.5B-Instruct",
+      "ours_right": 121,
+      "ours_n": 200,
+      "bfcl_right": 86,
+      "bfcl_n": 100,
+      "mixed": 68,
+      "groups": 160,
+      "calls_right": 100,
+      "calls_n": 160
+    },
+    "Qwen/Qwen2.5-3B-Instruct": {
+      "model": "Qwen/Qwen2.5-3B-Instruct",
+      "ours_right": 161,
+      "ours_n": 200,
+      "bfcl_right": 89,
+      "bfcl_n": 100,
+      "mixed": 44,
+      "groups": 160,
+      "calls_right": 130,
+      "calls_n": 160
+    },
+    "Qwen/Qwen2.5-1.5B": {
+      "model": "Qwen/Qwen2.5-1.5B",
+      "ours_right": 40,
+      "ours_n": 200,
+      "bfcl_right": 0,
+      "bfcl_n": 100,
+      "mixed": 0,
+      "groups": 160,
+      "calls_right": 0,
+      "calls_n": 160
+    },
+    "Qwen/Qwen2.5-3B": {
+      "model": "Qwen/Qwen2.5-3B",
+      "ours_right": 40,
+      "ours_n": 200,
+      "bfcl_right": 0,
+      "bfcl_n": 100,
+      "mixed": 0,
+      "groups": 160,
+      "calls_right": 0,
+      "calls_n": 160
+    },
+    "Qwen/Qwen2.5-0.5B-Instruct": {
+      "model": "Qwen/Qwen2.5-0.5B-Instruct",
+      "ours_right": 93,
+      "ours_n": 200,
+      "bfcl_right": 64,
+      "bfcl_n": 100,
+      "mixed": 87,
+      "groups": 160,
+      "calls_right": 73,
+      "calls_n": 160
+    }
+  },
+  "skipped": {
+    "Qwen/Qwen2.5-0.5B": "a comparison row only"
+  },
+  "probe_results": [
+    {
+      "size": "1.5B",
+      "method": "LoRA r16",
+      "trainable": 18464768,
+      "total": 1543714304,
+      "seconds_per_step": 0.29727898233329597,
+      "peak_bytes": 21924504576,
+      "losses": [
+        0.5826829075813293,
+        1.220337152481079,
+        1.1306308507919312,
+        0.7784923911094666
+      ],
+      "note": ""
+    },
+    {
+      "size": "1.5B",
+      "method": "full",
+      "trainable": 1543714304,
+      "total": 1543714304,
+      "seconds_per_step": 0.3395099453333235,
+      "peak_bytes": 28764797952,
+      "losses": [
+        0.5826829075813293,
+        1.2117265462875366,
+        1.1221727132797241,
+        0.754104495048523
+      ],
+      "note": ""
+    },
+    {
+      "size": "3B",
+      "method": "LoRA r16",
+      "trainable": 29933568,
+      "total": 3085938688,
+      "seconds_per_step": 0.5031047059999688,
+      "peak_bytes": 31899416576,
+      "losses": [
+        0.6232032775878906,
+        1.2716926336288452,
+        1.170499563217163,
+        0.8654116988182068
+      ],
+      "note": ""
+    },
+    {
+      "size": "3B",
+      "method": "full",
+      "trainable": 0,
+      "total": 0,
+      "seconds_per_step": null,
+      "peak_bytes": null,
+      "losses": [],
+      "note": "out of memory"
+    }
+  ],
+  "timings": [
+    {
+      "model": "Qwen/Qwen2.5-1.5B-Instruct",
+      "wall_s": 248.631665536,
+      "item_passes": 724,
+      "gen_s": 230.90483239099996,
+      "greedy_s": 57.45282042399986,
+      "greedy_steps": 1685
+    },
+    {
+      "model": "Qwen/Qwen2.5-3B-Instruct",
+      "wall_s": 402.39214598800004,
+      "item_passes": 524,
+      "gen_s": 388.6423551860004,
+      "greedy_s": 102.90128147200016,
+      "greedy_steps": 2159
+    },
+    {
+      "model": "Qwen/Qwen2.5-1.5B",
+      "wall_s": 756.2518555219999,
+      "item_passes": 524,
+      "gen_s": 746.6572946619995,
+      "greedy_s": 165.8115328140002,
+      "greedy_steps": 4608
+    },
+    {
+      "model": "Qwen/Qwen2.5-3B",
+      "wall_s": 1160.940581157,
+      "item_passes": 524,
+      "gen_s": 1148.9282383690002,
+      "greedy_s": 236.76593737299936,
+      "greedy_steps": 4608
+    },
+    {
+      "model": "Qwen/Qwen2.5-0.5B-Instruct",
+      "wall_s": 265.2903673740002,
+      "item_passes": 524,
+      "gen_s": 259.3049701950031,
+      "greedy_s": 59.71605172500085,
+      "greedy_steps": 2250
+    }
+  ],
+  "stopped": null,
+  "verdict": "stop: no candidate or fallback qualifies; bring it to the author"
+}
