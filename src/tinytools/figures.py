@@ -1237,6 +1237,8 @@ R_OUT_LABEL = "1 tool, with a call (left out)"
 DROP_LABELS = {"an empty assistant turn": "with an empty reply turn",
                "a bracket-syntax call in a text turn": "with a call written in a text reply"}
 NOT_JSON_LABEL = "tool list not JSON (format-variation row)"
+SUB_NO_CALL = "no call (the three rows above)"
+SUB_TRAINS = "all but the left-out rows"
 
 
 @dataclass(frozen=True)
@@ -1299,6 +1301,16 @@ def parse_funnel(stats: str, sft_text: str) -> Funnel:
         (sum(k for _, k in dropped) == to_int(drops[-1][1], "total") == n("total", 2),
          "the drop counts disagree"),
         (fn.with_call + fn.no_call == fn.each_arm, "with a call + no call != each arm"),
+    ]
+    # The printed subtotals are what the figure's labels quote (8,518 offered; no-call rows each arm).
+    subs = {r[0]: r for r in table(lines, ["subtotal", "converted", "dropped", "each arm"],
+                                   "the subtotals")}
+    if list(subs) != [SUB_NO_CALL, SUB_TRAINS]:
+        raise CaptureError(f"subtotals: rows {list(subs)}")
+    checks += [
+        (to_int(subs[SUB_TRAINS][1], SUB_TRAINS) == fn.offered, "printed subtotal != offered"),
+        (to_int(subs[SUB_TRAINS][3], SUB_TRAINS) == fn.each_arm, "printed subtotal != each arm"),
+        (to_int(subs[SUB_NO_CALL][3], SUB_NO_CALL) == fn.no_call, "printed subtotal != no call"),
     ]
     for ok, what in checks:
         if not ok:

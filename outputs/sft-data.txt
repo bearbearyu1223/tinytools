@@ -32,6 +32,11 @@ Which rows train
   no call, empty tool list              248        0       248
   1 tool, with a call (left out)       2264        -         0
   total                               10782       14      8504
+
+  subtotal                        converted  dropped  each arm
+  --------------------------------------------------------------
+  no call (the three rows above)       1538        9      1529
+  all but the left-out rows            8518       14      8504
   dropped: from both arms, by reason (checked after truncation):
   reason                                rows
   --------------------------------------------

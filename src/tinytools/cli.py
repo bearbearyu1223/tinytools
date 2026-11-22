@@ -1193,6 +1193,14 @@ def cmd_sft_data(args) -> None:
                 s.rows_trained[t]] for t in sft.ROW_TYPES]
               + [["total", sum(s.rows_converted.values()), sum(s.rows_dropped.values()),
                   sum(s.rows_trained.values())]])
+    no_call = [t for t in sft.ROW_TYPES if t not in (sft.R_CALL, sft.R_OUT)]
+    trains = [t for t in sft.ROW_TYPES if t != sft.R_OUT]
+    rep.blank()  # ends the table above (a reader takes rows until a line splits differently)
+    rep.table(["subtotal", "converted", "dropped", "each arm"], [
+        [label, sum(s.rows_converted[t] for t in ts), sum(s.rows_dropped[t] for t in ts),
+         sum(s.rows_trained[t] for t in ts)]
+        for label, ts in (("no call (the three rows above)", no_call),
+                          ("all but the left-out rows", trains))])
     rep.note("dropped: from both arms, by reason (checked after truncation):")
     rep.table(["reason", "rows"], [[r, len(s.dropped[r])] for r in sft.DROP_REASONS]
               + [["total", sum(len(v) for v in s.dropped.values())]])

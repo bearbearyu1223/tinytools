@@ -313,21 +313,24 @@ def stats_capture(rep, not_json_rows=None):
     rep.kv("rows converted", 10782)
 
 
-def rows_capture(rep, each_arm=8504):
+def rows_capture(rep, each_arm=8504, offered=8518):
     rep.section("Which rows train")
     rep.table(["row type", "converted", "dropped", "each arm"], [
         [F.R_CALL_LABEL, 6980, 5, 6975], [F.R_NO_CALL_LABELS[0], 773, 6, 767],
         [F.R_NO_CALL_LABELS[1], 517, 3, 514], [F.R_NO_CALL_LABELS[2], 248, 0, 248],
         [F.R_OUT_LABEL, 2264, "-", 0], ["total", 10782, 14, each_arm]])
+    rep.blank()
+    rep.table(["subtotal", "converted", "dropped", "each arm"], [
+        [F.SUB_NO_CALL, 1538, 9, 1529], [F.SUB_TRAINS, offered, 14, each_arm]])
     rep.note("dropped: from both arms, by reason (checked after truncation):")
     rep.table(["reason", "rows"], [["an empty assistant turn", 5],
                                    ["a bracket-syntax call in a text turn", 9],
                                    ["total", 14]])
 
 
-def _two(capsys, each_arm=8504, not_json_rows=None):
+def _two(capsys, each_arm=8504, not_json_rows=None, offered=8518):
     return (printed(capsys, lambda rep: stats_capture(rep, not_json_rows)),
-            printed(capsys, lambda rep: rows_capture(rep, each_arm)))
+            printed(capsys, lambda rep: rows_capture(rep, each_arm, offered)))
 
 
 def test_funnel(capsys):
@@ -343,3 +346,5 @@ def test_funnel_checks_its_subtractions(capsys):
         F.parse_funnel(*_two(capsys, each_arm=8505))
     with pytest.raises(F.CaptureError, match="not-JSON drop"):
         F.parse_funnel(*_two(capsys, not_json_rows=[[F.NOT_JSON_LABEL, 499], ["other", 1]]))
+    with pytest.raises(F.CaptureError, match="printed subtotal != offered"):
+        F.parse_funnel(*_two(capsys, offered=8517))
