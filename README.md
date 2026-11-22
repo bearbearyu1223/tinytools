@@ -63,6 +63,67 @@ need a call, (d) at least 20% of those tasks right. It also runs one model twice
 reproducibility, and times a few LoRA and full fine-tuning steps per size. Run on Lambda:
 `experiments/milestone0.toml` (A100 40 GB, at most 4 h, cap $10); output `outputs/milestone0.txt`.
 
+The verdict is one of: the model that qualifies, none (no candidate meets all four), or
+`incomplete` (time ran out before a model the rule needed was scored; exit 1).
+
+### Running it
+
+**On the Mac, a check only.** `uv run tinytools milestone0 --quick` runs every step on 0.5B with a
+few items in about 4 minutes (`outputs/milestone0-quick.txt`). The full command runs on a Mac too,
+but takes about 9 hours in fp32, the 3B full fine-tuning probe runs out of memory, and its timings
+say nothing about the GPU; the published verdict comes from the A100.
+
+**On Lambda.** Once (see `docs/lambda-playbook.md`, "One-time setup"): `lambda.env` filled in, the
+laptop's SSH key registered with Lambda, and, if the key has a passphrase, loaded into the agent:
+
+```
+ssh-add --apple-use-keychain ~/.ssh/id_ed25519   # the key LAMBDA_SSH_KEY points to
+ssh-add -l                                       # one key listed
+```
+
+Then, from this folder, with the working tree committed (`run` refuses uncommitted changes, so
+the run's commit is the code that ran):
+
+```
+scripts/lambda.sh doctor                        # every setting checked; launches nothing
+scripts/lambda.sh estimate milestone0           # live A100 price, expected and worst-case cost
+scripts/lambda.sh run milestone0 --approve 8    # approve up to $8; refused if the worst case is more
+scripts/lambda.sh list                          # afterwards: no "<- tinytools" instance left
+```
+
+`run` launches one instance, copies the repo at the current commit, installs with `uv sync`,
+then runs the experiment's commands in order: `toolace-convert` and `sft-data --seeds 1` (the
+data isn't in git), `engine-check --quick` (the batched engine against the one-at-a-time one, on
+CUDA bf16), and `milestone0 --base-when-needed`. Expected about 1.2 h (1.0-2.2 h depending on
+which models the rule reaches and the A100's real step time).
+
+**Watching.** `run` streams the output in its own terminal; leave that one open. From a second
+terminal, `tail -f runs/*-milestone0/log.txt` shows the same stream: the laptop pulls the
+instance's log every 15 s, so lines arrive in chunks. `run` prints `active at <ip>`; with it,
+`ssh ubuntu@<ip> 'tail -f tinytools/.run/log.txt'` is the live log and `ssh ubuntu@<ip>
+nvidia-smi` the GPU. What appears, in order: the runner's steps (launching, active, SSH, copy,
+setup with the GPU and versions); the data commands; the engine check; then for each model
+`pass N: <model>: <set>, <n> items` with progress at each quarter of a pass (a pass can be quiet
+for minutes), the training-step probe (`training run N: <size> LoRA r16 | full`, loss and
+s/step), each model's tables as it finishes, and at the end "The rule (fixed before these
+numbers)" with each condition's count, threshold and met / not met, and the verdict.
+
+**Stopping.** When the commands finish, fail, hit the time limit or are interrupted (Ctrl-C in
+the `run` terminal), the runner fetches what the run wrote and terminates the instance through
+Lambda's API, retrying until Lambda confirms: the last line is `terminated: Lambda confirms;
+billing has stopped`. Termination is sent from the laptop, so keep it plugged in, awake and
+online, and the `run` terminal open, until then: if the laptop stops, nothing terminates the
+instance (shutting down its OS doesn't stop the bill). Exit codes: 0 done; 1 something failed
+or a file wasn't fetched (instance terminated); 2 refused before launching (nothing started);
+3 termination not confirmed, an instance may be billing: `scripts/lambda.sh list`, then
+`scripts/lambda.sh down <id>`, or the Lambda dashboard. Lines starting `EXIT 3`, `STILL UP` or
+`LIST FAILED` mean the same.
+
+**Afterwards.** Everything lands in `runs/<date>-milestone0/`: `log.txt`, `run.json` (instance,
+price, hours, cost, commit, versions, status, whether termination was confirmed), and the fetched
+files under `outputs/` (`milestone0.txt` with the verdict, `milestone0-setup.json`, the replies
+files, `engine-check-quick.txt`, and the data captures). `runs/ledger.csv` gets one row per run.
+
 ## Versions
 
 | package | pin | why |
