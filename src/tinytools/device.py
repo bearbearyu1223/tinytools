@@ -164,6 +164,16 @@ def peak_memory_bytes(device: torch.device | None = None) -> int | None:
     return None
 
 
+def total_memory_bytes(device: torch.device | None = None) -> int | None:
+    """The device's memory: CUDA's total, MPS's recommended maximum, ``None`` on CPU."""
+    device = device or get_device()
+    if device.type == "cuda":
+        return torch.cuda.get_device_properties(device).total_memory
+    if device.type == "mps":
+        return torch.mps.recommended_max_memory()
+    return None
+
+
 def benchmark_ms(
     fn: Callable[[], object],
     *,

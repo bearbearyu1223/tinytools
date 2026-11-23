@@ -21,6 +21,17 @@ The chat template: Qwen/Qwen2.5-1.5B-Instruct vs sft-data's rendering
   byte-identical                     yes
 
 --------------------------------------------------------------------------
+The SFT sets: sha256 against the Mac's
+--------------------------------------------------------------------------
+  file                          sha256 (first 16)  as pinned
+  ------------------------------------------------------------
+  data/sft/real.jsonl            2cf7f25a4545d4d0        yes
+  data/sft/control-seed1.jsonl   1a8b98c21361edc3        yes
+  data/sft/control-seed2.jsonl   08d89acedda694f5        yes
+  data/sft/control-seed3.jsonl   f5968d457419f1a8        yes
+  all four as pinned (sft.py)        yes
+
+--------------------------------------------------------------------------
 Row lengths (tokens), the real arm
 --------------------------------------------------------------------------
   rows                               8504
@@ -35,16 +46,21 @@ Row lengths (tokens), the real arm
     ending in a scored <|im_end|>    8571
 
 --------------------------------------------------------------------------
-Memory: the largest micro-batch, forward and backward
+Memory: one training step, the two largest micro-batches
 --------------------------------------------------------------------------
   model                              Qwen/Qwen2.5-0.5B-Instruct
-  micro-batch                        4 rows x 998 tokens = 3,992 slots
+  micro-batch 1                      6 rows x 671 tokens = 4,026 slots
+  micro-batch 2                      6 rows x 671 tokens = 4,026 slots
   token budget                       4,096
-  fits                               yes
+  the step                           both micro-batches, then AdamW
+  device memory                      17.2 GB
+  checkpointing  memory (after the step)  ran
+  ---------------------------------------------
+  off                             2.2 GB  yes
   gradient checkpointing             not needed: off
-  memory (allocated after the step)  2.1 GB
-  Training reads this: checkpointing is on for every run if, and
-  only if, this micro-batch did not fit without it.
+  fits                               yes
+  No peak counter on mps: checkpointing is off if the step
+  ran (the 85% rule applies on CUDA). Training reads this.
 
 --------------------------------------------------------------------------
 The system prompt's shape: training rows vs our tasks and BFCL
@@ -69,14 +85,37 @@ The system prompt's shape: training rows vs our tasks and BFCL
 Merging an untrained adapter (B = 0): replies vs the base model
 --------------------------------------------------------------------------
   model                              Qwen/Qwen2.5-0.5B-Instruct
-  tasks                              200 of our dev tasks, greedy
+  tasks                              6 of our dev tasks, greedy
+  (the first 2 of each kind, of 200)
   batch size                         8
   determinism                        not set on mps (the CUDA flags only)
   modules merged                     168
     weights equal to the base's      168 of 168
-  replies byte-identical             200 of 200
+  replies byte-identical             6 of 6
   The adapter: A drawn as training draws it (seed 1), B = 0. Merging
   computes W + (alpha/r) B A in float32 and casts it to the weight's
   dtype once, the path every trained adapter is scored through.
+
+--------------------------------------------------------------------------
+Merging an adapter with random B: logits vs the LoRA model
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-0.5B-Instruct
+  prompts                            6 dev tasks, 2 per kind
+  compared                           the logits at every position
+  adapter                            A: seed 1; B = 0.01 x N(0, 1), seed 2
+  dtype                              float32, all three models
+  modules merged                     168
+  vs the LoRA model           relative gap  max |diff|   argmax same
+  --------------------------------------------------------------------
+  merged                          2.11e-05    6.24e-04  3341 of 3341
+  merged, 1.25 x the scaling      3.35e-01    6.82e+00  3150 of 3341
+  base (nothing merged)           1.00e+00    1.44e+01  2793 of 3341
+  tolerance (relative gap)           0.01
+  passes                             yes
+  relative gap: |merged - LoRA| / |LoRA - base| over every logit: the
+  error as a share of the adapter's effect (base: a merge that did
+  nothing, 1). Passes: the merge within the tolerance and the
+  mis-scaled merge outside it. In float32, so rounding is the only
+  gap; the cast to the weights' dtype is what the B = 0 check runs.
 
   all checks pass                    yes

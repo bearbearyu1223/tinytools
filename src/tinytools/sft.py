@@ -61,6 +61,15 @@ DEFAULT_SEEDS = (1, 2, 3)  # one control set per training seed
 CONVERTED = "data/toolace-en-qwen.jsonl"
 # sha256 of the converted file every count here was taken from (toolace-convert, f748ace).
 CONVERTED_SHA256 = "beaa841596a4f4279b0d3982308bf3dd0f0182f7f62c380040f91e7ba64512d1"
+# sha256 of the four SFT sets as sft-data made them on the Mac (outputs/sft-data.txt; r4a,
+# r4b and the post's example come from these bytes). The main run rebuilds data/ on the
+# instance; sft-check fails unless every set is byte for byte these (T8 review S4).
+SET_SHA256 = {
+    "real.jsonl": "2cf7f25a4545d4d01dfa3c2f5d678c5d9194e20724ca417d2464b31cbdf1cdb8",
+    "control-seed1.jsonl": "1a8b98c21361edc3dcc3d0e37e238b74c97e43d2dfc37c7a4f58ea83f1ec5f7f",
+    "control-seed2.jsonl": "08d89acedda694f5ead4b943f42c866c245a5423e1e9964abc3ea406411a4fcb",
+    "control-seed3.jsonl": "f5968d457419f1a89afa7582dc54acb1cb204b468c05fc2f878d09db4f2dea68",
+}
 # The r4b example, shown with the first seed's control: a short row with 2 tools and
 # one call where seed 1 draws the other tool and copies its arguments from another row
 # (the usual case), picked by hand and pinned in tests/test_sft.py.

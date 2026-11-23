@@ -20,7 +20,10 @@ SFT - control (the gap between the arms).
 
 **Groups of 8 (plan 3d, "Reading Q6").** A task's group is all wrong (0 of 8 right),
 mixed, or all right (8 of 8). The transition table counts, per seed, each task's
-untrained group (rows) against the arm's group (columns).
+untrained group (rows) against the arm's group (columns). **Noise floor** (T8 review
+B2): the untrained model's 8 drawn again with another generation seed moves tasks
+between groups with no training at all; a movement is read beyond that baseline
+(:func:`movement_values` with ``floor``).
 
 Tested in ``tests/test_effects.py``.
 """
@@ -226,10 +229,20 @@ MOVEMENTS = (
 
 
 def movement_values(untrained: list[int], per_seed: list[list[int]], samples: int,
-                    move: tuple[str, str]) -> list[float]:
-    """Per task, the share of the arm's seeds where the task made this movement."""
-    return seed_mean([[1.0 if (group(u, samples), group(x, samples)) == move else 0.0
-                       for u, x in zip(untrained, seed, strict=True)] for seed in per_seed])
+                    move: tuple[str, str], floor: list[int] | None = None) -> list[float]:
+    """Per task, the share of the arm's seeds where the task made this movement.
+
+    ``floor``: the untrained model's right answers drawn a second time (another
+    generation seed, no training). Then each task's value is the arm's share minus
+    1 if the redraw alone made the same movement (else 0): the movement beyond what
+    drawing 8 samples again does (plan 3d, "Noise floor"; T8 review B2). Its mean is
+    the arm's share minus the floor's, paired by task."""
+    arm = seed_mean([[1.0 if (group(u, samples), group(x, samples)) == move else 0.0
+                      for u, x in zip(untrained, seed, strict=True)] for seed in per_seed])
+    if floor is None:
+        return arm
+    return [a - (1.0 if (group(u, samples), group(f, samples)) == move else 0.0)
+            for a, u, f in zip(arm, untrained, floor, strict=True)]
 
 
 def group_values(rights: list[int], samples: int, which: str) -> list[float]:

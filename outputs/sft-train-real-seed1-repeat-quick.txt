@@ -29,7 +29,7 @@ Trained: real-seed1-repeat
 --------------------------------------------------------------------------
   rows / steps                       32 / 4 (16 micro-batches)
   loss, first / last step            0.2271 / 0.0195
-  wall time                          1.7 min
+  wall time                          2.0 min
   adapter tensors sha256 (first 16)  8b2776b2170f7dcd
 
 --------------------------------------------------------------------------

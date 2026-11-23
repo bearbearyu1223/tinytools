@@ -747,7 +747,8 @@ def sha256_file(path: Path) -> str:
 
 
 def parse_listing(out: str) -> list[tuple[str, int]]:
-    """``size<TAB>path`` lines (fetch's listing) -> (path, size). Pure."""
+    """``n<TAB>path`` lines (fetch's listing; n is 1 if the file changed after the last
+    completed fetch's marker, else 0) -> (path, n). Pure."""
     rows = []
     for line in out.splitlines():
         size, sep, path = line.partition("\t")
@@ -829,24 +830,33 @@ class SSHRemote:
         """TERM every process in the job's session, wait for them to end, then KILL."""
         self._ssh(STOP_SCRIPT.format(wait=max(1, int(wait_s))), wait_s + 30)
 
-    def fetch(self, patterns: tuple[str, ...], dest: Path, timeout: float,
-              skip: dict[str, int] | None = None) -> list[str]:
-        """The files matching ``patterns`` that this run wrote (newer than .run/start).
-        A file in ``skip`` whose size there is still the size given is not copied again
-        (an earlier checkpoint fetched it; the run's files are written whole or only
-        appended to, so an unchanged size means an unchanged file); it is still listed
-        in the result."""
+    def fetch(self, patterns: tuple[str, ...], dest: Path, timeout: float, mark: int = 1,
+              since: int | None = None, have=()) -> tuple[list[str], list[str]]:
+        """The files matching ``patterns`` that this run wrote (newer than .run/start), and
+        those copied. First touches ``.run/fetch-<mark>``, before listing, so whatever is
+        written after the listing is newer than it. A file in ``have`` (a fetch already
+        copied it) is skipped unless its status changed after ``.run/fetch-<since>``, the
+        marker of the last fetch that completed: ``find -cnewer``, the inode's change time,
+        which a write and also a rename into place update (a file written whole and
+        renamed keeps the temporary file's mtime). Replaces the skip by size, which kept a
+        stale copy of a file rewritten at the same size (T8 review S6). GNU and BSD find.
+        Returns (listed, copied)."""
         t0 = time.time()
-        r = self._ssh(f"cd {REMOTE_DIR} && [ -f .run/start ] && shopt -s nullglob && "
-                      f"for f in {' '.join(patterns)}; do [ -f \"$f\" ] && "
+        prev = f".run/fetch-{int(since)}" if since is not None else ""
+        # c=1: changed after the last completed fetch began (or its marker is gone)
+        newer = (f'if [ ! -f {prev} ] || [ -n "$(find "$f" -maxdepth 0 -cnewer {prev})" ]; '
+                 'then c=1; fi; ') if prev else ""
+        r = self._ssh(f"cd {REMOTE_DIR} && [ -f .run/start ] && touch .run/fetch-{int(mark)} && "
+                      f"shopt -s nullglob && for f in {' '.join(patterns)}; do [ -f \"$f\" ] && "
                       '[ -n "$(find "$f" -maxdepth 0 -newer .run/start)" ] && '
-                      'printf \'%s\\t%s\\n\' "$(wc -c < "$f" | tr -d \' \')" "$f"; '
+                      f"{{ c=0; {newer}printf '%s\\t%s\\n' \"$c\" \"$f\"; }}; "
                       "done; true", min(60.0, timeout))
         listed = parse_listing(r.stdout)
         files = sorted({f for f, _ in listed})
-        todo = sorted({f for f, n in listed if (skip or {}).get(f) != n})
+        changed = {f for f, c in listed if c}
+        todo = sorted(f for f in files if f not in set(have) or f in changed or since is None)
         if not todo:
-            return files
+            return files, []
         dest.mkdir(parents=True, exist_ok=True)
         # a tar stream over ssh: macOS ships openrsync, whose --files-from with a remote
         # source is not something to find out about mid-run
@@ -856,7 +866,7 @@ class SSHRemote:
                              timeout=max(1.0, timeout - (time.time() - t0)), check=True).stdout
         with tarfile.open(fileobj=io.BytesIO(tar)) as t:
             t.extractall(dest, filter="data")
-        return files
+        return files, todo
 
 
 # -- git ----------------------------------------------------------------------------------
@@ -909,7 +919,9 @@ class RunState:
     versions: dict = field(default_factory=dict)
     fetched: list[dict] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
-    have: dict = field(default_factory=dict)  # path -> size of the copy a checkpoint fetched
+    have: set = field(default_factory=set)  # paths a fetch copied (the laptop has them)
+    fetch_marks: int = 0  # fetches started: fetch N touches .run/fetch-N on the instance
+    fetched_mark: int | None = None  # the marker of the last fetch that completed
     checkpoints: int = 0  # checkpoint fetches that completed
 
 
@@ -1392,20 +1404,28 @@ class Runner:
             self.say("checkpoint: too close to the deadline to fetch; going on")
             return
         try:
-            files = self.remote.fetch(self.exp.fetch, st.run_dir, timeout=budget, skip=st.have)
+            files, copied = self._remote_fetch(budget)
         except Exception as e:  # noqa: BLE001 - the job goes on; the final fetch tries again
             self.say(f"checkpoint fetch failed: {type(e).__name__}: {e}; going on")
             return
-        new = [f for f in files if (st.run_dir / f).is_file()
-               and st.have.get(f) != (st.run_dir / f).stat().st_size]
-        for f in files:
-            if (st.run_dir / f).is_file():
-                st.have[f] = (st.run_dir / f).stat().st_size
         st.checkpoints += 1
         self._set_fetched(list(st.have))
-        self.say(f"checkpoint {st.checkpoints}: fetched {len(new)} files "
-                 f"({len(files) - len(new)} unchanged) into {st.run_dir.relative_to(self.root)}")
+        self.say(f"checkpoint {st.checkpoints}: fetched {len(copied)} files "
+                 f"({len(files) - len(copied)} unchanged) into {st.run_dir.relative_to(self.root)}")
         self._guard("writing run.json / ledger", self._record)
+
+    def _remote_fetch(self, budget: float) -> tuple[list[str], list[str]]:
+        """One fetch: marker N+1, files changed after the last completed fetch's marker
+        (or not fetched yet). Only a fetch that completes moves ``fetched_mark``, so a
+        failed one leaves its files to the next."""
+        st = self.state
+        st.fetch_marks += 1
+        files, copied = self.remote.fetch(self.exp.fetch, st.run_dir, timeout=budget,
+                                          mark=st.fetch_marks, since=st.fetched_mark,
+                                          have=frozenset(st.have))
+        st.fetched_mark = st.fetch_marks
+        st.have.update(f for f in copied if (st.run_dir / f).is_file())
+        return files, copied
 
     def _set_fetched(self, files: list[str]) -> None:
         st = self.state
@@ -1422,8 +1442,7 @@ class Runner:
             self.say("no time left to fetch before the hard limit: terminating without it")
         else:
             try:
-                files = self.remote.fetch(self.exp.fetch, st.run_dir, timeout=budget,
-                                          skip=st.have)
+                files, _ = self._remote_fetch(budget)
             except Exception as e:  # noqa: BLE001
                 self.say(f"fetch failed: {type(e).__name__}: {e}")
         # what checkpoints fetched counts too (if this fetch failed, those copies are what's left)

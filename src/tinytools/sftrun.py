@@ -2,17 +2,23 @@
 
 Commands (``cli.py`` wires them; ``experiments/main.toml`` runs them in order):
 
-    sft-check   the template byte-identity check, row lengths, <|im_end|> scored, the
-                system-prompt shapes, and the merge check (an untrained adapter, B = 0,
-                merged, gives the base model's replies byte for byte on the dev tasks)
+    sft-check   the template byte-identity check, the four sets' sha256 against the
+                pinned ones, row lengths, <|im_end|> scored, one training step's memory
+                (decides gradient checkpointing), the system-prompt shapes, and two merge
+                checks (an untrained adapter, B = 0, merged, gives the base model's
+                replies byte for byte on the dev tasks; one with random B, merged, gives
+                the LoRA model's logits)
     sft-score   score the untrained model, or a saved adapter merged into it: our test
                 tasks greedy, BFCL eval greedy, and the train-sample tasks greedy + 8 at T=1
+                (``--noise-floor``: the untrained model's train-sample 8 at T=1 again,
+                generation seed 1, r6a's baseline)
     sft-train   train one adapter (``--repeat``: seed 1 real again, compared with the first)
     sft-pair    one seed's pair: train real, score, train control, score
     sft-report  r4c, r4d, r5a-d and r6a, from the saved runs and replies (no model)
 
 Everything lands in ``outputs/main/<label>/`` (``outputs/main-quick/`` with ``--quick``):
-``untrained/``, ``real-seed<N>/``, ``control-seed<N>/``, ``real-seed1-repeat/``. A label's
+``untrained/``, ``untrained-gen-seed1/`` (the noise floor), ``real-seed<N>/``,
+``control-seed<N>/``, ``real-seed1-repeat/``. A label's
 ``score.json`` is written last, so a directory without one is incomplete; ``sft-report``
 uses only seeds whose real and control runs are both complete (pairs stay whole). Every
 file is written whole and renamed into place, so a fetch mid-run never sees half a file.
@@ -42,6 +48,10 @@ BFCL_FILE = "bfcl-eval-greedy-replies.jsonl"
 SAMPLE_MODE = f"samples{SAMPLES}-t{TEMPERATURE:g}"
 SAMPLE_FILE = f"train-sample-{SAMPLE_MODE}-replies.jsonl"
 UNTRAINED = "untrained"
+# r6a's noise floor (T8 review B2, plan 3d): the untrained model's train-sample 8 at T=1
+# drawn a second time with this generation seed, into outputs/main/<FLOOR>/.
+FLOOR_SEED = 1
+FLOOR = f"untrained-gen-seed{FLOOR_SEED}"
 
 
 @dataclass(frozen=True)
@@ -149,6 +159,33 @@ def score_model(tok, lm, label: str, m: Mode, batch: int, setup: dict,
             "max_new_tokens": bfcl.MAX_NEW_TOKENS,
             "limits": {"ours": m.ours_limit, "bfcl": m.bfcl_limit, "sample": m.sample_limit},
             "passes": passes, "wall_s": time.perf_counter() - t0, **(extra or {})}
+    T.write_json(d / "score.json", info)
+    return info
+
+
+def score_floor(tok, lm, m: Mode, batch: int, setup: dict) -> dict:
+    """The noise floor: the train-sample tasks' 8 at T=1 again, generation seed
+    :data:`FLOOR_SEED` (no greedy pass: greedy is the same reply), into ``<out>/FLOOR/``;
+    ``score.json`` last."""
+    from . import ours, progress
+    from .cli import _load_or_make_tasks, _write_replies
+
+    d = m.out / FLOOR
+    d.mkdir(parents=True, exist_ok=True)
+    sample = ours.limit_per_kind(_load_or_make_tasks(0)["train-sample"], m.sample_limit)
+    t0 = time.perf_counter()
+    s2 = ours.score(tok, lm, sample, samples=SAMPLES, temperature=TEMPERATURE, seed=FLOOR_SEED,
+                    batch_size=batch, on_item=progress.items(
+                        f"{FLOOR}: train-sample, {SAMPLES} at T={TEMPERATURE:g}", len(sample)))
+    _write_replies(_tmp(d / SAMPLE_FILE), [], s2, SAMPLE_MODE,
+                   {**setup, "generation_seed": FLOOR_SEED})
+    _replace(_tmp(d / SAMPLE_FILE), d / SAMPLE_FILE)
+    wall = time.perf_counter() - t0
+    info = {"label": FLOOR, "model": m.settings.model, **setup, "seed": FLOOR_SEED,
+            "samples": SAMPLES, "temperature": TEMPERATURE, "adapter": None,
+            "limits": {"sample": m.sample_limit},
+            "passes": {f"train-sample, {SAMPLES} at T={TEMPERATURE:g}": {
+                "items": len(sample), "seconds": wall}}, "wall_s": wall}
     T.write_json(d / "score.json", info)
     return info
 
@@ -262,6 +299,20 @@ def system_shape(text: str) -> list[str]:
     return (head if cut < 0 else head[:cut]).split("\n")
 
 
+def set_pins(sft_dir: Path) -> dict[str, tuple[str | None, str]]:
+    """Each pinned SFT set: (its sha256 here, ``None`` if missing; the pinned sha256)."""
+    import hashlib
+
+    from . import sft
+
+    out = {}
+    for name, want in sft.SET_SHA256.items():
+        path = sft_dir / name
+        out[name] = (hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None,
+                     want)
+    return out
+
+
 def lengths_census(lengths: list[int], max_length: int) -> dict:
     return {"rows": len(lengths), "longest": max(lengths),
             "mean": sum(lengths) / len(lengths),
@@ -269,62 +320,238 @@ def lengths_census(lengths: list[int], max_length: int) -> dict:
             f"over {max_length}": T.rows_over(lengths, max_length)}
 
 
-def worst_micro_batch(lengths: list[int], s: T.Settings, seed: int = 1) -> list[int]:
-    """The micro-batch of seed ``seed``'s plan with the most token slots (rows x longest),
-    the longest row breaking ties: the one most likely to run out of memory. Pure."""
-    best: list[int] = []
-    for st in T.plan_steps(len(lengths), seed, s.epochs, s.batch_rows):
-        for mb in T.micro_batches(st.rows, lengths, s.token_budget):
-            key = (T.padded_tokens([mb], lengths), max(lengths[i] for i in mb))
-            if not best or key > (T.padded_tokens([best], lengths),
-                                  max(lengths[i] for i in best)):
-                best = mb
-    return best
+def largest_micro_batches(lengths: list[int], s: T.Settings, seeds=(1, 2, 3),
+                          k: int = 2) -> list[list[int]]:
+    """The ``k`` micro-batches with the most token slots (rows x longest row) over the
+    seeds' plans, the longest row breaking ties, each a different set of rows: the step
+    most likely to run out of memory, as :func:`memory_probe` runs it. Pure."""
+    seen: dict[tuple[int, ...], tuple[int, int]] = {}
+    for seed in seeds:
+        for st in T.plan_steps(len(lengths), seed, s.epochs, s.batch_rows):
+            for mb in T.micro_batches(st.rows, lengths, s.token_budget):
+                seen[tuple(sorted(mb))] = (T.padded_tokens([mb], lengths),
+                                           max(lengths[i] for i in mb))
+    best = sorted(seen, key=lambda rows: (seen[rows], rows), reverse=True)[:k]
+    return [sorted(rows, key=lambda i: (-lengths[i], i)) for rows in best]
+
+
+HEADROOM = 0.85  # checkpointing stays off only if a step's peak is at most this share
+ALLOC_CONF = "expandable_segments:True"  # PYTORCH_CUDA_ALLOC_CONF for every sft-* command
+
+
+def cuda_allocator(device) -> str | None:
+    """Sets ``PYTORCH_CUDA_ALLOC_CONF`` to :data:`ALLOC_CONF` on CUDA unless it is set
+    (before the first CUDA allocation: call it before a model loads); returns what is in
+    effect, ``None`` off CUDA. main.toml also exports it for the whole run."""
+    import os
+
+    if device.type != "cuda":
+        return None
+    return os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", ALLOC_CONF)
 
 
 def memory_probe(s: T.Settings, records: list[dict], device) -> dict:
-    """Forward and backward of the worst micro-batch, as training runs it: does the token
-    budget fit without gradient checkpointing? If it runs out of memory, the same with
-    checkpointing. The answer is what training uses (``needs_checkpointing``)."""
+    """One training step as training runs it (forward and backward of the two largest
+    micro-batches, gradients accumulated, then the AdamW step) without gradient
+    checkpointing; checkpointing stays off for every run only if that step's peak is at
+    most :data:`HEADROOM` of the device's memory (CUDA: a true peak; elsewhere there is
+    no peak counter, so "ran without running out of memory"). Otherwise the same step
+    with checkpointing, which must meet the same bar. A nondeterminism error is handled
+    as training handles it (:func:`train.accumulate_or_relax`), recorded, and the strict
+    setting restored after."""
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    from .device import peak_memory_bytes, preferred_dtype, reset_peak_memory
-    from .lora import inject_lora
+    from .device import peak_memory_bytes, preferred_dtype, reset_peak_memory, total_memory_bytes
+    from .lora import inject_lora, trainable_parameters
 
     lengths = [r["n_tokens"] for r in records]
-    mb = worst_micro_batch(lengths, s)
+    mbs = largest_micro_batches(lengths, s)
+    rows = [i for mb in mbs for i in mb]
     tok = AutoTokenizer.from_pretrained(s.model)
-    enc = T.encode(tok, [records[i] for i in mb])
+    enc = T.encode(tok, [records[i] for i in rows])
+    local, k = [], 0
+    for mb in mbs:  # positions in enc
+        local.append(list(range(k, k + len(mb))))
+        k += len(mb)
+    n_scored = sum(enc.scored)
     pad = tok.pad_token_id if tok.pad_token_id is not None else tok.eos_token_id
-    out = {"rows": len(mb), "longest": max(lengths[i] for i in mb),
-           "token_slots": T.padded_tokens([mb], lengths), "budget": s.token_budget}
-    for ckpt in (False, True):
-        model = AutoModelForCausalLM.from_pretrained(s.model, dtype=preferred_dtype(device))
-        model.to(device)
-        inject_lora(model, s.targets, rank=s.rank, alpha=s.alpha,
-                    generator=torch.Generator().manual_seed(1))
-        if ckpt:
-            model.gradient_checkpointing_enable(
-                gradient_checkpointing_kwargs={"use_reentrant": False})
-        model.train()
-        reset_peak_memory(device)
-        try:
-            ids, attn, labels = T._collate(enc, list(range(len(mb))), pad, device)
-            T.token_loss_sum(model, ids, attn, labels).backward()
-            peak = peak_memory_bytes(device)
-            out.update({"needs_checkpointing": ckpt, "fits": True,
-                        "peak_gb": None if peak is None else round(peak / 1e9, 1),
-                        "peak_kind": {"cuda": "peak", "mps": "allocated after the step"}.get(
-                            device.type, "not measured")})
-            return out
-        except torch.OutOfMemoryError:
-            out[f"out of memory{' with checkpointing' if ckpt else ''}"] = True
-        finally:
-            del model
-            _free(device)
-    out.update({"needs_checkpointing": True, "fits": False})
+    total = total_memory_bytes(device)
+    out = {"micro_batches": [{"rows": len(mb), "longest": max(lengths[i] for i in mb),
+                              "token_slots": T.padded_tokens([mb], lengths)} for mb in mbs],
+           "budget": s.token_budget, "device_bytes": total, "headroom": HEADROOM,
+           "peak_rule": device.type == "cuda", "allocator": cuda_allocator(device),
+           "attempts": [], "nondeterminism": ""}
+    restore = (torch.are_deterministic_algorithms_enabled(),
+               torch.is_deterministic_algorithms_warn_only_enabled())
+    try:
+        for ckpt in (False, True):
+            model = opt = None
+            attempt = {"checkpointing": ckpt, "ran": False, "peak_bytes": None, "within": False}
+            out["attempts"].append(attempt)
+            try:
+                model = AutoModelForCausalLM.from_pretrained(s.model,
+                                                             dtype=preferred_dtype(device))
+                model.to(device)
+                inject_lora(model, s.targets, rank=s.rank, alpha=s.alpha,
+                            generator=torch.Generator().manual_seed(1))
+                if ckpt:
+                    model.gradient_checkpointing_enable(
+                        gradient_checkpointing_kwargs={"use_reentrant": False})
+                model.train()
+                opt = torch.optim.AdamW(trainable_parameters(model), lr=s.lr, betas=s.betas,
+                                        eps=s.eps, weight_decay=s.weight_decay)
+                reset_peak_memory(device)
+                _, why = T.accumulate_or_relax(
+                    model, opt, enc, local, n_scored, pad, device,
+                    "the memory probe" + (" with checkpointing" if ckpt else ""))
+                out["nondeterminism"] = out["nondeterminism"] or why
+                opt.step()
+                peak = peak_memory_bytes(device)
+                opt.zero_grad(set_to_none=True)
+                attempt.update({"ran": True, "peak_bytes": peak})
+                attempt["within"] = (not out["peak_rule"]) or (
+                    peak is not None and total is not None and peak <= HEADROOM * total)
+            except torch.OutOfMemoryError:
+                attempt["out_of_memory"] = True
+            finally:
+                del model, opt
+                _free(device)
+            if attempt["within"]:
+                break
+    finally:
+        torch.use_deterministic_algorithms(restore[0], warn_only=restore[1])
+    last = out["attempts"][-1]
+    out["needs_checkpointing"] = last["checkpointing"]
+    out["fits"] = last["within"]
     return out
+
+
+def _print_memory(rep, mem: dict, model: str, device) -> None:
+    """sft-check's memory section, from :func:`memory_probe`'s record."""
+    gb = lambda b: "-" if b is None else f"{b / 1e9:.1f} GB"  # noqa: E731
+    rep.kv("model", model)
+    for j, mb in enumerate(mem["micro_batches"], 1):
+        rep.kv(f"micro-batch {j}", f"{mb['rows']} rows x {mb['longest']:,} tokens "
+               f"= {mb['token_slots']:,} slots")
+    rep.kv("token budget", f"{mem['budget']:,}")
+    rep.kv("the step", "both micro-batches, then AdamW")
+    rep.kv("device memory", gb(mem["device_bytes"]))
+    if mem["peak_rule"]:
+        rep.kv(f"limit ({mem['headroom']:.0%} of it)", gb(mem["headroom"] * mem["device_bytes"]))
+    if mem["allocator"] is not None:
+        rep.kv("PYTORCH_CUDA_ALLOC_CONF", mem["allocator"])
+    peak_kind = {"cuda": "peak", "mps": "after the step"}.get(device.type, "not measured")
+    rows = []
+    for a in mem["attempts"]:
+        result = ("out of memory" if a.get("out_of_memory") else
+                  "yes" if a["within"] else "no")
+        rows.append(["on" if a["checkpointing"] else "off",
+                     gb(a["peak_bytes"]) if a["ran"] else "-", result])
+    rep.table(["checkpointing", f"memory ({peak_kind})",
+               "within the limit" if mem["peak_rule"] else "ran"], rows)
+    rep.kv("gradient checkpointing", "needed: on" if mem["needs_checkpointing"] else
+           "not needed: off")
+    rep.kv("fits", "yes" if mem["fits"] else "no")
+    if mem["nondeterminism"]:
+        rep.note(mem["nondeterminism"], wrap=True)
+    if mem["peak_rule"]:
+        rep.note("Training reads this: checkpointing is off for every run only if")
+        rep.note(f"this step's peak without it is at most {mem['headroom']:.0%} of the device.")
+    else:
+        rep.note(f"No peak counter on {device.type}: checkpointing is off if the step")
+        rep.note(f"ran (the {mem['headroom']:.0%} rule applies on CUDA). Training reads this.")
+
+
+# The merge check with a nonzero B (T8 review S3). B = 0 merges to W whatever the scaling,
+# orientation or module, so it can't fail for the reasons a trained adapter's merge would.
+MERGE_B_SCALE = 1e-2  # B = this x N(0, 1): an effect on the logits well above rounding
+MERGE_B_SEED = 2  # A is drawn as training draws it (seed 1); B from its own generator
+MERGE_PER_KIND = 2  # dev tasks of each kind; every position's logits is compared
+MERGE_TOLERANCE = 1e-2  # relative gap, merged vs LoRA model, in float32
+MERGE_CONTRAST = 1.25  # a merge with this x the scaling: what a wrong merge looks like
+
+
+class LogitGap:
+    """Merged vs LoRA-wrapped logits, pooled over prompts and positions. The relative gap
+    is |merged - LoRA| / |LoRA - base| (Frobenius norms over every logit): the error as
+    a share of the adapter's own effect, 0 for a right merge up to rounding, 1 for a
+    merge that did nothing. Pure (tensors in, numbers out)."""
+
+    def __init__(self) -> None:
+        self.gap_sq = self.effect_sq = 0.0
+        self.max_abs = 0.0
+        self.argmax_same = self.positions = 0
+
+    def add(self, merged, lora, base) -> None:
+        d = (merged.float() - lora.float())
+        self.gap_sq += float((d * d).sum())
+        e = (lora.float() - base.float())
+        self.effect_sq += float((e * e).sum())
+        self.max_abs = max(self.max_abs, float(d.abs().max()))
+        self.argmax_same += int((merged.argmax(-1) == lora.argmax(-1)).sum())
+        self.positions += int(merged.shape[0])
+
+    @property
+    def relative(self) -> float:
+        return (self.gap_sq / self.effect_sq) ** 0.5 if self.effect_sq else float("inf")
+
+
+def merge_check_random_b(s: T.Settings, model_id: str, texts: list[str], device) -> dict:
+    """An adapter with A drawn as training draws it and B = :data:`MERGE_B_SCALE` x N(0, 1),
+    saved and merged with :func:`lora.merge_into` (the scoring path's merge), against the
+    LoRA-wrapped model: logits at every position of ``texts``. In float32: bf16 rounding
+    of W + (alpha/r) BA moves the logits by as much as a merge a fraction off in scale
+    would, so no bf16 tolerance could separate them; the cast to the weights' dtype, the
+    one step this leaves out, is what the B = 0 check runs. Contrasts: the merge at
+    :data:`MERGE_CONTRAST` x the scaling, and the base model (a merge that did nothing)."""
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    from .lora import adapter_state, inject_lora, merge_into, randomize_b
+
+    def load():
+        m = AutoModelForCausalLM.from_pretrained(model_id, dtype=torch.float32)
+        m.to(device)
+        m.eval()
+        return m
+
+    tok = AutoTokenizer.from_pretrained(model_id)
+    lora = load()
+    wrapped = inject_lora(lora, s.targets, rank=s.rank, alpha=s.alpha,
+                          generator=torch.Generator().manual_seed(1))
+    randomize_b(wrapped, MERGE_B_SCALE, torch.Generator().manual_seed(MERGE_B_SEED))
+    state = adapter_state(wrapped)
+    merged, off = load(), load()
+    n = merge_into(merged, state, s.scaling)
+    merge_into(off, state, s.scaling * MERGE_CONTRAST)
+    right, wrong, none = LogitGap(), LogitGap(), LogitGap()
+    try:
+        with torch.no_grad():
+            for text in texts:
+                ids = tok(text, return_tensors="pt", add_special_tokens=False)["input_ids"]
+                ids = ids.to(device)
+                lo = lora(input_ids=ids).logits[0].float()
+                for a in wrapped.values():
+                    a.scaling = 0.0  # the LoRA path x 0: exactly the base model
+                base = lora(input_ids=ids).logits[0].float()
+                for a in wrapped.values():
+                    a.scaling = s.scaling
+                right.add(merged(input_ids=ids).logits[0], lo, base)
+                wrong.add(off(input_ids=ids).logits[0], lo, base)
+                none.add(base, lo, base)
+                del lo, base
+    finally:
+        del lora, wrapped, merged, off
+        _free(device)
+    rows = {"merged": right, f"merged, {MERGE_CONTRAST:g} x the scaling": wrong,
+            "base (nothing merged)": none}
+    return {"model": model_id, "prompts": len(texts), "modules": n, "dtype": "float32",
+            "b_scale": MERGE_B_SCALE, "tolerance": MERGE_TOLERANCE,
+            "rows": {k: {"relative": g.relative, "max_abs": g.max_abs,
+                         "argmax_same": g.argmax_same, "positions": g.positions}
+                     for k, g in rows.items()},
+            "passes": right.relative <= MERGE_TOLERANCE < wrong.relative}
 
 
 def run_check(root: Path, quick: bool, model: str | None, dev_limit: int | None,
@@ -346,6 +573,7 @@ def run_check(root: Path, quick: bool, model: str | None, dev_limit: int | None,
     dev_limit = dev_limit if dev_limit is not None else m.dev_limit
     device = get_device()
     determinism = set_determinism(device)
+    cuda_allocator(device)  # before any model loads
     batch = batch_size or default_batch_size(device.type)
     m.out.mkdir(parents=True, exist_ok=True)
     rep = Report("tinytools sft-check" + (" --quick (not for publication)" if quick else ""),
@@ -384,6 +612,16 @@ def run_check(root: Path, quick: bool, model: str | None, dev_limit: int | None,
     checks["template"] = {"model": main_model, "rendered_with": made_with, "files": template,
                           "identical": ok}
 
+    # 1b. the sets are the Mac's bytes (T8 review S4)
+    rep.section("The SFT sets: sha256 against the Mac's")
+    pins = set_pins(SFT_DIR)
+    rep.table(["file", "sha256 (first 16)", "as pinned"],
+              [[f"data/sft/{name}", (h or "missing")[:16], h == want]
+               for name, (h, want) in pins.items()])
+    pinned = all(h == want for h, want in pins.values())
+    rep.kv("all four as pinned (sft.py)", pinned)
+    checks["sha256"] = {name: {"sha256": h, "pinned": want} for name, (h, want) in pins.items()}
+
     # 2. lengths, scored tokens, <|im_end|>
     s = m.settings
     rep.section("Row lengths (tokens), the real arm")
@@ -411,20 +649,10 @@ def run_check(root: Path, quick: bool, model: str | None, dev_limit: int | None,
     checks["lengths"] = census | {"tokens": sum(lengths), "scored": scored,
                                   "assistant_turns": turns, "im_end_scored": closed}
 
-    # 2b. memory: does the token budget fit without gradient checkpointing?
-    rep.section("Memory: the largest micro-batch, forward and backward")
+    # 2b. memory: one training step on the two largest micro-batches (T8 review B1)
+    rep.section("Memory: one training step, the two largest micro-batches")
     mem = memory_probe(s, real if s.rows is None else real[:s.rows], device)
-    rep.kv("model", s.model)
-    rep.kv("micro-batch", f"{mem['rows']} rows x {mem['longest']} tokens "
-           f"= {mem['token_slots']:,} slots")
-    rep.kv("token budget", f"{mem['budget']:,}")
-    rep.kv("fits", "yes" if mem["fits"] else "no, not even with checkpointing")
-    rep.kv("gradient checkpointing", "needed: on" if mem["needs_checkpointing"] else
-           "not needed: off")
-    if mem.get("peak_gb") is not None:
-        rep.kv(f"memory ({mem['peak_kind']})", f"{mem['peak_gb']} GB")
-    rep.note("Training reads this: checkpointing is on for every run if, and")
-    rep.note("only if, this micro-batch did not fit without it.")
+    _print_memory(rep, mem, s.model, device)
     checks["memory"] = mem
 
     # 3. the system prompt's shape: training rows, our tasks, BFCL
@@ -463,7 +691,7 @@ def run_check(root: Path, quick: bool, model: str | None, dev_limit: int | None,
     if len(dev) < len(splits["dev"]):
         rep.note(f"(the first {dev_limit} of each kind, of {len(splits['dev'])})")
     rep.kv("batch size", batch)
-    rep.kv("determinism", determinism)
+    rep.kv("determinism", determinism, wrap=True)
     tok_m, lm = bfcl.load_model(model, device)
     base = ours.score(tok_m, lm, dev, samples=1, temperature=0.0, seed=SEED, batch_size=batch,
                       on_item=progress.items("merge check: base model", len(dev)))
@@ -495,6 +723,28 @@ def run_check(root: Path, quick: bool, model: str | None, dev_limit: int | None,
     checks["merge_b0"] = {"model": model, "tasks": len(dev), "identical": identical,
                           "modules": n_mod, "weights_equal": same_w, "batch_size": batch,
                           "device": device.type}
+
+    # 4b. the merge check with a nonzero B: logits, merged vs the LoRA model (T8 review S3)
+    rep.section("Merging an adapter with random B: logits vs the LoRA model")
+    few = ours.limit_per_kind(splits["dev"], MERGE_PER_KIND)
+    mg = merge_check_random_b(s, model, [ours.prompt(tok_m, t) for t in few], device)
+    rep.kv("model", model)
+    rep.kv("prompts", f"{len(few)} dev tasks, {MERGE_PER_KIND} per kind")
+    rep.kv("compared", "the logits at every position")
+    rep.kv("adapter", f"A: seed 1; B = {MERGE_B_SCALE:g} x N(0, 1), seed {MERGE_B_SEED}")
+    rep.kv("dtype", "float32, all three models")
+    rep.kv("modules merged", mg["modules"])
+    rep.table(["vs the LoRA model", "relative gap", "max |diff|", "argmax same"],
+              [[k, f"{v['relative']:.2e}", f"{v['max_abs']:.2e}",
+                f"{v['argmax_same']} of {v['positions']}"] for k, v in mg["rows"].items()])
+    rep.kv("tolerance (relative gap)", f"{MERGE_TOLERANCE:g}")
+    rep.kv("passes", mg["passes"])
+    rep.note("relative gap: |merged - LoRA| / |LoRA - base| over every logit: the")
+    rep.note("error as a share of the adapter's effect (base: a merge that did")
+    rep.note("nothing, 1). Passes: the merge within the tolerance and the")
+    rep.note("mis-scaled merge outside it. In float32, so rounding is the only")
+    rep.note("gap; the cast to the weights' dtype is what the B = 0 check runs.")
+    checks["merge_random_b"] = mg
     T.write_json(m.out / "checks.json", checks)
     from dataclasses import asdict
 
@@ -505,10 +755,11 @@ def run_check(root: Path, quick: bool, model: str | None, dev_limit: int | None,
         "dtype": dtype_name(preferred_dtype(device)), "model": s.model,
         "training": {k: (list(v) if isinstance(v, tuple) else v) for k, v in asdict(s).items()},
         "gradient_checkpointing": mem["needs_checkpointing"],
+        "cuda_alloc_conf": mem["allocator"],
         "generation": {"seed": SEED, "samples": SAMPLES, "temperature": TEMPERATURE,
                        "batch_size": batch}})
-    passed = ok and census[f"over {s.max_length}"] == 0 and closed == turns \
-        and identical == len(dev) and same_w == n_mod and mem["fits"]
+    passed = ok and pinned and census[f"over {s.max_length}"] == 0 and closed == turns \
+        and identical == len(dev) and same_w == n_mod and mem["fits"] and mg["passes"]
     rep.blank()
     rep.kv("all checks pass", passed)
     rep.close()
@@ -565,7 +816,8 @@ def _score_one(root: Path, m: Mode, label: str, adapter: Path | None, device, ba
     return info
 
 
-def _header(rep, m: Mode, device, determinism: str, batch: int, deadline: float | None) -> None:
+def _header(rep, m: Mode, device, determinism: str, batch: int, deadline: float | None,
+            gen_seed: int = SEED, floor: bool = False) -> None:
     from . import bfcl
     from .engine import print_setup
 
@@ -573,12 +825,17 @@ def _header(rep, m: Mode, device, determinism: str, batch: int, deadline: float 
     rep.section("Setup")
     rep.kv("model", m.settings.model)
     rep.kv("output directory", str(m.out.name))
-    rep.kv("decoding", f"greedy; {SAMPLES} at T={TEMPERATURE:g} (train-sample)")
+    rep.kv("decoding", f"{SAMPLES} at T={TEMPERATURE:g} (train-sample only)" if floor else
+           f"greedy; {SAMPLES} at T={TEMPERATURE:g} (train-sample)")
     rep.kv("top_p / top_k / repetition penalty", "1.0 / off / 1.0")
     rep.kv("max new tokens", bfcl.MAX_NEW_TOKENS)
-    rep.kv("seed (generation)", f"{SEED} (+ task id and sample number)")
+    rep.kv("seed (generation)", f"{gen_seed} (+ task id and sample number)")
     print_setup(rep, batch, (1, SAMPLES))
-    rep.kv("determinism", determinism)
+    rep.kv("determinism", determinism, wrap=True)
+    if device.type == "cuda":
+        import os
+
+        rep.kv("PYTORCH_CUDA_ALLOC_CONF", os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "not set"))
     rep.kv("deadline", "none" if deadline is None else
            time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(deadline)))
 
@@ -604,23 +861,64 @@ def _context(root: Path, quick: bool, batch_size: int | None, token_budget: int 
     m = mode(quick, root, s)
     device = get_device()
     determinism = set_determinism(device)  # before any model loads (cuBLAS workspace)
+    cuda_allocator(device)  # likewise (the CUDA caching allocator reads it once)
     return m, device, determinism, batch_size or default_batch_size(device.type)
 
 
-def run_score(root: Path, quick: bool, adapter: Path | None, batch_size: int | None) -> int:
+def run_score(root: Path, quick: bool, adapter: Path | None, batch_size: int | None,
+              floor: bool = False) -> int:
+    """``floor``: the untrained model's train-sample samples again with generation seed
+    :data:`FLOOR_SEED` (r6a's noise floor), into ``<out>/FLOOR/``."""
+    from . import bfcl, progress
     from .report import Report
 
+    if floor and adapter is not None:
+        raise ValueError("the noise floor is the untrained model's")
     m, device, determinism, batch = _context(root, quick, batch_size)
-    label = UNTRAINED if adapter is None else adapter.parent.name
+    label = FLOOR if floor else UNTRAINED if adapter is None else adapter.parent.name
     rep = Report(f"tinytools sft-score ({label})" + (" --quick" if quick else ""),
                  out=root / "outputs" / f"sft-score-{label}{m.suffix}.txt")
-    _header(rep, m, device, determinism, batch, None)
+    _header(rep, m, device, determinism, batch, None,
+            gen_seed=FLOOR_SEED if floor else SEED, floor=floor)
+    if floor:
+        progress.status(f"loading {m.settings.model} on {device}")
+        tok, lm = bfcl.load_model(m.settings.model, device)
+        try:
+            info = score_floor(tok, lm, m, batch, _setup(device, batch))
+        finally:
+            del lm
+            _free(device)
+        _print_floor(rep, info, m.out / FLOOR)
+        rep.close()
+        return 0
     _score_one(root, m, label, adapter, device, batch, rep)
     if adapter is None:
         for p in standard_copies(m, root):
             rep.kv("copied for rescore", p.name[:40])
     rep.close()
     return 0
+
+
+def _print_floor(rep, info: dict, d: Path) -> None:
+    """The noise floor's summary: right of the samples, and the groups of 8."""
+    from . import effects as E
+    from .classify import is_right
+
+    rows = [json.loads(x) for x in (d / SAMPLE_FILE).read_text().splitlines() if x]
+    right: dict = {}
+    for r in rows:
+        right[r["id"]] = right.get(r["id"], 0) + is_right(r["outcome"])
+    rep.section(f"Scored: {FLOOR} (r6a's noise floor)")
+    rep.kv("model", f"{info['model']}, untrained")
+    rep.kv(f"train-sample, {SAMPLES} at T={TEMPERATURE:g}, right",
+           f"{sum(right.values())} of {len(rows)}")
+    groups = [E.group(v, SAMPLES) for v in right.values()]
+    rep.kv(" / ".join(E.GROUPS), " / ".join(str(groups.count(g)) for g in E.GROUPS)
+           + " tasks")
+    for name, p in info["passes"].items():
+        rep.kv(f"  {name[:31]}", f"{p['items']} items, {p['seconds'] / 60:.1f} min")
+    rep.note(f"Generation seed {FLOOR_SEED} where the untrained scoring used {SEED}: the same")
+    rep.note("model drawn again. sft-report reads r6a's movements beyond it.")
 
 
 def _train_one(root: Path, m: Mode, arm: str, seed: int, device, rep,
@@ -636,7 +934,7 @@ def _train_one(root: Path, m: Mode, arm: str, seed: int, device, rep,
     rep.kv("wall time", f"{res.seconds / 60:.1f} min")
     rep.kv("adapter tensors sha256 (first 16)", res.adapter_sha256[:16])
     if res.note:
-        rep.note(res.note)
+        rep.note(res.note, wrap=True)
     return res
 
 
@@ -781,6 +1079,22 @@ def load_scores(d: Path, by_id: dict, bfcl_items: dict) -> Scores:
     return Scores(d.name, ours, out, greedy, right, json.loads((d / "score.json").read_text()))
 
 
+def load_floor(d: Path, by_id: dict) -> dict:
+    """The noise floor's replies, re-checked: train-sample task id -> right of SAMPLES."""
+    from . import progress
+    from .checkers import check_reply
+    from .classify import is_right
+
+    progress.status(f"re-checking {d.name}")
+    right: dict = {}
+    for r in _rows(d / SAMPLE_FILE):
+        if r["pass"] != SAMPLE_MODE:
+            raise ValueError(f"{d.name}: a {r['pass']!r} reply in the noise floor")
+        ok = is_right(check_reply(r["reply"], by_id[r["id"]]["reference"]).outcome)
+        right[r["id"]] = right.get(r["id"], 0) + ok
+    return right
+
+
 def complete_seeds(out: Path) -> tuple[list[int], list[str]]:
     """Seeds whose real and control runs are both trained and scored; and the labels of
     runs left out because their pair is not whole."""
@@ -821,6 +1135,9 @@ def run_report(root: Path, quick: bool) -> int:
         if list(sc.ours) != [t["id"] for t in test] or list(sc.sample_greedy) != [
                 t["id"] for t in sample]:
             raise ValueError(f"{sc.label}: its tasks are not the report's")
+    floor = load_floor(m.out / FLOOR, by_id) if (m.out / FLOOR / "score.json").exists() else None
+    if floor is not None and list(floor) != [t["id"] for t in sample]:
+        raise ValueError(f"{FLOOR}: its tasks are not the report's")
     trains = {d.name: json.loads((d / "train.json").read_text())
               for d in sorted(m.out.iterdir()) if (d / "train.json").exists()}
     checks = json.loads((m.out / "checks.json").read_text()) if (
@@ -838,7 +1155,7 @@ def run_report(root: Path, quick: bool) -> int:
         _r5b(rep, un, sft, ctl, seeds, test, items)
         _r5c(rep, un, sft, ctl, seeds, test, items)
         _r5d(rep, un, sft, ctl, test, items)
-        _r6a(rep, un, sft, ctl, seeds, sample)
+        _r6a(rep, un, sft, ctl, seeds, sample, floor)
     rep.close()
     return 0
 
@@ -853,8 +1170,8 @@ def _report_setup(rep, m: Mode, un: Scores, seeds, partial, test, sample, items)
     if partial:
         rep.kv("left out (pair not whole)", ", ".join(partial))
     info = un.info
-    rep.kv("scoring", f"{info['engine']} engine, batch {info['batch_size']}, {info['dtype']}, "
-           f"{info['device']}")
+    rep.kv("scoring", f"{info['engine']} engine, batch {info['batch_size']}")
+    rep.kv("  dtype, device", f"{info['dtype']}, {info['device']}")
     rep.kv("decoding", f"greedy; {SAMPLES} at T={TEMPERATURE:g} on train-sample")
     rep.kv("max new tokens", info["max_new_tokens"])
     n = {k: sum(t["kind"] == k for t in test) for k in tasks.KINDS}
@@ -950,6 +1267,15 @@ def _r4c(rep, m: Mode, trains: dict, seeds: list[int], checks: dict) -> None:
                    "identical")
             rep.note(f"    ({mg['model'].split('/')[-1]}, dev tasks, batch {mg['batch_size']}, "
                      f"{mg['device']})")
+        rb, pins = checks.get("merge_random_b", {}), checks.get("sha256", {})
+        if rb:
+            gap = rb["rows"]["merged"]["relative"]
+            rep.kv("  merged random B vs LoRA", f"gap {gap:.2e} (tolerance {rb['tolerance']:g})")
+            rep.note(f"    ({rb['model'].split('/')[-1]}, {rb['prompts']} dev prompts, logits, "
+                     f"{rb['dtype']})")
+        if pins:
+            rep.kv("  SFT sets, sha256 as pinned", f"{sum(v['sha256'] == v['pinned'] for v in pins.values())} "
+                   f"of {len(pins)}")
 
 
 def _r4d(rep, trains: dict, seeds: list[int], out: Path) -> None:
@@ -970,7 +1296,7 @@ def _r4d(rep, trains: dict, seeds: list[int], out: Path) -> None:
     rep.note("loading included (varies run to run).")
     notes = {t.get("note") for t in trains.values()} - {"", None}
     for n in notes:
-        rep.note(n)
+        rep.note(n, wrap=True)
     rep.blank()
     if rep_label in trains:
         first = run_label("real", seeds[0])
@@ -1170,25 +1496,53 @@ def _r5d(rep, un, sft, ctl, test, items) -> None:
     rep.note(f"Intervals: {RESAMPLES_TEXT}, over tasks.")
 
 
-def _r6a(rep, un, sft, ctl, seeds, sample) -> None:
+def _r6a_head(rep, sample) -> tuple[list[str], list[str]]:
+    """r6a's first lines (what it counts); returns (call-needing ids, all ids)."""
+    from . import tasks
+
+    g = SAMPLES
+    call_ids = [t["id"] for t in sample if t["kind"] != tasks.NO_FIT]
+    all_ids = [t["id"] for t in sample]
+    n = {k: sum(t["kind"] == k for t in sample) for k in tasks.KINDS}
+    rep.kv("train-sample tasks", f"{len(sample)} ("
+           + " / ".join(str(n[k]) for k in tasks.KINDS) + ")")
+    rep.kv("samples", f"{g} per task at T={TEMPERATURE:g}, seed {SEED}")
+    rep.kv("reward", "execution match (declining is right")
+    rep.note("                                     on no-tool-fits tasks)")
+    rep.note(f"all wrong: 0 of {g} right; all right: {g} of {g}; mixed: the rest (a")
+    rep.note("reward's signal). Two denominators: the tasks that need a call")
+    rep.note(f"({len(call_ids)}, as Milestone 0's rule (c)) and all kinds ({len(all_ids)}).")
+    return call_ids, all_ids
+
+
+def _transition_rows(un_rights, scope_rows, g: int) -> list[list]:
+    """The transition table's rows: per scope (label, ids, per-seed rights by id), the
+    untrained group (rows) by the other's group (columns), summed over its seeds."""
+    from . import effects as E
+
+    table = []
+    for label, ids, xs in scope_rows:
+        if not ids:
+            continue
+        t = E.add_tables([E.transitions([un_rights[i] for i in ids], [x[i] for i in ids], g)
+                          for x in xs])
+        for j, frm in enumerate(E.GROUPS):
+            table.append([label if j == 0 else "", frm, *[t[(frm, to)] for to in E.GROUPS],
+                          sum(t[(frm, to)] for to in E.GROUPS)])
+    return table
+
+
+def _r6a(rep, un, sft, ctl, seeds, sample, floor: dict | None = None) -> None:
     from . import effects as E
     from . import tasks
     from .ours import MIXED_HEADERS, histogram, mixed_rows, pass_at_k, pct
 
     g = SAMPLES
-    call_ids = [t["id"] for t in sample if t["kind"] != tasks.NO_FIT]
-    all_ids = [t["id"] for t in sample]
-    scopes = [("need a call", call_ids), ("all kinds", all_ids)]
     rep.section(f"Groups of {g} on post 10's training tasks (r6a)")
-    n = {k: sum(t["kind"] == k for t in sample) for k in tasks.KINDS}
-    rep.kv("tasks", f"{len(sample)} train-sample tasks ("
-           + " / ".join(str(n[k]) for k in tasks.KINDS) + ")")
-    rep.kv("samples", f"{g} per task at T={TEMPERATURE:g}, seed {SEED}")
-    rep.kv("reward", "execution match (declining is right")
-    rep.note("                                     on no-tool-fits tasks)")
-    rep.note("all wrong: 0 of 8 right; all right: 8 of 8; mixed: the rest (a")
-    rep.note("reward's signal). Two denominators: the tasks that need a call")
-    rep.note(f"({len(call_ids)}, as Milestone 0's rule (c)) and all kinds ({len(all_ids)}).")
+    call_ids, all_ids = _r6a_head(rep, sample)
+    scopes = [("need a call", call_ids), ("all kinds", all_ids)]
+    kinds = [(tasks.SHORT_KIND[k], [t["id"] for t in sample if t["kind"] == k])
+             for k in tasks.KINDS]
 
     arms = [("untrained", un)] + [(f"SFT {s}", x) for s, x in zip(seeds, sft, strict=True)] \
         + [(f"control {s}", x) for s, x in zip(seeds, ctl, strict=True)]
@@ -1215,23 +1569,42 @@ def _r6a(rep, un, sft, ctl, seeds, sample) -> None:
                   [[a, pct(sum(sc.sample_greedy[i] for i in ids), len(ids)),
                     pct(pass_at_k(rights(sc, ids)), len(ids))] for a, sc in arms])
 
+    # the noise floor first: the untrained model drawn again, no training (T8 review B2)
+    rep.section("r6a: untrained -> untrained again, the noise floor")
+    if floor is None:
+        rep.note(f"Not measured: {FLOOR} was not scored (sft-score --untrained")
+        rep.note("--noise-floor). The movements below are read without a baseline.")
+    else:
+        rep.note(f"Rows: the task's group untrained (generation seed {SEED}); columns: the")
+        rep.note(f"same model's {g} drawn again (generation seed {FLOOR_SEED}). No training:")
+        rep.note("every movement here is the redraw alone.")
+        rep.table(["scope", "untrained", *E.GROUPS, "total"],
+                  _transition_rows(un.sample_right, [(f"{label}", ids, [floor])
+                                                     for label, ids in scopes]
+                                   + [(k, ids, [floor]) for k, ids in kinds], g))
+        rep.blank()
+        rep.note("The movements, share of tasks with a 95% interval over tasks:")
+        for label, ids in scopes:
+            rows = []
+            for (frm, to), _ in E.MOVEMENTS:
+                v = E.movement_values(rights(un, ids), [[floor[i] for i in ids]], g, (frm, to))
+                lo, hi = E.bootstrap_interval(v)
+                rows.append([f"{frm} -> {to}", E.percent(E.exact_mean(v, 1)),
+                             E.share_interval(lo, hi)])
+            rep.blank()
+            rep.table([f"movement, {label}", f"share of {len(ids)}", "95% interval, %"], rows)
+
     for arm, runs in (("SFT", sft), ("control", ctl)):
         rep.section(f"r6a: untrained -> {arm}, task by task")
         rep.note(f"Rows: the task's group untrained; columns: under {arm}. Pooled:")
         rep.note(f"summed over the {len(runs)} seed{'s' if len(runs) > 1 else ''} (each task once per seed).")
-        table = []
-        scope_rows = [(f"pooled, {label}", ids, runs) for label, ids in scopes]
-        scope_rows += [(f"seed {s}, all", all_ids, [x]) for s, x in zip(seeds, runs, strict=True)]
-        scope_rows += [(f"{tasks.SHORT_KIND[k]}", [t["id"] for t in sample if t["kind"] == k],
-                        runs) for k in tasks.KINDS]
-        for label, ids, xs in scope_rows:
-            if not ids:
-                continue
-            t = E.add_tables([E.transitions(rights(un, ids), rights(x, ids), g) for x in xs])
-            for j, frm in enumerate(E.GROUPS):
-                table.append([label if j == 0 else "", frm, *[t[(frm, to)] for to in E.GROUPS],
-                              sum(t[(frm, to)] for to in E.GROUPS)])
-        rep.table(["scope", "untrained", *E.GROUPS, "total"], table)
+        per_run = [x.sample_right for x in runs]
+        scope_rows = [(f"pooled, {label}", ids, per_run) for label, ids in scopes]
+        scope_rows += [(f"seed {s}, {label}", ids, [x.sample_right])
+                       for s, x in zip(seeds, runs, strict=True) for label, ids in scopes]
+        scope_rows += [(k, ids, per_run) for k, ids in kinds]
+        rep.table(["scope", "untrained", *E.GROUPS, "total"],
+                  _transition_rows(un.sample_right, scope_rows, g))
         rep.note("By kind: pooled over seeds, all kinds' rows above split three ways.")
 
         rep.blank()
@@ -1247,22 +1620,46 @@ def _r6a(rep, un, sft, ctl, seeds, sample) -> None:
         rep.table(["tasks", "group", "untrained", arm, "points", "95% interval"], rows)
 
         rep.blank()
-        rep.note("The movements (plan 3d), share of tasks (seed mean) with a 95%")
-        rep.note("interval over tasks:")
+        rep.note("The movements (plan 3d), share of tasks (seed mean):")
         for (frm, to), reading in E.MOVEMENTS:
             rep.note(f"  {frm} -> {to}: {reading.format(arm=arm)}")
+        if floor is not None:
+            rep.note("floor: the same movement with no training (the redraw above);")
+            rep.note("beyond: the arm's share - the floor's, points, paired by task,")
+            rep.note("with its 95% interval. A movement is read only beyond the floor.")
+        else:
+            rep.note("(no noise floor measured: shares with a 95% interval over tasks)")
         largest = None
         for label, ids in scopes:
             rows = []
             for (frm, to), _ in E.MOVEMENTS:
-                v = E.movement_values(rights(un, ids), [rights(x, ids) for x in runs], g, (frm, to))
-                lo, hi = E.bootstrap_interval(v)
+                un_r, xs = rights(un, ids), [rights(x, ids) for x in runs]
+                v = E.movement_values(un_r, xs, g, (frm, to))
                 share_ = E.exact_mean(v, len(runs))
-                rows.append([f"{frm} -> {to}", E.percent(share_), E.share_interval(lo, hi)])
-                if label == "need a call" and (largest is None or share_ > largest[0]):
-                    largest = (share_, f"{frm} -> {to}", lo, hi)
+                if floor is None:
+                    lo, hi = E.bootstrap_interval(v)
+                    rows.append([f"{frm} -> {to}", E.percent(share_), E.share_interval(lo, hi)])
+                    key = share_
+                else:
+                    fl = E.exact_mean(E.movement_values(un_r, [[floor[i] for i in ids]], g,
+                                                        (frm, to)), 1)
+                    d = E.movement_values(un_r, xs, g, (frm, to), floor=[floor[i] for i in ids])
+                    lo, hi = E.bootstrap_interval(d)
+                    key = E.exact_mean(d, len(runs))
+                    rows.append([f"{frm} -> {to}", E.percent(share_), E.percent(fl),
+                                 E.points(key), E.interval(lo, hi)])
+                if label == "need a call" and (largest is None or key > largest[0]):
+                    largest = (key, f"{frm} -> {to}", lo, hi)
             rep.blank()
-            rep.table([f"movement, {label}", f"share of {len(ids)}", "95% interval, %"], rows)
-        if largest:
+            if floor is None:
+                rep.table([f"movement, {label}", f"share of {len(ids)}", "95% interval, %"],
+                          rows)
+            else:
+                rep.table([f"movement, {label} ({len(ids)})", arm, "floor", "beyond",
+                           "95% interval"], rows)
+        if largest and floor is not None:
+            rep.kv("largest beyond the floor", f"{largest[1]}: {E.points(largest[0])} points")
+            rep.note(f"  tasks that need a call; 95% interval {E.interval(largest[2], largest[3])}")
+        elif largest:
             rep.kv("largest, tasks that need a call", f"{largest[1]}: {E.percent(largest[0])}")
             rep.note(f"  95% interval {E.share_interval(largest[2], largest[3])}%")

@@ -23,8 +23,9 @@ uv run tinytools rescore --replies outputs/score-<...>-replies.jsonl      # no m
 uv run tinytools sft-data --seeds 1,2,3  # SFT sets -> data/sft/ (r4a, r4b)
 uv run tinytools milestone0 --quick      # Milestone 0 end to end, 0.5B, a few items (Mac check)
 uv run tinytools milestone0 --base-when-needed  # instruct models, base only if the rule needs it (A100)
-uv run tinytools sft-check --quick      # template, lengths, memory, B = 0 merge check (0.5B)
+uv run tinytools sft-check --quick      # template, sha256, lengths, memory, merge checks (0.5B)
 uv run tinytools sft-score --untrained --quick
+uv run tinytools sft-score --untrained --noise-floor --quick  # r6a's baseline (seed 1)
 uv run tinytools sft-pair --seed 1 --quick   # train real, score, train control, score
 uv run tinytools sft-train --arm real --seed 1 --repeat --quick  # determinism check
 uv run tinytools sft-report --quick     # r4c-r6a from outputs/main-quick/ (no model)
@@ -381,8 +382,9 @@ seed-1 control twin.
 
 ## Post 9's main run: SFT, scoring, the report
 
-`experiments/main.toml` (plan 3e, "T8 spec"; A100 40 GB, ~5 h expected, 8 h and $16 at most)
-runs, in order: the data; `sft-check`; `engine-check --quick`; `sft-score --untrained`; then
+`experiments/main.toml` (plan 3e, "T8 spec"; A100 40 GB, ~5.9 h expected, 8 h and $16 at
+most) runs, in order: the data; `sft-check`; `engine-check --quick`; `sft-score --untrained`;
+`sft-score --untrained --noise-floor` (r6a's baseline); then
 per seed 1, 2, 3 `sft-pair` (train real, score it, train control, score it); seed 1 real
 trained again; `sft-report`; and the untrained replies rescored into the r1-r3b captures.
 `scripts/lambda.sh estimate main` prints the live price against the caps.
@@ -395,17 +397,23 @@ split into micro-batches by a token budget of 8,192 (rows x longest row), gradie
 accumulated; loss the mean over the step's scored tokens; AdamW (0.9, 0.999), weight decay 0,
 no clipping; lr 2e-4, Hugging Face's cosine schedule with 3% warmup (32 of 1,064 steps); max
 length 3,072 with nothing cut (the longest row is 2,975). Seed N sets LoRA A's init and the
-shuffle order; real N and control N share both (the pair). Gradient checkpointing is on only if
-`sft-check`'s memory probe (the largest micro-batch, forward and backward, on the run's GPU)
-runs out of memory without it.
+shuffle order; real N and control N share both (the pair). Gradient checkpointing is off only if
+`sft-check`'s memory step (the two largest micro-batches, forward and backward, then AdamW, on
+the run's GPU, with `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`) peaks at no more than
+85% of the GPU's memory without it. Attention always gets an explicit mask, so every
+micro-batch runs the same op; if an op has no deterministic CUDA kernel, that step is redone
+with `warn_only` and the run's record says so.
 
 **Scoring** an adapter merges it: W + (alpha/r) BA in float32, cast to the weights' dtype once,
 then the batched engine (batch 64 on CUDA) runs our 1,000 test tasks greedy, BFCL's 1,116 eval
 items greedy, and the 500 train-sample tasks greedy and 8 at T=1. The unmerged adapter is
 saved beside it (post 10 needs it). `sft-check` merges an untrained adapter (B = 0) and checks
-the replies on the 200 dev tasks are the base model's, byte for byte; it also checks the
-1.5B template renders every SFT row as sft-data's 0.5B rendering did, and that every
-assistant turn's `<|im_end|>` is scored.
+the replies on the 200 dev tasks are the base model's, byte for byte, and merges an adapter
+with random B (0.01 x N(0, 1)) and checks the merged model's logits are the LoRA model's on 6
+dev prompts (float32; relative gap at most 0.01, where a merge 25% off in scale must fail);
+it also checks the four SFT sets' sha256 are the Mac's (pinned in `sft.py`), the 1.5B template
+renders every SFT row as sft-data's 0.5B rendering did, and that every assistant turn's
+`<|im_end|>` is scored.
 
 **Files**: `outputs/main/<label>/` per model (`untrained`, `real-seed<N>`, `control-seed<N>`,
 `real-seed1-repeat`): `adapter.safetensors`, `losses.jsonl`, `train.json`, the three replies
@@ -421,9 +429,10 @@ whose real and control runs are both complete, and prints r4c (settings, dtypes,
 r5a (right per arm and category, BFCL calls pooled, gains with paired intervals), r5b (six
 outcomes per arm; right function vs chance), r5c (declining), r5d (the four effects, each
 SFT - untrained, control - untrained, SFT - control, the five primary comparisons marked) and
-r6a (groups of 8 on the train-sample tasks, the untrained -> arm transition table pooled, per
-seed and by kind, share differences and the four movements with intervals; tasks that need a
-call and all kinds). Intervals: paired bootstrap over tasks, 10,000 resamples, numpy
+r6a (groups of 8 on the train-sample tasks; first the noise floor, untrained -> untrained
+drawn again with generation seed 1; then the untrained -> arm transition table pooled, per seed
+and by kind, share differences, and the four movements read beyond the floor with paired
+intervals; tasks that need a call and all kinds). Intervals: paired bootstrap over tasks, 10,000 resamples, numpy
 `default_rng(0)` afresh per comparison, 95% percentile; an arm's per-task value is the mean of
 its seeds' 0/1 (`effects.py`).
 
@@ -431,8 +440,10 @@ its seeds' 0/1 (`effects.py`).
 what has been measured (seconds per token slot of training, seconds per scoring; Milestone 0's
 probe before any) x 1.5, with 15 minutes kept for the report, work that can't finish is not
 started (exit 0, so the report still runs on the whole pairs). After each pair the job prints
-`TINYTOOLS_FETCH_NOW` and the runner fetches what exists (a checkpoint); the final fetch skips
-files a checkpoint already has unchanged.
+`TINYTOOLS_FETCH_NOW` and the runner fetches what exists (a checkpoint). Each fetch first
+touches `.run/fetch-N` on the instance; a later fetch skips a file the laptop already has only
+if it has not changed since the last completed fetch's marker (`find -cnewer`), so a file
+rewritten at the same size is fetched again.
 
 **Quick mode** (`--quick`, the Mac): Qwen2.5-0.5B-Instruct, the first 32 SFT rows (4 steps),
 2 tasks of each kind and category, into `outputs/main-quick/` and `outputs/sft*-quick.txt`. It

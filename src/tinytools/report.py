@@ -12,6 +12,14 @@ The layout is the one the series' receipts use (copied from tinyvlm): 74 columns
 report can be pasted into a Markdown code fence and read on a phone. With
 ``out``, every line also goes to that file, so a run on a remote GPU leaves
 its report next to its checkpoints.
+
+**Nothing wider than WIDTH is printed** (T8 review S1): :meth:`Report.print` raises
+``ValueError`` on a wider line, before it reaches stdout or the file, so a value that
+only the GPU prints (a CUDA flag, a full-size count) fails where it is made instead of
+landing in a capture. Values that can be long are printed with ``kv(..., wrap=True)``
+or ``note(..., wrap=True)``. The check applies to what is printed from now on; captures
+already in ``outputs/`` (``milestone0.txt``'s 97-column determinism line, from the
+Lambda run) are records of what ran and are not rewritten.
 """
 
 from __future__ import annotations
@@ -44,6 +52,10 @@ class Report:
             self._file = None
 
     def print(self, line: str = "") -> None:
+        wide = [x for x in line.split("\n") if len(x) > WIDTH]
+        if wide:
+            raise ValueError(f"a report line is {len(wide[0])} columns, over {WIDTH}: "
+                             f"{wide[0]!r}")
         print(line, flush=True)
         if self._file is not None:
             self._file.write(line + "\n")
@@ -66,17 +78,31 @@ class Report:
         self.print(title)
         self.print("-" * WIDTH)
 
-    def note(self, text: str) -> None:
-        self.print(f"  {text}")
+    def note(self, text: str, wrap: bool = False) -> None:
+        """An indented line; ``wrap``: a text of any length, wrapped to the width."""
+        if not wrap:
+            self.print(f"  {text}")
+            return
+        lead = len(text) - len(text.lstrip(" "))
+        for line in textwrap.wrap(text.strip(), width=WIDTH - 2 - lead) or [""]:
+            self.print(f"  {' ' * lead}{line}")
 
     def blank(self) -> None:
         self.print()
 
     # -- values ------------------------------------------------------------
 
-    def kv(self, label: str, value: object, width: int = 34) -> None:
-        """One aligned ``label : value`` line."""
-        self.print(f"  {label:<{width}} {self._fmt(value)}")
+    def kv(self, label: str, value: object, width: int = 34, wrap: bool = False) -> None:
+        """One aligned ``label : value`` line. ``wrap``: a long value goes on over
+        more lines, each starting at the value's column."""
+        text = self._fmt(value)
+        if not wrap:
+            self.print(f"  {label:<{width}} {text}")
+            return
+        lines = textwrap.wrap(text, width=WIDTH - width - 3) or [""]
+        self.print(f"  {label:<{width}} {lines[0]}")
+        for line in lines[1:]:
+            self.print(f"  {'':<{width}} {line}")
 
     def table(self, headers: Sequence[str], rows: Iterable[Sequence[object]]) -> None:
         """Left-aligned first column, right-aligned numeric columns."""

@@ -17,17 +17,17 @@
   "passes": {
     "ours test, greedy": {
       "items": 6,
-      "seconds": 6.967166332993656
+      "seconds": 6.645528542008833
     },
     "BFCL eval, greedy": {
       "items": 10,
-      "seconds": 11.135955457997625
+      "seconds": 11.055628667003475
     },
     "train-sample, greedy + 8 at T=1": {
       "items": 6,
-      "seconds": 33.74386987500475
+      "seconds": 33.7534112919966
     }
   },
-  "wall_s": 51.8471927500068,
+  "wall_s": 51.45476083300309,
   "adapter": null
 }

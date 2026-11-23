@@ -159,6 +159,17 @@ def merged_weight(weight: torch.Tensor, A: torch.Tensor, B: torch.Tensor,
 
 
 @torch.no_grad()
+def randomize_b(wrapped: dict[str, LoRALinear], scale: float,
+                generator: torch.Generator) -> None:
+    """Every ``B`` set to ``scale`` x a standard normal draw (on the CPU from
+    ``generator``, in module order, then moved): an adapter whose merge can be wrong in
+    a way B = 0 hides (sft-check's merge check, T8 review S3)."""
+    for m in wrapped.values():
+        b = torch.randn(tuple(m.B.shape), generator=generator, dtype=torch.float32) * scale
+        m.B.copy_(b.to(m.B.dtype).to(m.B.device))
+
+
+@torch.no_grad()
 def merge_into(model: nn.Module, state: dict[str, torch.Tensor], scaling: float) -> int:
     """Fold a saved adapter into ``model``'s plain ``nn.Linear`` weights, in place.
     Returns how many modules were merged (every adapted module must exist)."""

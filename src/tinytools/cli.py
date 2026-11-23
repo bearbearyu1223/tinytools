@@ -15,8 +15,9 @@ Commands (``tinytools <command> --help`` for each one's flags):
     figures         the post's figures, parsed from the captures, into figures/
     milestone0      six models on the dev split, the model rule's verdict, LoRA vs full timing
     engine-check    the batched engine against the one-at-a-time engine it replaced
-    sft-check       before training: template byte-identity, lengths, the B = 0 merge check
+    sft-check       before training: template, set sha256, lengths, memory, merge checks
     sft-score       score the untrained model, or a saved adapter merged into it
+                    (--noise-floor: the untrained train-sample samples again, seed 1)
     sft-train       train one LoRA adapter (--repeat: seed 1 real again, compared)
     sft-pair        one seed's pair: train real, score, train control, score
     sft-report      r4c, r4d, r5a-d, r6a from the saved runs and replies (no model)
@@ -260,7 +261,7 @@ def _bfcl_setup(rep: Report, *, model: str, split: str, limit: int | None, sampl
     rep.kv("top_p / top_k / repetition penalty", "1.0 / off / 1.0")
     rep.kv("max new tokens", bfcl.MAX_NEW_TOKENS)
     rep.kv("dtype", dtype)
-    rep.kv("determinism", determinism)
+    rep.kv("determinism", determinism, wrap=True)
     _seed_and_engine(rep, seed, engine, samples, "item")
 
 
@@ -764,7 +765,7 @@ def _score_setup(rep: Report, *, model: str, split: str, splits: dict, limit, sa
     rep.kv("top_p / top_k / repetition penalty", "1.0 / off / 1.0")
     rep.kv("max new tokens", bfcl.MAX_NEW_TOKENS)
     rep.kv("dtype", dtype)
-    rep.kv("determinism", determinism)
+    rep.kv("determinism", determinism, wrap=True)
     _seed_and_engine(rep, seed, engine, samples, "task")
     rep.kv("right means", "execution match (exact beside it)")
 
@@ -1418,8 +1419,10 @@ def cmd_sft_score(args) -> None:
 
     if args.untrained == (args.adapter is not None):
         sys.exit("give one of --untrained and --adapter")
+    if args.noise_floor and not args.untrained:
+        sys.exit("--noise-floor is the untrained model's (give --untrained)")
     sys.exit(sftrun.run_score(ROOT, args.quick, args.adapter.resolve() if args.adapter else None,
-                              args.batch_size))
+                              args.batch_size, floor=args.noise_floor))
 
 
 def cmd_sft_train(args) -> None:
@@ -1578,7 +1581,7 @@ def build_parser() -> argparse.ArgumentParser:
         s.add_argument("--grad-checkpointing", action="store_true",
                        help="recompute activations in the backward pass (off by default)")
 
-    s = sub.add_parser("sft-check", help="template byte-identity, lengths, B = 0 merge check")
+    s = sub.add_parser("sft-check", help="template, set sha256, lengths, memory, merge checks")
     s.add_argument("--quick", action="store_true", help=quick_help)
     s.add_argument("--model", default=None,
                    help="the model for the merge check (default: 1.5B instruct; --quick 0.5B)")
@@ -1593,6 +1596,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--untrained", action="store_true", help="the base model")
     s.add_argument("--adapter", type=Path, default=None,
                    help="outputs/main/<label>/adapter.safetensors (scores into its directory)")
+    s.add_argument("--noise-floor", action="store_true",
+                   help="with --untrained: only the train-sample tasks' 8 at T=1, generation "
+                        "seed 1, into untrained-gen-seed1/ (r6a's noise floor)")
     s.add_argument("--batch-size", type=int, default=None, help=BATCH_HELP)
     s.set_defaults(fn=cmd_sft_score)
 

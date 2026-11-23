@@ -272,3 +272,82 @@ def test_a_tiny_run_trained_twice_matches_and_pairs_with_its_control(tmp_path):
     shuffled.write_text("".join(reversed(control.read_text().splitlines(keepends=True))))
     with pytest.raises(ValueError):  # a control set must hold the real rows in order
         T.train(s, "control", 1, shuffled, tmp_path / "e", dev, real_path=real, on_step=quiet)
+
+
+# -- the attention mask and the nondeterminism fallback (T8 review S5) ----------------------
+
+
+def test_the_4d_mask_is_causal_and_stops_at_each_rows_end():
+    m = T.attention_mask_4d([3, 1], 3)
+    assert m.shape == (2, 1, 3, 3) and m.dtype == torch.bool
+    assert m[0, 0].tolist() == [[True, False, False], [True, True, False], [True, True, True]]
+    assert m[1, 0].tolist() == [[True, False, False]] * 3  # padding queries see the real token
+    assert bool(m.any(dim=-1).all())  # no empty query row (an all-masked row would be NaN)
+
+
+def test_the_4d_mask_gives_hugging_faces_loss_padded_or_not(tmp_path):
+    """The explicit mask is the one Hugging Face builds from a 2-D padding mask, and the
+    same attention as is_causal when nothing is padded: the loss agrees either way."""
+    from transformers import AutoModelForCausalLM
+
+    tok = _tok()
+    real, _ = _sets(tmp_path, tok)
+    model = AutoModelForCausalLM.from_pretrained(_tiny_model(tmp_path, tok),
+                                                 dtype=torch.float32)
+    enc = T.encode(tok, T.load_set(real, None))
+    pad = tok.pad_token_id
+    for batch in ([0, 5, 9], [3]):  # padded (different lengths), and one row alone
+        ids, attn4, labels = T._collate(enc, batch, pad, torch.device("cpu"))
+        attn2 = attn4[:, 0].any(dim=1).to(torch.int64)  # the row's real tokens
+        with torch.no_grad():
+            a = T.token_loss_sum(model, ids, attn4, labels)
+            b = T.token_loss_sum(model, ids, attn2, labels)
+        assert float(a) == pytest.approx(float(b), rel=1e-6, abs=1e-6)
+
+
+def test_a_nondeterminism_error_in_a_later_micro_batch_redoes_the_step(tmp_path, monkeypatch):
+    """Step 2's second micro-batch raises as an op with no deterministic CUDA kernel
+    would: the step is redone from its first micro-batch under warn_only, the run ends
+    with the adapter an uninterrupted run gives, the note says where, and the strict
+    setting is back afterwards (and after a run that fails)."""
+    tok = _tok()
+    real, _ = _sets(tmp_path, tok)
+    lengths = T.encode(tok, T.load_set(real, None)).lengths
+    s = T.Settings(model=_tiny_model(tmp_path, tok), batch_rows=4, epochs=1,
+                   token_budget=2 * max(lengths))  # two rows per micro-batch
+    dev = torch.device("cpu")
+    quiet = lambda k, loss: None  # noqa: E731
+    plain = T.train(s, "real", 1, real, tmp_path / "a", dev, on_step=quiet)
+    assert plain.micro_batches > plain.steps  # steps have more than one micro-batch
+    calls = {"n": 0}
+    orig = T.token_loss_sum
+    first = len(T.micro_batches(T.plan_steps(10, 1, 1, 4)[0].rows, lengths, s.token_budget))
+
+    def flaky(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == first + 2:  # step 2, micro-batch 2
+            raise RuntimeError("index_add_cuda_ does not have a deterministic implementation")
+        return orig(*a, **k)
+
+    monkeypatch.setattr(T, "token_loss_sum", flaky)
+    torch.use_deterministic_algorithms(True)
+    try:
+        b = T.train(s, "real", 1, real, tmp_path / "b", dev, on_step=quiet)
+        assert torch.are_deterministic_algorithms_enabled()
+        assert not torch.is_deterministic_algorithms_warn_only_enabled()
+        assert b.note.startswith("warn_only from step 2: index_add_cuda_")
+        assert b.losses == plain.losses and b.adapter_sha256 == plain.adapter_sha256
+
+        def broken(*a, **k):
+            raise RuntimeError("deterministic: always")
+
+        monkeypatch.setattr(T, "token_loss_sum", broken)
+        with pytest.raises(RuntimeError):  # raises again under warn_only: not absorbed twice
+            T.train(s, "real", 1, real, tmp_path / "c", dev, on_step=quiet)
+        assert not torch.is_deterministic_algorithms_warn_only_enabled()
+        monkeypatch.setattr(T, "token_loss_sum", lambda *a, **k: (_ for _ in ()).throw(
+            RuntimeError("CUDA out of memory")))
+        with pytest.raises(RuntimeError, match="out of memory"):  # other errors: not caught
+            T.train(s, "real", 1, real, tmp_path / "d", dev, on_step=quiet)
+    finally:
+        torch.use_deterministic_algorithms(False)

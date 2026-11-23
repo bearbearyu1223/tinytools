@@ -761,7 +761,7 @@ def run(quick: bool, models: tuple[Model, ...] | None, root: Path,
         rep.note("A model whose scoring can't finish by then (a conservative estimate")
         rep.note("from what is measured) is not started.")
     rep.kv("dtype", dtype)
-    rep.kv("determinism", determinism)
+    rep.kv("determinism", determinism, wrap=True)
     for name, v in versions.items():
         rep.kv(name, v)
 

@@ -4,15 +4,20 @@
 #   scripts/lambda.sh estimate main, then scripts/lambda.sh run main --approve <USD>
 #
 # Stages, in order (each command stops the run if it fails):
+#   0. PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True for every command (T8 review B1)
 #   1. data: toolace-convert, sft-data --seeds 1,2,3 (data/ is not in git)
-#   2. sft-check: the 1.5B template renders the 8,504 rows (and the control sets) byte for
-#      byte as sft-data's 0.5B rendering; 0 rows over 3,072 tokens; every <|im_end|> scored;
-#      the largest micro-batch's memory (decides gradient checkpointing for every run);
-#      an untrained adapter (B = 0) merged gives the base model's replies on the 200 dev
-#      tasks byte for byte. Exits 1 (and stops the run) if any check fails.
+#   2. sft-check: the four SFT sets' sha256 are the Mac's (pinned in sft.py); the 1.5B
+#      template renders the 8,504 rows (and the control sets) byte for byte as sft-data's
+#      0.5B rendering; 0 rows over 3,072 tokens; every <|im_end|> scored; one training step
+#      (the two largest micro-batches, then AdamW): checkpointing is off for every run only
+#      if its peak is at most 85% of the GPU's memory; an untrained adapter (B = 0) merged
+#      gives the base model's replies on the 200 dev tasks byte for byte; an adapter with
+#      random B merged gives the LoRA model's logits (float32, within 1e-2 of the adapter's
+#      effect). Exits 1 (and stops the run) if any check fails.
 #   3. engine-check --quick: the batched engine on CUDA bf16, as Milestone 0 ran it
 #   4. the untrained model scored: our 1,000 test tasks greedy, BFCL's 1,116 eval items
-#      greedy, the 500 train-sample tasks greedy + 8 at T=1
+#      greedy, the 500 train-sample tasks greedy + 8 at T=1; then the 500 train-sample
+#      tasks' 8 at T=1 again with generation seed 1 (r6a's noise floor, T8 review B2)
 #   5. per seed 1, 2, 3: sft-pair = train real, score it, train control, score it. A pair
 #      that can't finish before the deadline is not started (pairs stay whole); after each
 #      the job prints TINYTOOLS_FETCH_NOW and the runner fetches what exists so far
@@ -21,16 +26,22 @@
 #   7. sft-report (r4c, r4d, r5a-d, r6a; no model), and the untrained replies rescored into
 #      the r1-r3b captures (rescore, bfcl-rescore; no model)
 #
-# Hours (the arithmetic, redone from Milestone 0's A100 measurements, 2026-11-22):
+# Hours (the arithmetic, redone from Milestone 0's A100 measurements, 2026-11-22; token
+# slots as the trainer counts them, T8 review S2):
 #   setup (boot, uv sync, downloads)                         0.4 h  (plan 3e)
 #   data + sft-check + engine-check                          0.2 h
 #   scoring, 7 models x ~0.25 h                              1.75 h (1,000 x 0.08 s + 1,116 x
 #                                                                    0.33 s + 500 x 0.79 s, +
 #                                                                    500 greedy and loading)
-#   training, 7 runs x 2 epochs x ~6.4M token slots at
-#     Milestone 0's 0.297 s per 4,096 tokens (72.5 us/token) 1.8 h  (+30-40% if checkpointing)
+#   noise floor, 500 x 0.79 s                                0.1 h
+#   training, 7 runs x ~16.2M token slots per run (2 epochs; rows x the longest row of each
+#     micro-batch, padding included: planned_padded_tokens, the real set's plan; control
+#     rows are a little shorter) at Milestone 0's 0.297 s per 4,096 tokens (72.5 us/token)
+#                                                            2.3 h  (3.2 h with checkpointing,
+#                                                                    +40%)
 #   report, rescoring, final fetch                           0.2 h
-#   total                                                    ~4.4 h, ~5.0 h with checkpointing
+#   total                                                    ~5.0 h, ~5.9 h with checkpointing
+#                                                            (~$11.7 at $1.99/h)
 # expected_hours is the checkpointing case. The commands get the deadline
 # ($TINYTOOLS_DEADLINE_EPOCH: max_hours less the runner's 10-minute reserve) and estimate,
 # from what has been measured so far x 1.5, whether a pair (or the repeat) can finish with
@@ -40,14 +51,16 @@ name = "main"
 post = 9
 instance_type = "gpu_1x_a100_sxm4"   # 40 GB; Milestone 0 ran on it
 max_hours = 8.0                      # the plan's cap (3e); hard limit, launch to termination
-expected_hours = 5.0
+expected_hours = 5.9
 cap_usd = 16                         # the plan's 8 h at $1.99/h
 commands = [
+  "export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True",
   "uv run tinytools toolace-convert",
   "uv run tinytools sft-data --seeds 1,2,3",
   "uv run tinytools sft-check --batch-size 64",
   "uv run tinytools engine-check --quick",
   "uv run tinytools sft-score --untrained --batch-size 64",
+  "uv run tinytools sft-score --untrained --noise-floor --batch-size 64",
   "echo TINYTOOLS_FETCH_NOW",
   'uv run tinytools sft-pair --seed 1 --batch-size 64 --deadline-epoch "$TINYTOOLS_DEADLINE_EPOCH"',
   "echo TINYTOOLS_FETCH_NOW",

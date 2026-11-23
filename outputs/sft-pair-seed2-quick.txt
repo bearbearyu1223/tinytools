@@ -29,7 +29,7 @@ Trained: real-seed2
 --------------------------------------------------------------------------
   rows / steps                       32 / 4 (15 micro-batches)
   loss, first / last step            0.1956 / 0.0491
-  wall time                          1.5 min
+  wall time                          1.6 min
   adapter tensors sha256 (first 16)  396a79bbce8ad2fa
 
 --------------------------------------------------------------------------
@@ -43,7 +43,7 @@ Scored: real-seed2
   train-sample, greedy, right        3 of 6
     ours test, greedy                6 items, 0.1 min
     BFCL eval, greedy                10 items, 0.2 min
-    train-sample, greedy + 8 at T=1  6 items, 0.4 min
+    train-sample, greedy + 8 at T=1  6 items, 0.3 min
   (per arm, outcome by outcome and with intervals: sft-report)
 
 --------------------------------------------------------------------------
@@ -51,7 +51,7 @@ Trained: control-seed2
 --------------------------------------------------------------------------
   rows / steps                       32 / 4 (15 micro-batches)
   loss, first / last step            1.0644 / 0.8336
-  wall time                          1.4 min
+  wall time                          1.7 min
   adapter tensors sha256 (first 16)  9bc9ea439d7a695a
 
 --------------------------------------------------------------------------

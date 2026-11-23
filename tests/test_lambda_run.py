@@ -667,3 +667,58 @@ def test_the_ssh_remote_checkpoint_and_skip_through_a_fake_ssh(repo, fake, tmp_p
     assert (run_dir / "outputs" / "demo-a.jsonl").read_text() == "pair-one\nmore\n"
     assert run_json(repo)["checkpoints"] == 1
     assert "checkpoint 1: fetched 1 files (0 unchanged)" in out.getvalue()
+
+
+def test_a_same_size_rewrite_after_a_checkpoint_is_fetched_again(repo, fake, tmp_path, shim):
+    """T8 review S6: the final fetch copies a file a checkpoint has if it changed after
+    that checkpoint's marker (.run/fetch-N, find -cnewer), whatever its size; files that
+    did not change are not copied again. Through the real SSHRemote and a fake ssh."""
+    home = tmp_path / "home"
+    fake_ssh(shim, home)
+    write_exp(repo, ["mkdir -p outputs", "echo 'verdict: AAAA' > outputs/demo-a.jsonl",
+                     "echo same > outputs/demo-b.jsonl", "echo TINYTOOLS_FETCH_NOW", "sleep 1",
+                     "echo 'verdict: BBBB' > outputs/demo-a.jsonl.tmp",
+                     "mv outputs/demo-a.jsonl.tmp outputs/demo-a.jsonl",  # written whole, renamed
+                     "echo x > outputs/demo.txt", "echo '{}' > outputs/demo-setup.json"])
+    env = env_for(fake)
+    exp, path = lr.load_experiment(repo, "demo")
+    out = io.StringIO()
+    runner = lr.Runner(repo, exp, path, lr.make_api(env, rate_wait=RATE_WAIT), env,
+                       remote_factory=lambda ip: lr.SSHRemote(ip, KEY_PATH, tmp_path / "kh"),
+                       approve=100.0, setup_script="cd ~/tinytools && " + SETUP, poll_s=0.1,
+                       boot_poll_s=0.02, reserve_s=1.0, margin_s=0.5, confirm_s=5,
+                       keep_awake=False, stream=out)
+    assert runner.run() == 0, out.getvalue()
+    run_dir = next((repo / "runs").glob("*-demo"))
+    assert (run_dir / "outputs" / "demo-a.jsonl").read_text() == "verdict: BBBB\n"
+    assert "checkpoint 1: fetched 2 files (0 unchanged)" in out.getvalue()
+    assert (runner.state.fetch_marks, runner.state.fetched_mark) == (2, 2)
+    marks = sorted(p.name for p in (home / "tinytools" / ".run").glob("fetch-*"))
+    assert marks == ["fetch-1", "fetch-2"]
+
+
+def test_a_failed_fetch_leaves_its_files_to_the_next(repo, fake, tmp_path):
+    """Only a fetch that completes moves the marker the next one compares against."""
+    class FailsAfterMarking(LocalRemote):
+        n = 0
+        seen: list = []
+
+        def fetch(self, patterns, dest, timeout, mark=1, since=None, have=()):
+            FailsAfterMarking.n += 1
+            FailsAfterMarking.seen.append((mark, since, sorted(have)))
+            if FailsAfterMarking.n == 2:  # the second checkpoint: marked, then the network
+                (self.dir / ".run" / f"fetch-{mark}").touch()
+                raise RuntimeError("blip")
+            return super().fetch(patterns, dest, timeout, mark, since, have)
+
+    FailsAfterMarking.n, FailsAfterMarking.seen = 0, []
+    write_exp(repo, ["mkdir -p outputs", "echo one > outputs/demo-a.jsonl",
+                     "echo TINYTOOLS_FETCH_NOW", "sleep 1", "echo two > outputs/demo-a.jsonl",
+                     "echo TINYTOOLS_FETCH_NOW", "sleep 1",
+                     "echo x > outputs/demo.txt", "echo '{}' > outputs/demo-setup.json"])
+    runner, out = make_runner(repo, fake, tmp_path, remote_cls=FailsAfterMarking)
+    assert runner.run() == 0, out.getvalue()
+    # the final fetch (mark 3) compares against fetch-1, the last that completed
+    assert [(m, s) for m, s, _ in FailsAfterMarking.seen] == [(1, None), (2, 1), (3, 1)]
+    run_dir = next((repo / "runs").glob("*-demo"))
+    assert (run_dir / "outputs" / "demo-a.jsonl").read_text() == "two\n"

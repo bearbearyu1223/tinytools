@@ -167,7 +167,7 @@ def run(quick: bool, batch: int | None, root: Path, sizes: Sizes | None = None) 
     rep.section("Setup")
     rep.kv("model", MODEL)
     rep.kv("dtype", dtype)
-    rep.kv("determinism", determinism)
+    rep.kv("determinism", determinism, wrap=True)
     rep.kv("greedy, our tasks", f"{len(greedy_tasks)}: first {sizes.ours_per_kind} test "
            "tasks per kind")
     rep.kv("greedy, BFCL", f"{len(items)}: first {sizes.bfcl_per_category} eval items "
@@ -246,7 +246,7 @@ def run(quick: bool, batch: int | None, root: Path, sizes: Sizes | None = None) 
             at = divergence(a, b)
             rep.blank()
             rep.note(f"{i}: {old[name].outcomes[k][0]} -> {new[name].outcomes[k][0]}"
-                     f" (first difference at character {at})")
+                     f" (first difference at character {at})", wrap=True)
             for who, text in (("one at a time", a), ("batched", b)):
                 rep.note(f"  {who:<13}: ..." + _clip(text[max(0, at - 30):at + 40]))
 

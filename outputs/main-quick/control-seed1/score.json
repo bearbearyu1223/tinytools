@@ -17,28 +17,28 @@
   "passes": {
     "ours test, greedy": {
       "items": 6,
-      "seconds": 7.72859729200718
+      "seconds": 7.150115957992966
     },
     "BFCL eval, greedy": {
       "items": 10,
-      "seconds": 10.4886892909999
+      "seconds": 10.540693667004234
     },
     "train-sample, greedy + 8 at T=1": {
       "items": 6,
-      "seconds": 31.433273125003325
+      "seconds": 31.89435204199981
     }
   },
-  "wall_s": 49.65076741699886,
+  "wall_s": 49.58541391699691,
   "adapter": "outputs/main-quick/control-seed1/adapter.safetensors",
   "modules_merged": 168,
   "adapter_sha256": "71b44b4ab734b56b0a522d1fdbeeaca504d2024e799a6bf4d315f69fb7325e24",
   "adapter_meta": {
+    "arm": "control",
+    "base_model": "Qwen/Qwen2.5-0.5B-Instruct",
+    "seed": "1",
     "data_sha256": "1a8b98c21361edc3dcc3d0e37e238b74c97e43d2dfc37c7a4f58ea83f1ec5f7f",
     "alpha": "32.0",
-    "base_model": "Qwen/Qwen2.5-0.5B-Instruct",
-    "arm": "control",
-    "seed": "1",
-    "targets": "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj",
-    "rank": "16"
+    "rank": "16",
+    "targets": "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
   }
 }

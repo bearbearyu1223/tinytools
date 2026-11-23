@@ -370,21 +370,27 @@ class LocalRemote:
             stop_session(self.proc.pid, min(wait_s, 5.0))
             self.proc.poll()
 
-    def fetch(self, patterns, dest: Path, timeout: float, skip=None) -> list[str]:
+    def fetch(self, patterns, dest: Path, timeout: float, mark: int = 1, since=None,
+              have=()) -> tuple[list[str], list[str]]:
+        """As SSHRemote.fetch: touch .run/fetch-<mark>; skip a file in ``have`` unless its
+        status changed after .run/fetch-<since>."""
         start = self.dir / ".run" / "start"
         if not start.exists():
-            return []
+            return [], []
+        (self.dir / ".run" / f"fetch-{mark}").touch()
+        prev = self.dir / ".run" / f"fetch-{since}" if since is not None else None
         t0 = start.stat().st_mtime_ns
         files = sorted({str(p.relative_to(self.dir)) for pat in patterns for p in self.dir.glob(pat)
                         if p.is_file() and p.stat().st_mtime_ns > t0})
         self.copied = []
         for f in files:
-            if (skip or {}).get(f) == (self.dir / f).stat().st_size:
-                continue  # an earlier checkpoint has it, unchanged
+            if (f in have and prev is not None and prev.exists()
+                    and (self.dir / f).stat().st_ctime_ns <= prev.stat().st_mtime_ns):
+                continue  # an earlier fetch has it, unchanged since
             (dest / f).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(self.dir / f, dest / f)
             self.copied.append(f)
-        return files
+        return files, list(self.copied)
 
 
 def timeout_shim(bin_dir: Path, enforce: bool = True) -> Path:

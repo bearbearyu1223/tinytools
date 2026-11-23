@@ -26,6 +26,24 @@
     },
     "identical": true
   },
+  "sha256": {
+    "real.jsonl": {
+      "sha256": "2cf7f25a4545d4d01dfa3c2f5d678c5d9194e20724ca417d2464b31cbdf1cdb8",
+      "pinned": "2cf7f25a4545d4d01dfa3c2f5d678c5d9194e20724ca417d2464b31cbdf1cdb8"
+    },
+    "control-seed1.jsonl": {
+      "sha256": "1a8b98c21361edc3dcc3d0e37e238b74c97e43d2dfc37c7a4f58ea83f1ec5f7f",
+      "pinned": "1a8b98c21361edc3dcc3d0e37e238b74c97e43d2dfc37c7a4f58ea83f1ec5f7f"
+    },
+    "control-seed2.jsonl": {
+      "sha256": "08d89acedda694f5ead4b943f42c866c245a5423e1e9964abc3ea406411a4fcb",
+      "pinned": "08d89acedda694f5ead4b943f42c866c245a5423e1e9964abc3ea406411a4fcb"
+    },
+    "control-seed3.jsonl": {
+      "sha256": "f5968d457419f1a89afa7582dc54acb1cb204b468c05fc2f878d09db4f2dea68",
+      "pinned": "f5968d457419f1a89afa7582dc54acb1cb204b468c05fc2f878d09db4f2dea68"
+    }
+  },
   "lengths": {
     "rows": 8504,
     "longest": 2975,
@@ -38,14 +56,34 @@
     "im_end_scored": 8571
   },
   "memory": {
-    "rows": 4,
-    "longest": 998,
-    "token_slots": 3992,
+    "micro_batches": [
+      {
+        "rows": 6,
+        "longest": 671,
+        "token_slots": 4026
+      },
+      {
+        "rows": 6,
+        "longest": 671,
+        "token_slots": 4026
+      }
+    ],
     "budget": 4096,
+    "device_bytes": 17179885568,
+    "headroom": 0.85,
+    "peak_rule": false,
+    "allocator": null,
+    "attempts": [
+      {
+        "checkpointing": false,
+        "ran": true,
+        "peak_bytes": 2239858944,
+        "within": true
+      }
+    ],
+    "nondeterminism": "",
     "needs_checkpointing": false,
-    "fits": true,
-    "peak_gb": 2.1,
-    "peak_kind": "allocated after the step"
+    "fits": true
   },
   "system_shapes": {
     "training row with a date line": [
@@ -69,11 +107,40 @@
   ],
   "merge_b0": {
     "model": "Qwen/Qwen2.5-0.5B-Instruct",
-    "tasks": 200,
-    "identical": 200,
+    "tasks": 6,
+    "identical": 6,
     "modules": 168,
     "weights_equal": 168,
     "batch_size": 8,
     "device": "mps"
+  },
+  "merge_random_b": {
+    "model": "Qwen/Qwen2.5-0.5B-Instruct",
+    "prompts": 6,
+    "modules": 168,
+    "dtype": "float32",
+    "b_scale": 0.01,
+    "tolerance": 0.01,
+    "rows": {
+      "merged": {
+        "relative": 2.1075686829076517e-05,
+        "max_abs": 0.0006241798400878906,
+        "argmax_same": 3341,
+        "positions": 3341
+      },
+      "merged, 1.25 x the scaling": {
+        "relative": 0.3345061889195732,
+        "max_abs": 6.823230743408203,
+        "argmax_same": 3150,
+        "positions": 3341
+      },
+      "base (nothing merged)": {
+        "relative": 1.0,
+        "max_abs": 14.396461486816406,
+        "argmax_same": 2793,
+        "positions": 3341
+      }
+    },
+    "passes": true
   }
 }

@@ -37,6 +37,7 @@
     "rows": 32
   },
   "gradient_checkpointing": false,
+  "cuda_alloc_conf": null,
   "generation": {
     "seed": 0,
     "samples": 8,

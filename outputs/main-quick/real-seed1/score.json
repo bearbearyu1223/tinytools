@@ -17,28 +17,28 @@
   "passes": {
     "ours test, greedy": {
       "items": 6,
-      "seconds": 7.20201837499917
+      "seconds": 9.218149542008177
     },
     "BFCL eval, greedy": {
       "items": 10,
-      "seconds": 11.092695291998098
+      "seconds": 11.134479291999014
     },
     "train-sample, greedy + 8 at T=1": {
       "items": 6,
-      "seconds": 23.594040124997264
+      "seconds": 22.88865395799803
     }
   },
-  "wall_s": 41.888950249995105,
+  "wall_s": 43.241473957998096,
   "adapter": "outputs/main-quick/real-seed1/adapter.safetensors",
   "modules_merged": 168,
   "adapter_sha256": "8b2776b2170f7dcd710d865a181faa181e38507eff74d5c9ef56a2df5fc25820",
   "adapter_meta": {
-    "seed": "1",
-    "alpha": "32.0",
-    "arm": "real",
-    "rank": "16",
-    "data_sha256": "2cf7f25a4545d4d01dfa3c2f5d678c5d9194e20724ca417d2464b31cbdf1cdb8",
     "targets": "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj",
-    "base_model": "Qwen/Qwen2.5-0.5B-Instruct"
+    "data_sha256": "2cf7f25a4545d4d01dfa3c2f5d678c5d9194e20724ca417d2464b31cbdf1cdb8",
+    "arm": "real",
+    "base_model": "Qwen/Qwen2.5-0.5B-Instruct",
+    "seed": "1",
+    "rank": "16",
+    "alpha": "32.0"
   }
 }

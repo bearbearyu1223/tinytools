@@ -20,7 +20,12 @@ The settings (:data:`MAIN`) are fixed before any result and printed in r4c:
   after its header through ``<|im_end|>``, as ``sft-data`` counted them), so a
   step's gradient doesn't depend on how it was split into micro-batches;
 * max length 3,072 tokens, no truncation: a longer row stops the run (0 are
-  longer; the longest SFT row is 2,975).
+  longer; the longest SFT row is 2,975);
+* attention always gets an explicit 4-D mask (causal and padding), so every
+  micro-batch runs the same attention op, padded or not (T8 review S5);
+* on CUDA, deterministic algorithms are on; if an op has none (in any micro-batch),
+  the step is redone from its first micro-batch with ``warn_only`` and the run's
+  record says so (``Result.note``); the setting is restored when training ends.
 
 **What a seed does.** The real set has no randomness, so seed N sets two things:
 LoRA A's initial values (a CPU ``torch.Generator`` seeded N, drawn in module order)
@@ -229,20 +234,36 @@ def load_set(path: Path, rows: int | None) -> list[dict]:
     return out
 
 
+def attention_mask_4d(lengths: list[int], width: int):
+    """The micro-batch's attention as a (rows, 1, width, width) boolean mask: query q
+    of a row sees key k when k <= q and k is one of the row's tokens (right padding).
+    Passed to the model as is, so every micro-batch calls attention with an explicit
+    mask: Hugging Face drops a 2-D mask with no padding and calls SDPA with is_causal
+    instead, a different kernel on CUDA (flash vs memory-efficient), so a micro-batch
+    with no padding and one with padding would run different ops (T8 review S5). This
+    is the mask Hugging Face builds for a padded micro-batch; no query row is empty."""
+    import torch
+
+    k = torch.arange(width)
+    causal = k[None, :] <= k[:, None]
+    real = torch.arange(width)[None, :] < torch.tensor(lengths, dtype=torch.int64)[:, None]
+    return (causal[None, :, :] & real[:, None, :])[:, None, :, :]
+
+
 def _collate(enc: Encoded, batch: list[int], pad: int, device):
-    """Right-padded ids, attention mask and labels for one micro-batch (int64 built on
-    the CPU, then moved: device only, no dtype change, the MPS bug)."""
+    """Right-padded ids, the 4-D attention mask (:func:`attention_mask_4d`) and labels for
+    one micro-batch (built on the CPU, then moved: device only, no dtype change, the MPS
+    bug)."""
     import torch
 
     width = max(enc.lengths[i] for i in batch)
     ids = torch.full((len(batch), width), pad, dtype=torch.int64)
-    attn = torch.zeros((len(batch), width), dtype=torch.int64)
     labels = torch.full((len(batch), width), -100, dtype=torch.int64)
     for k, i in enumerate(batch):
         n = enc.lengths[i]
         ids[k, :n] = torch.tensor(enc.ids[i], dtype=torch.int64)
-        attn[k, :n] = 1
         labels[k, :n] = torch.tensor(labels_for(enc.ids[i], enc.masks[i]), dtype=torch.int64)
+    attn = attention_mask_4d([enc.lengths[i] for i in batch], width)
     return ids.to(device), attn.to(device), labels.to(device)
 
 
@@ -257,6 +278,44 @@ def token_loss_sum(model, ids, attn, labels):
     keep = target != -100
     logits = model.lm_head(hidden[:, :-1][keep]).float()
     return F.cross_entropy(logits, target[keep], reduction="sum")
+
+
+def is_nondeterminism_error(e: BaseException) -> bool:
+    """An op with no deterministic CUDA kernel, under use_deterministic_algorithms(True)."""
+    return isinstance(e, RuntimeError) and "deterministic" in str(e)
+
+
+def accumulate(model, enc: Encoded, mbs: list[list[int]], n_scored: int, pad: int,
+               device) -> float:
+    """Forward and backward of one optimizer step's micro-batches, gradients accumulated
+    (the loss divided by the step's scored tokens); returns the summed token loss."""
+    total = 0.0
+    for mb in mbs:
+        ids, attn, labels = _collate(enc, mb, pad, device)
+        loss = token_loss_sum(model, ids, attn, labels)
+        (loss / n_scored).backward()
+        total += float(loss.detach())
+        del loss, ids, attn, labels
+    return total
+
+
+def accumulate_or_relax(model, opt, enc: Encoded, mbs: list[list[int]], n_scored: int,
+                        pad: int, device, where: str) -> tuple[float, str]:
+    """:func:`accumulate`; if an op has no deterministic kernel (in any micro-batch),
+    switch to ``warn_only``, zero the gradients and redo the step from its first
+    micro-batch (T8 review S5). Returns (summed loss, note): the note says where and why
+    it switched, "" if it didn't. The caller restores the setting (in ``finally``)."""
+    import torch
+
+    try:
+        return accumulate(model, enc, mbs, n_scored, pad, device), ""
+    except RuntimeError as e:
+        if not is_nondeterminism_error(e) or torch.is_deterministic_algorithms_warn_only_enabled():
+            raise
+        note = f"warn_only from {where}: " + str(e).split("\n")[0][:120]
+    torch.use_deterministic_algorithms(True, warn_only=True)
+    opt.zero_grad(set_to_none=True)
+    return accumulate(model, enc, mbs, n_scored, pad, device), note
 
 
 @dataclass
@@ -346,42 +405,35 @@ def train(s: Settings, arm: str, seed: int, set_path: Path, out_dir: Path, devic
     note = ""
     losses: list[float] = []
     dtypes: dict = {}
-    with open(losses_tmp, "w", encoding="utf-8") as log:
-        for k, (st, mbs) in enumerate(zip(steps, batches, strict=True)):
-            n_scored = sum(enc.scored[i] for i in st.rows)
-            total = 0.0
-            for mb in mbs:
-                ids, attn, labels = _collate(enc, mb, pad, device)
-                try:
-                    loss = token_loss_sum(model, ids, attn, labels)
-                    (loss / n_scored).backward()
-                except RuntimeError as e:  # an op with no deterministic CUDA kernel
-                    # the same ops run in every micro-batch: only the first can hit this
-                    if "deterministic" not in str(e) or note or k or mb is not mbs[0]:
-                        raise
-                    note = "warn_only: " + str(e).split("\n")[0][:120]
-                    torch.use_deterministic_algorithms(True, warn_only=True)
-                    opt.zero_grad(set_to_none=True)
-                    loss = token_loss_sum(model, ids, attn, labels)
-                    (loss / n_scored).backward()
-                total += float(loss.detach())
-            lr_now = opt.param_groups[0]["lr"]
-            opt.step()
-            sched.step()
-            if k == 0:
-                a = next(iter(wrapped.values()))
-                st0 = opt.state[a.A]
-                dtypes = {"base weights": dtype_name(a.base.weight.dtype),
-                          "activations (compute)": dtype_name(a.base.weight.dtype),
-                          "LoRA A, B": dtype_name(a.A.dtype),
-                          "gradients of A, B": dtype_name(a.A.grad.dtype),
-                          "AdamW state": dtype_name(st0["exp_avg"].dtype)}
-            opt.zero_grad(set_to_none=True)
-            losses.append(total / n_scored)
-            log.write(json.dumps({"step": k + 1, "epoch": st.epoch + 1, "loss": losses[-1],
-                                  "lr": lr_now, "rows": len(st.rows), "scored": n_scored,
-                                  "micro_batches": len(mbs)}) + "\n")
-            on_step(k, losses[-1])
+    # the determinism setting as it was: a switch to warn_only is undone in `finally`
+    restore = (torch.are_deterministic_algorithms_enabled(),
+               torch.is_deterministic_algorithms_warn_only_enabled())
+    try:
+        with open(losses_tmp, "w", encoding="utf-8") as log:
+            for k, (st, mbs) in enumerate(zip(steps, batches, strict=True)):
+                n_scored = sum(enc.scored[i] for i in st.rows)
+                total, why = accumulate_or_relax(model, opt, enc, mbs, n_scored, pad, device,
+                                                 f"step {k + 1}")
+                note = note or why
+                lr_now = opt.param_groups[0]["lr"]
+                opt.step()
+                sched.step()
+                if k == 0:
+                    a = next(iter(wrapped.values()))
+                    st0 = opt.state[a.A]
+                    dtypes = {"base weights": dtype_name(a.base.weight.dtype),
+                              "activations (compute)": dtype_name(a.base.weight.dtype),
+                              "LoRA A, B": dtype_name(a.A.dtype),
+                              "gradients of A, B": dtype_name(a.A.grad.dtype),
+                              "AdamW state": dtype_name(st0["exp_avg"].dtype)}
+                opt.zero_grad(set_to_none=True)
+                losses.append(total / n_scored)
+                log.write(json.dumps({"step": k + 1, "epoch": st.epoch + 1, "loss": losses[-1],
+                                      "lr": lr_now, "rows": len(st.rows), "scored": n_scored,
+                                      "micro_batches": len(mbs)}) + "\n")
+                on_step(k, losses[-1])
+    finally:
+        torch.use_deterministic_algorithms(restore[0], warn_only=restore[1])
     state = adapter_state(wrapped)
     meta = {"base_model": s.model, "arm": arm, "seed": str(seed), "rank": str(s.rank),
             "alpha": str(s.alpha), "targets": ",".join(s.targets), "data_sha256": data_sha}
@@ -399,8 +451,6 @@ def train(s: Settings, arm: str, seed: int, set_path: Path, out_dir: Path, devic
                  [records[i]["id"] for i in steps[0].rows], init_sha, adapter_sha, data_sha,
                  losses, time.perf_counter() - t0, note)
     write_json(out_dir / "train.json", asdict(res))
-    if note and device.type == "cuda":
-        torch.use_deterministic_algorithms(True)  # back to strict for what follows
     del model, opt
     return res
 
