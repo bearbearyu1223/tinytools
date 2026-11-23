@@ -1,0 +1,22 @@
+{
+  "label": "untrained-gen-seed1",
+  "model": "Qwen/Qwen2.5-1.5B-Instruct",
+  "dtype": "bfloat16",
+  "device": "cuda",
+  "engine": "batched",
+  "batch_size": 64,
+  "seed": 1,
+  "samples": 8,
+  "temperature": 1.0,
+  "adapter": null,
+  "limits": {
+    "sample": null
+  },
+  "passes": {
+    "train-sample, 8 at T=1": {
+      "items": 500,
+      "seconds": 371.20851689799997
+    }
+  },
+  "wall_s": 371.20851689799997
+}

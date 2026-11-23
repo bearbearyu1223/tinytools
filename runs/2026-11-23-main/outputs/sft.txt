@@ -1,0 +1,598 @@
+==========================================================================
+tinytools sft-report
+==========================================================================
+device        : cuda (NVIDIA A100-SXM4-40GB)
+torch         : 2.13.0+cu126
+platform      : Linux 6.8.0-60-generic (x86_64)
+device memory : 42.4 GB
+
+--------------------------------------------------------------------------
+Setup
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-1.5B-Instruct
+  arms                               untrained, SFT (real), control
+  seeds with a whole pair            1, 2, 3
+  scoring                            batched engine, batch 64
+    dtype, device                    bfloat16, cuda
+  decoding                           greedy; 8 at T=1 on train-sample
+  max new tokens                     512
+  our test tasks                     1000 (600 / 200 / 200)
+  BFCL eval items                    1116 (360 / 180 / 180 / 180 / 216)
+  train-sample tasks (r6a)           500
+  adapters scored                    merged into the base weights
+  W + (alpha/r) BA computed in float32, cast to the weights' dtype once.
+  checked by                         sft-report, from the saved replies
+  Every reply is re-checked here with the current checkers (ours:
+  execution match; BFCL: its AST checker), so a recapture after
+  review is this command on the saved replies.
+  intervals                          paired bootstrap over tasks
+  (bootstrap, 10,000 resamples, seed 0, 95%.)
+  An arm's per-task value is the mean of its seeds' 0/1 values.
+  Claims come from the five primary comparisons (r5d, marked);
+  every other interval is descriptive.
+
+--------------------------------------------------------------------------
+Training: settings, the same for both arms (r4c)
+--------------------------------------------------------------------------
+  model (base weights frozen)        Qwen/Qwen2.5-1.5B-Instruct
+  rows per arm                       8504
+  epochs                             2
+  optimizer steps                    1064
+  16 rows each; the last step of an epoch takes the rest.
+  effective batch                    16 rows
+    micro-batches                    token budget 8,192
+    (rows x the longest row's tokens; gradients accumulated)
+    gradient checkpointing           off
+  loss                               mean over the step's scored tokens
+  optimizer                          AdamW, betas (0.9, 0.999), eps 1e-08
+    weight decay                     0
+    gradient clipping                none
+  learning rate                      0.0002, cosine to 0
+    warmup                           3% of the steps: 32
+  LoRA                               rank 16, alpha 32, dropout 0
+    on                               q,k,v,o,gate,up,down; all layers
+    trainable parameters             18,464,768
+  dtype: base weights                bfloat16
+  dtype: activations (compute)       bfloat16
+  dtype: LoRA A, B                   float32
+  dtype: gradients of A, B           float32
+  dtype: AdamW state                 float32
+  max length                         3,072 tokens, no truncation
+    rows cut                         0
+    longest row                      2975
+  seed N sets                        LoRA A's init and the shuffle order
+  Real N and control N share both: the pair. The real set has no
+  randomness; control set N was drawn by sft-data with seed N.
+
+  tokens, one epoch      all  scored   masked  computed x2
+  ----------------------------------------------------------
+  real, seed 1       6286011  607322  5678689     16246768
+  control, seed 1    6258846  580157  5678689     16190909
+  scored: the loss is computed on them (assistant turns through
+  <|im_end|>); computed x2: token slots of both epochs with padding.
+
+  Checks (sft-check, before training):
+    template: rows identical         34016 of 34016 (4 files)
+      Qwen2.5-1.5B-Instruct vs sft-data's rendering with
+      Qwen2.5-0.5B-Instruct
+    <|im_end|> scored                8571 of 8571 assistant turns
+    system prompt before the tools section:
+      training row with a date line:
+        You are Qwen, created by Alibaba Cloud. You are a helpful \
+        assistant.
+        Today is 2022-03-20, Sunday.
+      training row without one:
+        You are Qwen, created by Alibaba Cloud. You are a helpful \
+        assistant.
+      our test task:
+        You are Qwen, created by Alibaba Cloud. You are a helpful \
+        assistant.
+        The current time is 2026-03-11 09:30, Wednesday.
+      BFCL eval item:
+        You are Qwen, created by Alibaba Cloud. You are a helpful \
+        assistant.
+    training rows with a date line   4198 of 8504
+    merged B = 0 vs base             200 of 200 replies identical
+      (Qwen2.5-1.5B-Instruct, dev tasks, batch 64, cuda)
+    merged random B vs LoRA          gap 2.73e-05 (tolerance 0.01)
+      (Qwen2.5-1.5B-Instruct, 6 dev prompts, logits, float32)
+    SFT sets, sha256 as pinned       4 of 4
+
+--------------------------------------------------------------------------
+Training runs (r4d)
+--------------------------------------------------------------------------
+  arm         seed  steps  loss, first  loss, last  minutes
+  -----------------------------------------------------------
+  real           1   1064       0.4691      0.0644     22.2
+  control        1   1064       1.2322      0.4149     22.1
+  real           2   1064       0.3244      0.0714     22.1
+  control        2   1064       1.1669      0.5154     22.1
+  real           3   1064       0.1649      0.0718     22.1
+  control        3   1064       1.0152      0.4659     22.0
+  real again     1   1064       0.4691      0.0644     22.1
+  loss: the step's mean over its scored tokens. minutes: wall clock,
+  loading included (varies run to run).
+
+  Training determinism: real-seed1 trained twice (two processes)
+    same LoRA init (A)               yes
+    same first-step rows             yes
+    losses identical, step by step   1064 of 1064
+    largest loss difference          0.000e+00
+    adapters bitwise identical       yes
+
+  The pairs: real N and control N
+  seed  same init (A)  same first-step rows
+  -------------------------------------------
+  1               yes                   yes
+  2               yes                   yes
+  3               yes                   yes
+
+--------------------------------------------------------------------------
+Right, per arm and category (r5a)
+--------------------------------------------------------------------------
+  Right replies (count; greedy), per seed:
+  category        n  untr  SFT 1  SFT 2  SFT 3  ctl 1  ctl 2  ctl 3
+  -------------------------------------------------------------------
+  choose+fill   600   373    569    571    581      1      2      0
+  tricky args   200   107    143    146    149      0      0      0
+  no tool fits  200   107     56     74      4     15     46     38
+  simple        360   326    104    138    126     20     17     24
+  multiple      180   155    143    141    146      7     12      9
+  parallel      180   146     47     71     61      0      1      0
+  par_multi     180   139    134    130    143      1      1      2
+  irrelevance   216   147    216    216    216    215    216    215
+  BFCL calls    900   766    428    480    476     28     31     35
+  no tool fits / irrelevance: right = declined. BFCL calls: simple,
+  multiple, parallel and par_multi pooled.
+
+  SFT - untrained, paired by task (SFT: mean of 3 seeds):
+  category      untrained     SFT    seed range   gain    95% interval
+  ----------------------------------------------------------------------
+  choose+fill       62.2%   95.6%    94.8-96.8%  +33.4  [+29.7, +37.2]
+  tricky args       53.5%   73.0%    71.5-74.5%  +19.5  [+13.3, +25.8]
+  no tool fits      53.5%   22.3%     2.0-37.0%  -31.2  [-37.0, -25.5]
+  simple            90.6%   34.1%    28.9-38.3%  -56.5  [-61.4, -51.4]
+  multiple          86.1%   79.6%    78.3-81.1%   -6.5   [-12.4, -0.7]
+  parallel          81.1%   33.1%    26.1-39.4%  -48.0  [-54.8, -40.9]
+  par_multi         77.2%   75.4%    72.2-79.4%   -1.9    [-8.5, +5.0]
+  irrelevance       68.1%  100.0%  100.0-100.0%  +31.9  [+25.5, +38.0]
+  BFCL calls        85.1%   51.3%    47.6-53.3%  -33.9  [-37.2, -30.4]
+
+  control - untrained, paired by task (control: mean of 3 seeds):
+  category      untrained  control   seed range   gain    95% interval
+  ----------------------------------------------------------------------
+  choose+fill       62.2%     0.2%     0.0-0.3%  -62.0  [-65.9, -58.1]
+  tricky args       53.5%     0.0%     0.0-0.0%  -53.5  [-60.5, -46.5]
+  no tool fits      53.5%    16.5%    7.5-23.0%  -37.0  [-43.2, -30.8]
+  simple            90.6%     5.6%     4.7-6.7%  -84.9  [-88.3, -81.3]
+  multiple          86.1%     5.2%     3.9-6.7%  -80.9  [-86.1, -75.4]
+  parallel          81.1%     0.2%     0.0-0.6%  -80.9  [-86.5, -75.0]
+  par_multi         77.2%     0.7%     0.6-1.1%  -76.5  [-82.4, -70.0]
+  irrelevance       68.1%    99.7%  99.5-100.0%  +31.6  [+25.5, +37.7]
+  BFCL calls        85.1%     3.5%     3.1-3.9%  -81.6  [-84.1, -79.1]
+  gain: percentage points; interval: paired bootstrap over tasks.
+
+--------------------------------------------------------------------------
+Outcomes per arm, tasks that need a call (r5b)
+--------------------------------------------------------------------------
+  ours, tasks that need a call (800), greedy:
+  arm            no call  unparse  wrong fn  wrong n  bad args  right
+  ---------------------------------------------------------------------
+  untrained          104        0        12        0       204    480
+  SFT, mean          5.0      0.0       8.0      0.3      67.0  719.7
+    seed 1             5        0         9        1        73    712
+    seed 2            10        0         7        0        66    717
+    seed 3             0        0         8        0        62    730
+  control, mean      3.7      0.0     519.3      0.7     275.3    1.0
+    seed 1             0        0       622        2       175      1
+    seed 2            10        0       463        0       325      2
+    seed 3             1        0       473        0       326      0
+
+  BFCL call items, pooled (900), greedy:
+  arm            no call  unparse  wrong fn  wrong n  bad args  right
+  ---------------------------------------------------------------------
+  untrained            1        6         6       22        99    766
+  SFT, mean        376.3      0.7      10.3      6.3      45.0  461.3
+    seed 1           413        1        10        5        43    428
+    seed 2           356        0         8        8        48    480
+    seed 3           360        1        13        6        44    476
+  control, mean    370.0      2.0     234.0     12.0     250.7   31.3
+    seed 1           376        2       245        9       240     28
+    seed 2           427        2       225       10       205     31
+    seed 3           307        2       232       17       307     35
+
+  Right function among replies that decoded to calls, beside chance
+  (1/k for k tools offered): the control's diagnostic, not an effect.
+
+  ours, tasks that need a call (k = 3-5), all seeds pooled:
+  arm              right function  chance
+  -----------------------------------------
+  untrained    684 of 696 (98.3%)   26.2%
+  SFT        2361 of 2385 (99.0%)   26.3%
+  control     831 of 2389 (34.8%)   26.3%
+
+  BFCL multiple and par_multi, all seeds pooled:
+  arm            right function  chance
+  ---------------------------------------
+  untrained  353 of 359 (98.3%)   39.7%
+  SFT        933 of 964 (96.8%)   39.2%
+  control    270 of 972 (27.8%)   39.3%
+
+--------------------------------------------------------------------------
+Declining where no tool fits, per arm (r5c)
+--------------------------------------------------------------------------
+  arm                  ours: declined  BFCL irrelevance: declined
+  -----------------------------------------------------------------
+  untrained        107 of 200 (53.5%)          147 of 216 (68.1%)
+  SFT, seed 1       56 of 200 (28.0%)         216 of 216 (100.0%)
+  SFT, seed 2       74 of 200 (37.0%)         216 of 216 (100.0%)
+  SFT, seed 3         4 of 200 (2.0%)         216 of 216 (100.0%)
+  control, seed 1    15 of 200 (7.5%)          215 of 216 (99.5%)
+  control, seed 2   46 of 200 (23.0%)         216 of 216 (100.0%)
+  control, seed 3   38 of 200 (19.0%)          215 of 216 (99.5%)
+  declined: no <tool_call> tag (right). The effect, with intervals:
+  r5d, declining.
+
+--------------------------------------------------------------------------
+The effects: three paired differences each (r5d)
+--------------------------------------------------------------------------
+  Each effect is a per-task share: on every task a reply has one
+  outcome; the variable is 1 when it is the effect's. Lower is better
+  for every effect below except "right". "SFT taught X" is read only
+  from SFT - untrained; SFT - control is the gap between the arms.
+  [primary N]: one of the five comparisons claims come from (fixed
+  before the run); every other row is descriptive.
+
+  calling when a tool fits  [primary 1]
+    1 = no call or unparseable
+    on ours, tasks that need a call, 800 tasks
+    untrained 13.0%   SFT 0.6%   control 0.5%   (seed means)
+  difference           points    95% interval  excludes 0
+  ---------------------------------------------------------
+  SFT - untrained       -12.4  [-14.7, -10.1]         yes
+  control - untrained   -12.5  [-14.8, -10.3]         yes
+  SFT - control          +0.2    [-0.2, +0.5]          no
+
+  calling when a tool fits
+    1 = no call or unparseable
+    on BFCL call items, pooled, 900 tasks
+    untrained 0.8%   SFT 41.9%   control 41.3%   (seed means)
+  difference           points    95% interval  excludes 0
+  ---------------------------------------------------------
+  SFT - untrained       +41.1  [+38.1, +44.1]         yes
+  control - untrained   +40.6  [+37.6, +43.6]         yes
+  SFT - control          +0.6    [-0.8, +1.9]          no
+
+  filling  [primary 2]
+    1 = wrong arguments
+    on ours, tasks that need a call, 800 tasks
+    untrained 25.5%   SFT 8.4%   control 34.4%   (seed means)
+  difference           points    95% interval  excludes 0
+  ---------------------------------------------------------
+  SFT - untrained       -17.1  [-20.1, -14.2]         yes
+  control - untrained    +8.9   [+4.8, +13.0]         yes
+  SFT - control         -26.0  [-29.2, -22.9]         yes
+
+  filling
+    1 = wrong arguments
+    on BFCL call items, pooled, 900 tasks
+    untrained 11.0%   SFT 5.0%   control 27.9%   (seed means)
+  difference           points    95% interval  excludes 0
+  ---------------------------------------------------------
+  SFT - untrained        -6.0    [-8.0, -4.1]         yes
+  control - untrained   +16.9  [+13.7, +20.1]         yes
+  SFT - control         -22.9  [-25.6, -20.1]         yes
+
+  right  [primary 4]
+    1 = right
+    on BFCL call items, pooled, 900 tasks
+    untrained 85.1%   SFT 51.3%   control 3.5%   (seed means)
+  difference           points    95% interval  excludes 0
+  ---------------------------------------------------------
+  SFT - untrained       -33.9  [-37.2, -30.4]         yes
+  control - untrained   -81.6  [-84.1, -79.1]         yes
+  SFT - control         +47.8  [+44.7, +50.8]         yes
+
+  declining when none fits  [primary 3]
+    1 = called anyway
+    on ours, no tool fits, 200 tasks
+    untrained 46.5%   SFT 77.7%   control 83.5%   (seed means)
+  difference           points    95% interval  excludes 0
+  ---------------------------------------------------------
+  SFT - untrained       +31.2  [+25.5, +37.0]         yes
+  control - untrained   +37.0  [+30.8, +43.2]         yes
+  SFT - control          -5.8    [-9.3, -2.3]         yes
+
+  declining when none fits  [primary 5]
+    1 = called anyway
+    on BFCL irrelevance, 216 tasks
+    untrained 31.9%   SFT 0.0%   control 0.3%   (seed means)
+  difference           points    95% interval  excludes 0
+  ---------------------------------------------------------
+  SFT - untrained       -31.9  [-38.0, -25.5]         yes
+  control - untrained   -31.6  [-37.7, -25.5]         yes
+  SFT - control          -0.3     [-0.9, 0.0]          no
+
+  choosing (harm check only)
+    1 = wrong function or wrong number of calls
+    on ours, tasks that need a call, 800 tasks
+    untrained 1.5%   SFT 1.0%   control 65.0%   (seed means)
+  difference           points    95% interval  excludes 0
+  ---------------------------------------------------------
+  SFT - untrained        -0.5    [-1.4, +0.5]          no
+  control - untrained   +63.5  [+61.0, +66.0]         yes
+  SFT - control         -64.0  [-66.3, -61.5]         yes
+
+  choosing (harm check only)
+    1 = wrong function or wrong number of calls
+    on BFCL call items, pooled, 900 tasks
+    untrained 3.1%   SFT 1.9%   control 27.3%   (seed means)
+  difference           points    95% interval  excludes 0
+  ---------------------------------------------------------
+  SFT - untrained        -1.3    [-2.5, -0.1]         yes
+  control - untrained   +24.2  [+21.4, +27.1]         yes
+  SFT - control         -25.5  [-28.2, -22.8]         yes
+
+  Intervals: bootstrap, 10,000 resamples, seed 0, 95%, over tasks.
+
+--------------------------------------------------------------------------
+Groups of 8 on post 10's training tasks (r6a)
+--------------------------------------------------------------------------
+  train-sample tasks                 500 (300 / 100 / 100)
+  samples                            8 per task at T=1, seed 0
+  reward                             execution match (declining is right
+                                       on no-tool-fits tasks)
+  all wrong: 0 of 8 right; all right: 8 of 8; mixed: the rest (a
+  reward's signal). Two denominators: the tasks that need a call
+  (400, as Milestone 0's rule (c)) and all kinds (500).
+
+  Tasks by right answers of 8, all kinds:
+  arm          0   1   2   3   4   5   6   7    8
+  -------------------------------------------------
+  untrained   93  50  22  26  22  21  29  72  165
+  SFT 1       45  24  15  21  18  20  33  54  270
+  SFT 2       43  16  13  22  21  18  33  62  272
+  SFT 3       80  19  10  11  12  19  18  55  276
+  control 1  436  20  13   8   9   5   4   3    2
+  control 2  416  21  10  12   9   7   8   8    9
+  control 3  423  16  13   9   8  13   8   6    4
+
+  Groups, tasks that need a call:
+  arm        tasks  all wrong  mixed  all right  share  per 1k
+  --------------------------------------------------------------
+  untrained    400         79    197        124  49.3%    61.6
+  SFT 1        400         17    126        257  31.5%    39.4
+  SFT 2        400         18    127        255  31.8%    39.7
+  SFT 3        400         16    108        276  27.0%    33.8
+  control 1    400        396      4          0   1.0%     1.3
+  control 2    400        396      4          0   1.0%     1.3
+  control 3    400        397      3          0   0.8%     0.9
+
+  Groups, all kinds:
+  arm        tasks  all wrong  mixed  all right  share  per 1k
+  --------------------------------------------------------------
+  untrained    500         93    242        165  48.4%    60.5
+  SFT 1        500         45    185        270  37.0%    46.3
+  SFT 2        500         43    185        272  37.0%    46.3
+  SFT 3        500         80    144        276  28.8%    36.0
+  control 1    500        436     62          2  12.4%    15.5
+  control 2    500        416     75          9  15.0%    18.8
+  control 3    500        423     73          4  14.6%    18.3
+  share: mixed / tasks; per 1k: mixed groups per 1,000 answers
+  (post 8's unit) = (1000 / 8) x share. Rounded half up.
+
+  Greedy right vs pass@8, tasks that need a call:
+  arm              greedy right              pass@8
+  ---------------------------------------------------
+  untrained  243 of 400 (60.8%)  321 of 400 (80.3%)
+  SFT 1      361 of 400 (90.3%)  383 of 400 (95.8%)
+  SFT 2      364 of 400 (91.0%)  382 of 400 (95.5%)
+  SFT 3      374 of 400 (93.5%)  384 of 400 (96.0%)
+  control 1     1 of 400 (0.3%)     4 of 400 (1.0%)
+  control 2     2 of 400 (0.5%)     4 of 400 (1.0%)
+  control 3     0 of 400 (0.0%)     3 of 400 (0.8%)
+
+  Greedy right vs pass@8, all kinds:
+  arm              greedy right              pass@8
+  ---------------------------------------------------
+  untrained  310 of 500 (62.0%)  407 of 500 (81.4%)
+  SFT 1      387 of 500 (77.4%)  455 of 500 (91.0%)
+  SFT 2      405 of 500 (81.0%)  457 of 500 (91.4%)
+  SFT 3      379 of 500 (75.8%)  420 of 500 (84.0%)
+  control 1     9 of 500 (1.8%)   64 of 500 (12.8%)
+  control 2    32 of 500 (6.4%)   84 of 500 (16.8%)
+  control 3    18 of 500 (3.6%)   77 of 500 (15.4%)
+
+--------------------------------------------------------------------------
+r6a: untrained -> untrained again, the noise floor
+--------------------------------------------------------------------------
+  Rows: the task's group untrained (generation seed 0); columns: the
+  same model's 8 drawn again (generation seed 1). No training:
+  every movement here is the redraw alone.
+  scope         untrained  all wrong  mixed  all right  total
+  -------------------------------------------------------------
+  need a call   all wrong         67     12          0     79
+                    mixed         25    140         32    197
+                all right          0     31         93    124
+  all kinds     all wrong         78     15          0     93
+                    mixed         29    174         39    242
+                all right          0     34        131    165
+  choose+fill   all wrong         51      6          0     57
+                    mixed         17     93         27    137
+                all right          0     25         81    106
+  tricky args   all wrong         16      6          0     22
+                    mixed          8     47          5     60
+                all right          0      6         12     18
+  no tool fits  all wrong         11      3          0     14
+                    mixed          4     34          7     45
+                all right          0      3         38     41
+
+  The movements, share of tasks with a 95% interval over tasks:
+
+  movement, need a call   share of 400  95% interval, %
+  -------------------------------------------------------
+  mixed -> all right              8.0%      [5.5, 10.8]
+  all wrong -> mixed              3.0%       [1.5, 4.8]
+  mixed -> all wrong              6.3%       [4.0, 8.8]
+  all wrong -> all wrong         16.8%     [13.3, 20.5]
+
+  movement, all kinds     share of 500  95% interval, %
+  -------------------------------------------------------
+  mixed -> all right              7.8%      [5.6, 10.2]
+  all wrong -> mixed              3.0%       [1.6, 4.6]
+  mixed -> all wrong              5.8%       [3.8, 8.0]
+  all wrong -> all wrong         15.6%     [12.4, 18.8]
+
+--------------------------------------------------------------------------
+r6a: untrained -> SFT, task by task
+--------------------------------------------------------------------------
+  Rows: the task's group untrained; columns: under SFT. Pooled:
+  summed over the 3 seeds (each task once per seed).
+  scope                untrained  all wrong  mixed  all right  total
+  --------------------------------------------------------------------
+  pooled, need a call  all wrong         43    113         81    237
+                           mixed          8    229        354    591
+                       all right          0     19        353    372
+  pooled, all kinds    all wrong         79    119         81    279
+                           mixed         69    297        360    726
+                       all right         20     98        377    495
+  seed 1, need a call  all wrong         14     37         28     79
+                           mixed          3     83        111    197
+                       all right          0      6        118    124
+  seed 1, all kinds    all wrong         25     40         28     93
+                           mixed         19    109        114    242
+                       all right          1     36        128    165
+  seed 2, need a call  all wrong         16     41         22     79
+                           mixed          2     80        115    197
+                       all right          0      6        118    124
+  seed 2, all kinds    all wrong         27     44         22     93
+                           mixed         16    108        118    242
+                       all right          0     33        132    165
+  seed 3, need a call  all wrong         13     35         31     79
+                           mixed          3     66        128    197
+                       all right          0      7        117    124
+  seed 3, all kinds    all wrong         27     35         31     93
+                           mixed         34     80        128    242
+                       all right         19     29        117    165
+  choose+fill          all wrong          9     90         72    171
+                           mixed          0    117        294    411
+                       all right          0      9        309    318
+  tricky args          all wrong         34     23          9     66
+                           mixed          8    112         60    180
+                       all right          0     10         44     54
+  no tool fits         all wrong         36      6          0     42
+                           mixed         61     68          6    135
+                       all right         20     79         24    123
+  By kind: pooled over seeds, all kinds' rows above split three ways.
+
+  Shares, SFT (seed mean) - untrained, paired by task:
+  tasks            group  untrained    SFT  points    95% interval
+  ------------------------------------------------------------------
+  need a call  all wrong      19.8%   4.3%   -15.5  [-19.3, -11.9]
+                   mixed      49.3%  30.1%   -19.2  [-24.7, -13.5]
+               all right      31.0%  65.7%   +34.7  [+30.1, +39.3]
+  all kinds    all wrong      18.6%  11.2%    -7.4   [-11.1, -3.8]
+                   mixed      48.4%  34.3%   -14.1   [-19.3, -9.0]
+               all right      33.0%  54.5%   +21.5  [+16.9, +26.3]
+
+  The movements (plan 3d), share of tasks (seed mean):
+    mixed -> all right: SFT taught it; RL has less left to do there
+    all wrong -> mixed: new signal
+    mixed -> all wrong: damage
+    all wrong -> all wrong: neither helps (post 10's case for RL)
+  floor: the same movement with no training (the redraw above);
+  beyond: the arm's share - the floor's, points, paired by task,
+  with its 95% interval. A movement is read only beyond the floor.
+
+  movement, need a call (400)    SFT  floor  beyond    95% interval
+  -------------------------------------------------------------------
+  mixed -> all right           29.5%   8.0%   +21.5  [+17.2, +25.9]
+  all wrong -> mixed            9.4%   3.0%    +6.4    [+3.8, +9.2]
+  mixed -> all wrong            0.7%   6.3%    -5.6    [-8.1, -3.2]
+  all wrong -> all wrong        3.6%  16.8%   -13.2   [-16.5, -9.9]
+
+  movement, all kinds (500)    SFT  floor  beyond    95% interval
+  -----------------------------------------------------------------
+  mixed -> all right         24.0%   7.8%   +16.2  [+12.4, +19.9]
+  all wrong -> mixed          7.9%   3.0%    +4.9    [+2.7, +7.3]
+  mixed -> all wrong          4.6%   5.8%    -1.2    [-3.8, +1.3]
+  all wrong -> all wrong      5.3%  15.6%   -10.3   [-13.3, -7.5]
+  largest beyond the floor           mixed -> all right: +21.5 points
+    tasks that need a call; 95% interval [+17.2, +25.9]
+
+--------------------------------------------------------------------------
+r6a: untrained -> control, task by task
+--------------------------------------------------------------------------
+  Rows: the task's group untrained; columns: under control. Pooled:
+  summed over the 3 seeds (each task once per seed).
+  scope                untrained  all wrong  mixed  all right  total
+  --------------------------------------------------------------------
+  pooled, need a call  all wrong        237      0          0    237
+                           mixed        585      6          0    591
+                       all right        367      5          0    372
+  pooled, all kinds    all wrong        266     13          0    279
+                           mixed        629     94          3    726
+                       all right        380    103         12    495
+  seed 1, need a call  all wrong         79      0          0     79
+                           mixed        196      1          0    197
+                       all right        121      3          0    124
+  seed 1, all kinds    all wrong         90      3          0     93
+                           mixed        217     25          0    242
+                       all right        129     34          2    165
+  seed 2, need a call  all wrong         79      0          0     79
+                           mixed        194      3          0    197
+                       all right        123      1          0    124
+  seed 2, all kinds    all wrong         88      5          0     93
+                           mixed        204     36          2    242
+                       all right        124     34          7    165
+  seed 3, need a call  all wrong         79      0          0     79
+                           mixed        195      2          0    197
+                       all right        123      1          0    124
+  seed 3, all kinds    all wrong         88      5          0     93
+                           mixed        208     33          1    242
+                       all right        127     35          3    165
+  choose+fill          all wrong        171      0          0    171
+                           mixed        405      6          0    411
+                       all right        313      5          0    318
+  tricky args          all wrong         66      0          0     66
+                           mixed        180      0          0    180
+                       all right         54      0          0     54
+  no tool fits         all wrong         29     13          0     42
+                           mixed         44     88          3    135
+                       all right         13     98         12    123
+  By kind: pooled over seeds, all kinds' rows above split three ways.
+
+  Shares, control (seed mean) - untrained, paired by task:
+  tasks            group  untrained  control  points    95% interval
+  --------------------------------------------------------------------
+  need a call  all wrong      19.8%    99.1%   +79.3  [+75.4, +83.2]
+                   mixed      49.3%     0.9%   -48.3  [-53.3, -43.3]
+               all right      31.0%     0.0%   -31.0  [-35.5, -26.5]
+  all kinds    all wrong      18.6%    85.0%   +66.4  [+62.2, +70.4]
+                   mixed      48.4%    14.0%   -34.4  [-39.7, -29.1]
+               all right      33.0%     1.0%   -32.0  [-36.2, -28.0]
+
+  The movements (plan 3d), share of tasks (seed mean):
+    mixed -> all right: control taught it; RL has less left to do there
+    all wrong -> mixed: new signal
+    mixed -> all wrong: damage
+    all wrong -> all wrong: neither helps (post 10's case for RL)
+  floor: the same movement with no training (the redraw above);
+  beyond: the arm's share - the floor's, points, paired by task,
+  with its 95% interval. A movement is read only beyond the floor.
+
+  movement, need a call (400)  control  floor  beyond    95% interval
+  ---------------------------------------------------------------------
+  mixed -> all right              0.0%   8.0%    -8.0   [-10.8, -5.5]
+  all wrong -> mixed              0.0%   3.0%    -3.0    [-4.8, -1.5]
+  mixed -> all wrong             48.8%   6.3%   +42.5  [+37.6, +47.3]
+  all wrong -> all wrong         19.8%  16.8%    +3.0    [+1.5, +4.8]
+
+  movement, all kinds (500)  control  floor  beyond    95% interval
+  -------------------------------------------------------------------
+  mixed -> all right            0.2%   7.8%    -7.6   [-10.1, -5.3]
+  all wrong -> mixed            0.9%   3.0%    -2.1    [-3.8, -0.6]
+  mixed -> all wrong           41.9%   5.8%   +36.1  [+31.9, +40.3]
+  all wrong -> all wrong       17.7%  15.6%    +2.1    [+0.6, +3.8]
+  largest beyond the floor           mixed -> all wrong: +42.5 points
+    tasks that need a call; 95% interval [+37.6, +47.3]

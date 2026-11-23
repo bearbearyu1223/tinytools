@@ -1,0 +1,78 @@
+==========================================================================
+tinytools sft-pair (seed 3)
+==========================================================================
+device        : cuda (NVIDIA A100-SXM4-40GB)
+torch         : 2.13.0+cu126
+platform      : Linux 6.8.0-60-generic (x86_64)
+device memory : 42.4 GB
+
+--------------------------------------------------------------------------
+Setup
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-1.5B-Instruct
+  output directory                   main
+  decoding                           greedy; 8 at T=1 (train-sample)
+  top_p / top_k / repetition penalty 1.0 / off / 1.0
+  max new tokens                     512
+  seed (generation)                  0 (+ task id and sample number)
+  engine                             batched, sorted by length
+    batch size, greedy               64 sequences
+    batch size, 8 samples            64 sequences (8 items x 8)
+  Left padding with the attention mask; a reply ends at the model's
+  eos or <|im_end|>. Seconds per item: the batch's seconds x the
+  item's share of its rows.
+  determinism                        deterministic algorithms on,
+                                     CUBLAS_WORKSPACE_CONFIG=:4096:8
+  PYTORCH_CUDA_ALLOC_CONF            expandable_segments:True
+  deadline                           2026-11-24 00:34:48 UTC
+
+--------------------------------------------------------------------------
+Trained: real-seed3
+--------------------------------------------------------------------------
+  rows / steps                       8504 / 1064 (2663 micro-batches)
+  loss, first / last step            0.1649 / 0.0718
+  wall time                          22.1 min
+  adapter tensors sha256 (first 16)  068c42c2914618da
+
+--------------------------------------------------------------------------
+Scored: real-seed3
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-1.5B-Instruct
+  adapter                            merged into the weights
+  adapter tensors sha256 (first 16)  068c42c2914618da
+  ours test, greedy, right           734 of 1000
+  BFCL eval, greedy, right           692 of 1116
+  train-sample, greedy, right        379 of 500
+    ours test, greedy                1000 items, 1.2 min
+    BFCL eval, greedy                1116 items, 1.5 min
+    train-sample, greedy + 8 at T=1  500 items, 3.9 min
+  (per arm, outcome by outcome and with intervals: sft-report)
+
+--------------------------------------------------------------------------
+Trained: control-seed3
+--------------------------------------------------------------------------
+  rows / steps                       8504 / 1064 (2643 micro-batches)
+  loss, first / last step            1.0152 / 0.4659
+  wall time                          22.0 min
+  adapter tensors sha256 (first 16)  dff0c39e3f9524fa
+
+--------------------------------------------------------------------------
+Scored: control-seed3
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-1.5B-Instruct
+  adapter                            merged into the weights
+  adapter tensors sha256 (first 16)  dff0c39e3f9524fa
+  ours test, greedy, right           38 of 1000
+  BFCL eval, greedy, right           250 of 1116
+  train-sample, greedy, right        18 of 500
+    ours test, greedy                1000 items, 0.7 min
+    BFCL eval, greedy                1116 items, 2.1 min
+    train-sample, greedy + 8 at T=1  500 items, 4.7 min
+  (per arm, outcome by outcome and with intervals: sft-report)
+
+--------------------------------------------------------------------------
+The pair: real and control, seed 3
+--------------------------------------------------------------------------
+  same LoRA init (A)                 yes
+  same first-step rows, same order   yes
+  same rows and steps                yes

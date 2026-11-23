@@ -1,0 +1,44 @@
+{
+  "label": "real-seed3",
+  "model": "Qwen/Qwen2.5-1.5B-Instruct",
+  "dtype": "bfloat16",
+  "device": "cuda",
+  "engine": "batched",
+  "batch_size": 64,
+  "seed": 0,
+  "samples": 8,
+  "temperature": 1.0,
+  "max_new_tokens": 512,
+  "limits": {
+    "ours": null,
+    "bfcl": null,
+    "sample": null
+  },
+  "passes": {
+    "ours test, greedy": {
+      "items": 1000,
+      "seconds": 73.89249632200153
+    },
+    "BFCL eval, greedy": {
+      "items": 1116,
+      "seconds": 89.57912498099904
+    },
+    "train-sample, greedy + 8 at T=1": {
+      "items": 500,
+      "seconds": 235.25792616699982
+    }
+  },
+  "wall_s": 398.729962591,
+  "adapter": "outputs/main/real-seed3/adapter.safetensors",
+  "modules_merged": 196,
+  "adapter_sha256": "068c42c2914618da2a9864d92647cf9a5fad0165d323881290f9770c87a168ac",
+  "adapter_meta": {
+    "base_model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "arm": "real",
+    "targets": "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj",
+    "rank": "16",
+    "seed": "3",
+    "alpha": "32.0",
+    "data_sha256": "2cf7f25a4545d4d01dfa3c2f5d678c5d9194e20724ca417d2464b31cbdf1cdb8"
+  }
+}

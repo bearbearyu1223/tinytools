@@ -1,0 +1,44 @@
+{
+  "label": "control-seed2",
+  "model": "Qwen/Qwen2.5-1.5B-Instruct",
+  "dtype": "bfloat16",
+  "device": "cuda",
+  "engine": "batched",
+  "batch_size": 64,
+  "seed": 0,
+  "samples": 8,
+  "temperature": 1.0,
+  "max_new_tokens": 512,
+  "limits": {
+    "ours": null,
+    "bfcl": null,
+    "sample": null
+  },
+  "passes": {
+    "ours test, greedy": {
+      "items": 1000,
+      "seconds": 42.425085395998394
+    },
+    "BFCL eval, greedy": {
+      "items": 1116,
+      "seconds": 136.73052750999886
+    },
+    "train-sample, greedy + 8 at T=1": {
+      "items": 500,
+      "seconds": 265.7144169309995
+    }
+  },
+  "wall_s": 444.87035003500023,
+  "adapter": "outputs/main/control-seed2/adapter.safetensors",
+  "modules_merged": 196,
+  "adapter_sha256": "1f339a0411026f07581cf7ac0cfee2801c0a01da3e0523bbe2ece0922148c12d",
+  "adapter_meta": {
+    "rank": "16",
+    "data_sha256": "08d89acedda694f5ead4b943f42c866c245a5423e1e9964abc3ea406411a4fcb",
+    "base_model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "arm": "control",
+    "seed": "2",
+    "alpha": "32.0",
+    "targets": "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+  }
+}
