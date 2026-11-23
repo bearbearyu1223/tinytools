@@ -29,6 +29,8 @@ uv run tinytools sft-score --untrained --noise-floor --quick  # r6a's baseline (
 uv run tinytools sft-pair --seed 1 --quick   # train real, score, train control, score
 uv run tinytools sft-train --arm real --seed 1 --repeat --quick  # determinism check
 uv run tinytools sft-report --quick     # r4c-r6a from outputs/main-quick/ (no model)
+uv run tinytools sft-check --profile base --quick  # the base arm (plan 3f): every sft-* command
+                                         # takes --profile base (0.5B base in quick mode)
 scripts/lambda.sh doctor                 # Lambda settings, SSH key, API base URL; launches nothing
 scripts/lambda.sh estimate milestone0    # price x hours against the experiment's and the post's cap
 scripts/lambda.sh run milestone0 --approve 8  # up -> setup -> run -> fetch -> down (docs/lambda-playbook.md)
@@ -448,4 +450,53 @@ rewritten at the same size is fetched again.
 **Quick mode** (`--quick`, the Mac): Qwen2.5-0.5B-Instruct, the first 32 SFT rows (4 steps),
 2 tasks of each kind and category, into `outputs/main-quick/` and `outputs/sft*-quick.txt`. It
 shows the pipeline works; its numbers are not results.
+
+
+## Post 9's base arm: the same SFT on a model with no tool calling
+
+`--profile base` (plan 3f; `experiments/base.toml`, A100 40 GB, ~4.9 h expected, 6 h and $12 at
+most) runs every `sft-*` command, and `rescore` / `bfcl-rescore` of the untrained captures, on
+Qwen2.5-1.5B (base) instead of the Instruct model: the same SFT sets (sha256-pinned), settings,
+seeds, scoring, noise floor, repeat check and report. The default profile, `main`, is the
+Instruct arm exactly as it ran (its report, regenerated from the main run's replies, is byte
+for byte the fetched `sft.txt` but for the machine header). What differs, fixed before any
+result:
+
+* **Prompts.** Every training row and every scored prompt (ours, BFCL, train-sample) is
+  rendered with the Instruct tokenizer's chat template, so it is byte for byte the Instruct
+  arm's. The base template differs only in its default system line (the base model's own
+  template would change every BFCL prompt and about half the training rows, those without
+  a date line; ours carry the system line explicitly; `sft-check` counts them). The two tokenizers split text identically (vocabulary,
+  merges, normalizer, added tokens; `train.load_tokenizer` asserts it); only the eos name
+  and the template differ. `bfcl.prompt_text` builds BFCL prompts with that tokenizer; bfcl-eval's
+  `QwenFCHandler` only decodes and judges replies.
+* **Where replies end.** The base model's generation_config stops only at `<|endoftext|>`; the
+  profile sets `<|im_end|>` and `<|endoftext|>` on every model it loads, and `sft-check` prints
+  what the engine stops at.
+* **Four embedding rows.** In the base model `<|im_start|>`, `<|im_end|>`, `<tool_call>` and
+  `</tool_call>` have the same embedding (pairwise cosine 1.0000, norm 0.414 against a median
+  1.032; the Instruct model's are distinct), and the embedding is tied to the output head, so
+  "end the turn" and "start a call" score the same from any hidden state. The base arm trains
+  a float32 delta on those rows (4 x 1,536 = 6,144 parameters, zero at the start) beside LoRA,
+  in the same AdamW group (lr, schedule, betas, weight decay 0). One parameter feeds both the
+  input embedding and the tied head (`lora.inject_rows`: one-hot products, no scatter, so CUDA's
+  deterministic mode holds). It is saved in the adapter file (`embed_rows.delta`,
+  `embed_rows.ids`; the digest covers both; metadata names the tokens and ids), and merging
+  writes E + delta into the tied embedding (float32, cast once). r4c prints the tokens, ids and
+  both parameter counts; each `sft-pair` capture prints the delta's size per row and the four
+  rows' cosines before and after.
+* **Checks** (`sft-check --profile base`, all gating): main's, with the delta in the memory
+  step and in both merges (B = 0 and delta = 0 merged gives the base model's replies byte for
+  byte; random B and a random delta merged gives the LoRA model's float32 logits, and the merge
+  without the rows must fail); plus the prompts against the Instruct arm's, the stop tokens,
+  and the four rows' identity in the base model beside the Instruct model's (the reason for
+  the delta, as a receipt).
+* **Files.** `outputs/base/` (`outputs/base-quick/` with `--quick`, on Qwen2.5-0.5B, whose rows
+  have the same defect), captures `outputs/sft*-base.txt` (`-base-quick`), the untrained copies
+  `outputs/score-Qwen2.5-1.5B-*` and `outputs/bfcl-Qwen2.5-1.5B-*`, r1's prompt in
+  `outputs/base/r1-prompt.txt`. Nothing of the main run's is overwritten.
+* **Deadline.** The untrained base model runs nearly every reply to the 512-token cap (~0.8 h to
+  score), so the base arm estimates a pair from the trained models' scoring once one is
+  measured (before that, the plan's prior), not from the untrained one's; main's rule is
+  unchanged.
 

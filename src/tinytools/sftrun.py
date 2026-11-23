@@ -26,6 +26,16 @@ file is written whole and renamed into place, so a fetch mid-run never sees half
 **Recapture after review = rescore.** ``sft-report`` re-checks every saved reply with
 the current checkers; ``sft-score --adapter`` re-scores a saved adapter. Retraining is
 needed only if the trainer changes.
+
+**Profiles** (``--profile``, ``train.PROFILES``; plan 3f). ``main`` (the default) is the
+Instruct arm, unchanged. ``base`` runs every command above on Qwen2.5-1.5B (base) into
+``outputs/base/`` (``outputs/base-quick/``, on Qwen2.5-0.5B, with ``--quick``), with
+captures named ``sft*-base.txt``: prompts and training rows in the Instruct tokenizer's
+chat template, generation stopping at ``<|im_end|>`` or ``<|endoftext|>`` (set on the
+loaded model, whatever its generation_config says), and four embedding rows trained
+beside LoRA. ``sft-check`` adds the checks the base arm needs: its prompts are the
+Instruct arm's byte for byte, the stop tokens, and the four rows' identity in the base
+model (the reason for the delta).
 """
 
 from __future__ import annotations
@@ -64,13 +74,24 @@ class Mode:
     dev_limit: int | None  # dev tasks per kind (the merge check)
     out: Path
     suffix: str  # in capture names
+    profile: str = "main"
+    tokenizer: str | None = None  # whose tokenizer and chat template (None: the model's own)
+    embed_rows: tuple[str, ...] = ()  # tokens whose embedding rows train (the base arm)
+    stop_tokens: tuple[str, ...] = ()  # set on the loaded model (the base arm)
+
+    @property
+    def title(self) -> str:
+        return T.PROFILES[self.profile].title()
 
 
-def mode(quick: bool, root: Path, settings: T.Settings | None = None) -> Mode:
-    if quick:
-        return Mode(True, settings or T.QUICK, 2, 2, 2, 2, root / "outputs" / "main-quick",
-                    "-quick")
-    return Mode(False, settings or T.MAIN, None, None, None, None, root / "outputs" / "main", "")
+def mode(quick: bool, root: Path, settings: T.Settings | None = None,
+         profile: str = "main") -> Mode:
+    p = T.PROFILES[profile]
+    s = settings or p.settings(quick)
+    tok = p.tokenizer_for(s.model) if p.tokenizer is not None else None
+    lim = 2 if quick else None
+    return Mode(quick, s, lim, lim, lim, lim, root / "outputs" / p.out_name(quick),
+                p.suffix(quick), p.name, tok, p.embed_rows, p.stop_tokens)
 
 
 def run_label(arm: str, seed: int, repeat: bool = False) -> str:
@@ -158,7 +179,8 @@ def score_model(tok, lm, label: str, m: Mode, batch: int, setup: dict,
             "samples": SAMPLES, "temperature": TEMPERATURE,
             "max_new_tokens": bfcl.MAX_NEW_TOKENS,
             "limits": {"ours": m.ours_limit, "bfcl": m.bfcl_limit, "sample": m.sample_limit},
-            "passes": passes, "wall_s": time.perf_counter() - t0, **(extra or {})}
+            "passes": passes, "wall_s": time.perf_counter() - t0, **(extra or {}),
+            **_profile_fields(m)}
     T.write_json(d / "score.json", info)
     return info
 
@@ -185,9 +207,16 @@ def score_floor(tok, lm, m: Mode, batch: int, setup: dict) -> dict:
             "samples": SAMPLES, "temperature": TEMPERATURE, "adapter": None,
             "limits": {"sample": m.sample_limit},
             "passes": {f"train-sample, {SAMPLES} at T={TEMPERATURE:g}": {
-                "items": len(sample), "seconds": wall}}, "wall_s": wall}
+                "items": len(sample), "seconds": wall}}, "wall_s": wall, **_profile_fields(m)}
     T.write_json(d / "score.json", info)
     return info
+
+
+def _profile_fields(m: Mode) -> dict:
+    """What a record adds for a profile other than main (main's records are unchanged)."""
+    if m.profile == "main":
+        return {}
+    return {"profile": m.profile, "tokenizer": m.tokenizer, "stop_tokens": list(m.stop_tokens)}
 
 
 def standard_copies(m: Mode, root: Path) -> list[Path]:
@@ -218,16 +247,42 @@ def print_copies(rep, paths: list[Path]) -> None:
         rep.note(f"  {p.name}", wrap=True)
 
 
-def load_merged(model_id: str, adapter: Path, device):
-    """The base model with a saved adapter merged in (fp32 sum, cast once)."""
+def load_merged(model_id: str, adapter: Path, device, tokenizer: str | None = None):
+    """The base model with a saved adapter merged in (fp32 sum, cast once; its embedding
+    rows too, if it has any)."""
     from . import bfcl
     from .lora import load_adapter, merge_into
 
     state, meta = load_adapter(adapter)
     if meta.get("base_model") != model_id:
         raise ValueError(f"{adapter} was trained on {meta.get('base_model')}, not {model_id}")
-    tok, lm = bfcl.load_model(model_id, device)
+    tok, lm = bfcl.load_model(model_id, device, tokenizer)
     n = merge_into(lm, state, float(meta["alpha"]) / int(meta["rank"]))
+    return tok, lm, meta, n
+
+
+def set_stops(lm, tok, tokens: tuple[str, ...]) -> list[int]:
+    """Generation stops at ``tokens`` whatever the model's generation_config said (the
+    engine reads ``generation_config.eos_token_id`` and adds ``<|im_end|>``); returns the
+    ids. ``()`` leaves the model as loaded (the main arm, as it ran)."""
+    if not tokens:
+        return []
+    ids = T.token_ids(tok, tokens)
+    lm.generation_config.eos_token_id = list(ids)
+    return ids
+
+
+def load_for(m: Mode, device, adapter: Path | None = None):
+    """(tokenizer, model[, meta, modules merged]) as this profile scores: the profile's
+    tokenizer, its stop tokens, the adapter merged if given."""
+    from . import bfcl
+
+    if adapter is None:
+        tok, lm = bfcl.load_model(m.settings.model, device, m.tokenizer)
+        set_stops(lm, tok, m.stop_tokens)
+        return tok, lm
+    tok, lm, meta, n = load_merged(m.settings.model, adapter, device, m.tokenizer)
+    set_stops(lm, tok, m.stop_tokens)
     return tok, lm, meta, n
 
 
@@ -236,14 +291,35 @@ def load_merged(model_id: str, adapter: Path, device):
 
 def measured(m: Mode) -> tuple[list[dict], list[float]]:
     """(training records, scoring wall seconds) of every finished run so far."""
-    runs, scores = [], []
+    runs, walls = measured_by_label(m)
+    return runs, scoring_walls(walls, prefer_trained=m.profile != "main")
+
+
+def measured_by_label(m: Mode) -> tuple[list[dict], dict[str, float]]:
+    """(training records, scoring wall seconds by run label) of every finished run so far."""
+    runs, walls = [], {}
     if m.out.exists():
         for d in sorted(m.out.iterdir()):
             if (d / "train.json").exists():
                 runs.append(json.loads((d / "train.json").read_text()))
             if (d / "score.json").exists():
-                scores.append(json.loads((d / "score.json").read_text())["wall_s"])
-    return runs, scores
+                walls[d.name] = json.loads((d / "score.json").read_text())["wall_s"]
+    return runs, walls
+
+
+def scoring_walls(walls: dict[str, float], prefer_trained: bool) -> list[float]:
+    """The scoring times a pair's estimate takes the slowest of (an empty list: the prior,
+    :data:`SCORE_PRIOR_S`). Main: every scoring so far, untrained included (as main ran).
+    The base arm (``prefer_trained``): the trained models' only. The untrained base model
+    runs nearly every reply to the 512-token cap (Milestone 0 on the A100: 0.43 s per
+    greedy task, against the Instruct model's 0.08), so its scoring (~0.8 h) says nothing
+    about a trained model's, and taken as one would leave seeds 2 and 3 unstarted within
+    the base run's hours even if training taught the model to end its turns. Until a
+    trained model is scored the prior stands, as it does for main before anything is
+    measured; a trained model that still runs to the cap is measured by seed 1's pair, so
+    seed 2's estimate sees it. Pure."""
+    trained = [w for k, w in walls.items() if k.startswith(tuple(f"{a}-seed" for a in T.ARMS))]
+    return trained if prefer_trained else list(walls.values())
 
 
 SCORE_PRIOR_S = 0.25 * 3600  # plan 3e: one model's scoring, before any is measured
@@ -360,7 +436,8 @@ def cuda_allocator(device) -> str | None:
     return os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", ALLOC_CONF)
 
 
-def memory_probe(s: T.Settings, records: list[dict], device) -> dict:
+def memory_probe(s: T.Settings, records: list[dict], device, tokenizer: str | None = None,
+                 embed_rows: tuple[str, ...] = ()) -> dict:
     """One training step as training runs it (forward and backward of the two largest
     micro-batches, gradients accumulated, then the AdamW step) without gradient
     checkpointing; checkpointing stays off for every run only if that step's peak is at
@@ -368,17 +445,19 @@ def memory_probe(s: T.Settings, records: list[dict], device) -> dict:
     no peak counter, so "ran without running out of memory"). Otherwise the same step
     with checkpointing, which must meet the same bar. A nondeterminism error is handled
     as training handles it (:func:`train.accumulate_or_relax`), recorded, and the strict
-    setting restored after."""
+    setting restored after. ``tokenizer`` and ``embed_rows``: as training gets them (the
+    base arm's delta is in the step)."""
     import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoModelForCausalLM
 
     from .device import peak_memory_bytes, preferred_dtype, reset_peak_memory, total_memory_bytes
-    from .lora import inject_lora, trainable_parameters
+    from .lora import inject_lora, inject_rows, trainable_parameters
 
     lengths = [r["n_tokens"] for r in records]
     mbs = largest_micro_batches(lengths, s)
     rows = [i for mb in mbs for i in mb]
-    tok = AutoTokenizer.from_pretrained(s.model)
+    tok = T.load_tokenizer(s.model, tokenizer)
+    row_ids = T.token_ids(tok, embed_rows) if embed_rows else []
     enc = T.encode(tok, [records[i] for i in rows])
     local, k = [], 0
     for mb in mbs:  # positions in enc
@@ -405,6 +484,8 @@ def memory_probe(s: T.Settings, records: list[dict], device) -> dict:
                 model.to(device)
                 inject_lora(model, s.targets, rank=s.rank, alpha=s.alpha,
                             generator=torch.Generator().manual_seed(1))
+                if row_ids:
+                    inject_rows(model, row_ids)
                 if ckpt:
                     model.gradient_checkpointing_enable(
                         gradient_checkpointing_kwargs={"use_reentrant": False})
@@ -507,18 +588,28 @@ class LogitGap:
         return (self.gap_sq / self.effect_sq) ** 0.5 if self.effect_sq else float("inf")
 
 
-def merge_check_random_b(s: T.Settings, model_id: str, texts: list[str], device) -> dict:
+MERGE_ROWS_SEED = 3  # the embedding rows' delta (the base arm): MERGE_B_SCALE x N(0, 1)
+ROWS_LEFT_OUT = "merged, rows left out"
+
+
+def merge_check_random_b(s: T.Settings, model_id: str, texts: list[str], device,
+                         tokenizer: str | None = None,
+                         embed_rows: tuple[str, ...] = ()) -> dict:
     """An adapter with A drawn as training draws it and B = :data:`MERGE_B_SCALE` x N(0, 1),
     saved and merged with :func:`lora.merge_into` (the scoring path's merge), against the
     LoRA-wrapped model: logits at every position of ``texts``. In float32: bf16 rounding
     of W + (alpha/r) BA moves the logits by as much as a merge a fraction off in scale
     would, so no bf16 tolerance could separate them; the cast to the weights' dtype, the
     one step this leaves out, is what the B = 0 check runs. Contrasts: the merge at
-    :data:`MERGE_CONTRAST` x the scaling, and the base model (a merge that did nothing)."""
+    :data:`MERGE_CONTRAST` x the scaling, and the base model (a merge that did nothing).
+    With ``embed_rows`` (the base arm) the LoRA model also has a nonzero row delta
+    (:data:`MERGE_B_SCALE` x N(0, 1), seed :data:`MERGE_ROWS_SEED`), the merge writes it
+    into the tied embedding, and one more contrast must fail: the merge without the rows."""
     import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoModelForCausalLM
 
-    from .lora import adapter_state, inject_lora, merge_into, randomize_b
+    from . import lora as L
+    from .lora import adapter_state, inject_lora, randomize_b
 
     def load():
         m = AutoModelForCausalLM.from_pretrained(model_id, dtype=torch.float32)
@@ -526,16 +617,24 @@ def merge_check_random_b(s: T.Settings, model_id: str, texts: list[str], device)
         m.eval()
         return m
 
-    tok = AutoTokenizer.from_pretrained(model_id)
+    tok = T.load_tokenizer(model_id, tokenizer)
     lora = load()
     wrapped = inject_lora(lora, s.targets, rank=s.rank, alpha=s.alpha,
                           generator=torch.Generator().manual_seed(1))
     randomize_b(wrapped, MERGE_B_SCALE, torch.Generator().manual_seed(MERGE_B_SEED))
-    state = adapter_state(wrapped)
+    rows = None
+    if embed_rows:
+        rows = L.inject_rows(lora, T.token_ids(tok, embed_rows))
+        L.randomize_rows(rows, MERGE_B_SCALE, torch.Generator().manual_seed(MERGE_ROWS_SEED))
+    state = adapter_state(wrapped, rows)
     merged, off = load(), load()
-    n = merge_into(merged, state, s.scaling)
-    merge_into(off, state, s.scaling * MERGE_CONTRAST)
-    right, wrong, none = LogitGap(), LogitGap(), LogitGap()
+    n = L.merge_into(merged, state, s.scaling)
+    L.merge_into(off, state, s.scaling * MERGE_CONTRAST)
+    no_rows = None
+    if rows is not None:
+        no_rows = load()
+        L.merge_into(no_rows, L.split_rows(state)[0], s.scaling)
+    right, wrong, none, left = LogitGap(), LogitGap(), LogitGap(), LogitGap()
     try:
         with torch.no_grad():
             for text in texts:
@@ -544,55 +643,253 @@ def merge_check_random_b(s: T.Settings, model_id: str, texts: list[str], device)
                 lo = lora(input_ids=ids).logits[0].float()
                 for a in wrapped.values():
                     a.scaling = 0.0  # the LoRA path x 0: exactly the base model
+                if rows is not None:
+                    rows.enabled = False  # and the rows' delta off
                 base = lora(input_ids=ids).logits[0].float()
                 for a in wrapped.values():
                     a.scaling = s.scaling
+                if rows is not None:
+                    rows.enabled = True
                 right.add(merged(input_ids=ids).logits[0], lo, base)
                 wrong.add(off(input_ids=ids).logits[0], lo, base)
+                if no_rows is not None:
+                    left.add(no_rows(input_ids=ids).logits[0], lo, base)
                 none.add(base, lo, base)
                 del lo, base
     finally:
-        del lora, wrapped, merged, off
+        del lora, wrapped, merged, off, no_rows
         _free(device)
-    rows = {"merged": right, f"merged, {MERGE_CONTRAST:g} x the scaling": wrong,
-            "base (nothing merged)": none}
-    return {"model": model_id, "prompts": len(texts), "modules": n, "dtype": "float32",
-            "b_scale": MERGE_B_SCALE, "tolerance": MERGE_TOLERANCE,
-            "rows": {k: {"relative": g.relative, "max_abs": g.max_abs,
-                         "argmax_same": g.argmax_same, "positions": g.positions}
-                     for k, g in rows.items()},
-            "passes": right.relative <= MERGE_TOLERANCE < wrong.relative}
+    gaps = {"merged": right, f"merged, {MERGE_CONTRAST:g} x the scaling": wrong}
+    if rows is not None:
+        gaps[ROWS_LEFT_OUT] = left
+    gaps["base (nothing merged)"] = none
+    out = {"model": model_id, "prompts": len(texts), "modules": n, "dtype": "float32",
+           "b_scale": MERGE_B_SCALE, "tolerance": MERGE_TOLERANCE,
+           "rows": {k: {"relative": g.relative, "max_abs": g.max_abs,
+                        "argmax_same": g.argmax_same, "positions": g.positions}
+                    for k, g in gaps.items()},
+           "passes": right.relative <= MERGE_TOLERANCE < wrong.relative and (
+               rows is None or MERGE_TOLERANCE < left.relative)}
+    if rows is not None:
+        out["embed_rows"] = {"tokens": list(embed_rows), "ids": rows.ids.tolist(),
+                             "seed": MERGE_ROWS_SEED}
+    return out
+
+
+# -- sft-check, the base arm (plan 3f) ----------------------------------------------------------
+
+
+def rendered_text(record: dict, tok) -> str:
+    """A training row's text as ``tok``'s chat template renders its messages (no tokens)."""
+    from . import sft, toolace
+
+    return toolace.assistant_spans(record["messages"],
+                                   toolace.make_renderer(tok, sft.unwrap(record)))[0]
+
+
+def same_prompts(a: list[str], b: list[str]) -> int:
+    """How many of two prompt lists are byte-identical, position by position. Pure."""
+    if len(a) != len(b):
+        raise ValueError("two prompt lists of different lengths")
+    return sum(x == y for x, y in zip(a, b, strict=True))
+
+
+def base_prompts_check(m: Mode, real: list[dict]) -> dict:
+    """The base arm's prompts, rendered as it renders them (the profile's tokenizer, loaded
+    the way scoring and training load it), against the Instruct arm's (the main profile's
+    tokenizer for the same mode, loaded by name) and, as the contrast, against the base
+    model's own chat template. Every training row (against sft-data's text, which the
+    Instruct arm trained on), our test, dev and train-sample tasks, BFCL's eval items."""
+    from transformers import AutoTokenizer
+
+    from . import bfcl, ours, progress, tasks
+    from .cli import _load_or_make_tasks
+
+    model = m.settings.model
+    arm = T.load_tokenizer(model, m.tokenizer)  # raises unless it splits text as the model's
+    main = T.PROFILES["main"]
+    instruct_id = main.tokenizer_for(main.settings(m.quick).model)
+    instruct = AutoTokenizer.from_pretrained(instruct_id)
+    own = AutoTokenizer.from_pretrained(model)
+    splits = _load_or_make_tasks(tasks.DEFAULT_SEED)
+    sets = []
+    progress.status("base prompts: training rows")
+    sets.append(("training rows (real.jsonl)", [r["text"] for r in real],
+                 [rendered_text(r, arm) for r in real], [rendered_text(r, own) for r in real]))
+    for split in ("test", "dev", "train-sample"):
+        ts = sorted(splits[split], key=lambda t: t["id"])
+        sets.append((f"our {split} tasks", [ours.prompt(instruct, t) for t in ts],
+                     [ours.prompt(arm, t) for t in ts], [ours.prompt(own, t) for t in ts]))
+    items = [it for c in bfcl.CATEGORIES for it in bfcl.load_items(c, None, "eval")]
+    progress.status("base prompts: BFCL eval items")
+    sets.append(("BFCL eval items", [bfcl.prompt_text(instruct, it) for it in items],
+                 [bfcl.prompt_text(arm, it) for it in items],
+                 [bfcl.prompt_text(own, it) for it in items]))
+    rows = [{"set": name, "n": len(want), "as_instruct": same_prompts(want, got),
+             "with_own_template": same_prompts(want, base)} for name, want, got, base in sets]
+    return {"model": model, "tokenizer": m.tokenizer, "instruct_tokenizer": instruct_id,
+            "splits_as_model": T.tokenizers_match(arm, own), "vocabulary": len(arm),
+            "eos": {"model's own": own.eos_token, "this arm's": arm.eos_token},
+            "sets": rows,
+            "passes": T.tokenizers_match(arm, own) and all(r["as_instruct"] == r["n"]
+                                                           for r in rows)}
+
+
+def _print_base_prompts(rep, pr: dict) -> None:
+    rep.section("The base arm's prompts: the Instruct chat template")
+    rep.kv("model", pr["model"])
+    rep.kv("tokenizer and chat template", pr["tokenizer"])
+    rep.kv("  splits text as the model's own", pr["splits_as_model"])
+    rep.note("  (vocabulary, merges, normalizer, added tokens: the same ids for")
+    own, arm = pr["eos"]["model's own"], pr["eos"]["this arm's"]
+    rep.note(f"  every text; {pr['vocabulary']:,} tokens; the eos name differs:")
+    rep.note(f"  {own} vs {arm}; where replies end is set below)")
+    rep.note("Each prompt rendered as this arm renders it, against the Instruct")
+    rep.note("arm's (training rows: sft-data's text); beside it, the base model's")
+    rep.note("own chat template, whose default system line differs:")
+    rep.table(["prompts", "n", "as the Instruct arm's", "own template"],
+              [[r["set"], r["n"], r["as_instruct"], r["with_own_template"]]
+               for r in pr["sets"]])
+    rep.kv("all as the Instruct arm's", pr["passes"])
+
+
+def stops_check(tok, lm, tokens: tuple[str, ...]) -> dict:
+    """What generation stops at for this arm: the model's own generation_config, then the
+    engine's stop set after :func:`set_stops` (``engine.decoding``, what scoring reads)."""
+    from transformers import GenerationConfig
+
+    from . import bfcl
+    from .engine import decoding
+
+    own = GenerationConfig.from_pretrained(lm.name_or_path).eos_token_id
+    own = own if isinstance(own, list) else [own]
+    want = T.token_ids(tok, tokens)
+    set_stops(lm, tok, tokens)
+    stop = list(decoding(tok, lm, 1, 0.0, bfcl.MAX_NEW_TOKENS).stop)
+    # keyed by str: checks.json round-trips it
+    names = {str(i): tok.convert_ids_to_tokens(i) for i in [*own, *want, *stop] if i is not None}
+    return {"model_eos": own, "wanted": want, "engine_stop": stop, "names": names,
+            "passes": set(stop) == set(want)}
+
+
+def _print_stops(rep, st: dict) -> None:
+    rep.section("Where the base arm's replies end")
+    cols = st["wanted"]
+    rep.table(["a reply ends at", *[st["names"][str(i)] for i in cols]],
+              [[label, *[i in ids for i in cols]]
+               for label, ids in (("the model's own generation_config", st["model_eos"]),
+                                  ("as loaded for this arm", st["wanted"]),
+                                  ("the engine (what scoring reads)", st["engine_stop"]))])
+    rep.kv("token ids", " and ".join(str(i) for i in cols))
+    rep.kv("the engine stops at both", st["passes"])
+    rep.note("The base model's config stops only at <|endoftext|>; the engine adds")
+    rep.note("<|im_end|>, and the profile sets both on every model it loads, so a")
+    rep.note("reply ends at the end of its turn whatever the config says.")
+
+
+ROW_IDENTICAL = 0.9999  # pairwise cosine at or above this: the rows are one direction
+
+
+def hub_rows(model_id: str, ids: list[int]) -> "torch.Tensor":  # noqa: F821
+    """Rows of a model's input embedding read from its safetensors file (no model loaded;
+    downloaded if not cached), float32."""
+    import torch
+    from huggingface_hub import hf_hub_download
+    from safetensors import safe_open
+
+    key = "model.embed_tokens.weight"
+    try:
+        index = json.loads(Path(hf_hub_download(model_id, "model.safetensors.index.json"))
+                           .read_text())
+        name = index["weight_map"][key]
+    except Exception:  # noqa: BLE001 - no index: one file
+        name = "model.safetensors"
+    with safe_open(hf_hub_download(model_id, name), framework="pt") as f:
+        sl = f.get_slice(key)
+        return torch.stack([sl[i:i + 1][0] for i in ids]).float()
+
+
+def rows_check(lm, model: str, tokens: tuple[str, ...], ids: list[int],
+               instruct: str) -> dict:
+    """The four rows in the loaded base model (as it scores: the device's dtype) beside the
+    Instruct model's: norms, cosines, largest difference; and the median row norm."""
+    import torch
+
+    from .device import dtype_name
+    from .lora import row_similarity, tied
+
+    w = lm.get_input_embeddings().weight
+    base = torch.stack([w[i].detach().float().cpu() for i in ids])
+    median = float(torch.linalg.vector_norm(w.detach(), dim=1, dtype=torch.float32)
+                   .median().cpu())
+    b, ins = row_similarity(base), row_similarity(hub_rows(instruct, ids))
+    return {"model": model, "instruct": instruct, "tokens": list(tokens), "ids": ids,
+            "tied": tied(lm), "rows": len(w), "hidden": int(w.shape[1]),
+            "dtype": dtype_name(w.dtype),
+            "median_norm": median, "base": b, "instruct_rows": ins, "threshold": ROW_IDENTICAL,
+            "identical": b["cos_min"] >= ROW_IDENTICAL,
+            "passes": tied(lm) and b["cos_min"] >= ROW_IDENTICAL}
+
+
+def _print_rows(rep, rw: dict) -> None:
+    b, ins = rw["base"], rw["instruct_rows"]
+    short = rw["instruct"].split("/")[-1]
+    rep.section("The four embedding rows: why the base arm trains them")
+    rep.kv("model", rw["model"])
+    rep.kv("embeddings tied (input = output)", rw["tied"])
+    rep.note(f"Each row's norm and its cosine with {rw['tokens'][0]}, in the base")
+    rep.note(f"model ({rw['dtype']}, as loaded) and in {short}:")
+    rep.table(["token", "id", "norm", "cosine", "Instruct norm", "cosine"],
+              [[t, i, f"{b['norms'][j]:.3f}", f"{b['cos_first'][j]:.4f}",
+                f"{ins['norms'][j]:.3f}", f"{ins['cos_first'][j]:.4f}"]
+               for j, (t, i) in enumerate(zip(rw["tokens"], rw["ids"], strict=True))])
+    rep.kv("median row norm, base", f"{rw['median_norm']:.3f} (all {rw['rows']:,} rows)")
+    rep.kv("pairwise cosine, base", f"{b['cos_min']:.4f} to {b['cos_max']:.4f}")
+    rep.kv("  largest |difference|, base", f"{b['max_abs_diff']:.1e}")
+    rep.kv("pairwise cosine, Instruct", f"{ins['cos_min']:.4f} to {ins['cos_max']:.4f}")
+    rep.kv("identical in the base model", rw["identical"])
+    rep.note(f"(identical: every pairwise cosine at least {rw['threshold']:g})")
+    rep.note("Tied and identical: from any hidden state, ending the turn and")
+    rep.note("opening a call score the same, and LoRA can't separate them. The")
+    rep.note(f"base arm trains a delta on these rows: {len(rw['ids'])} x {rw['hidden']:,} = "
+             f"{len(rw['ids']) * rw['hidden']:,} float32")
+    rep.note("parameters, beside LoRA, in the same optimizer.")
+
 
 
 def run_check(root: Path, quick: bool, model: str | None, dev_limit: int | None,
-              batch_size: int | None) -> int:
+              batch_size: int | None, profile: str = "main") -> int:
     from transformers import AutoTokenizer
 
     from . import bfcl, ours, progress, tasks
     from .cli import SFT_DIR, _block, _load_or_make_tasks, _quiet_hf
     from .device import get_device, set_determinism
     from .engine import default_batch_size
-    from .lora import ATTENTION_MLP, adapter_state, inject_lora, save_adapter
+    from .lora import ATTENTION_MLP, adapter_state, inject_lora, inject_rows, save_adapter, tied
     from .milestone0 import token_mask
     from .ours import pct
     from .report import Report
 
     _quiet_hf()
-    m = mode(quick, root)
+    m = mode(quick, root, profile=profile)
+    prof = T.PROFILES[m.profile]
     model = model or m.settings.model
+    model_tok = prof.tokenizer_for(model) if prof.tokenizer is not None else None
     dev_limit = dev_limit if dev_limit is not None else m.dev_limit
     device = get_device()
     determinism = set_determinism(device)
     cuda_allocator(device)  # before any model loads
     batch = batch_size or default_batch_size(device.type)
     m.out.mkdir(parents=True, exist_ok=True)
-    rep = Report("tinytools sft-check" + (" --quick (not for publication)" if quick else ""),
+    rep = Report("tinytools sft-check" + m.title
+                 + (" --quick (not for publication)" if quick else ""),
                  out=root / "outputs" / f"sft-check{m.suffix}.txt")
     rep.header()
     checks: dict = {}
 
-    # 1. the template: the training model's tokenizer against sft-data's rendering
-    main_model = T.MAIN.model
+    # 1. the template: the training model's tokenizer against sft-data's rendering (the base
+    # arm: the Instruct tokenizer it renders with)
+    main_model = prof.tokenizer_for(prof.full.model)
     tok = AutoTokenizer.from_pretrained(main_model)
     capture = root / "outputs" / "sft-data.txt"
     made_with = "?"
@@ -632,6 +929,14 @@ def run_check(root: Path, quick: bool, model: str | None, dev_limit: int | None,
     rep.kv("all four as pinned (sft.py)", pinned)
     checks["sha256"] = {name: {"sha256": h, "pinned": want} for name, (h, want) in pins.items()}
 
+    # 1c. the base arm: every prompt and training row as the Instruct arm's, byte for byte
+    prompts_ok = True
+    if m.tokenizer is not None:
+        pr = base_prompts_check(m, real)
+        _print_base_prompts(rep, pr)
+        checks["base_prompts"] = pr
+        prompts_ok = pr["passes"]
+
     # 2. lengths, scored tokens, <|im_end|>
     s = m.settings
     rep.section("Row lengths (tokens), the real arm")
@@ -661,7 +966,8 @@ def run_check(root: Path, quick: bool, model: str | None, dev_limit: int | None,
 
     # 2b. memory: one training step on the two largest micro-batches (T8 review B1)
     rep.section("Memory: one training step, the two largest micro-batches")
-    mem = memory_probe(s, real if s.rows is None else real[:s.rows], device)
+    mem = memory_probe(s, real if s.rows is None else real[:s.rows], device, m.tokenizer,
+                       m.embed_rows)
     _print_memory(rep, mem, s.model, device)
     checks["memory"] = mem
 
@@ -693,6 +999,22 @@ def run_check(root: Path, quick: bool, model: str | None, dev_limit: int | None,
     checks["system_shapes"] = shapes
     checks["rows_with_date_line"] = [len(with_line), len(real)]
 
+    # 3b. the base arm: where generation stops, and the four rows (the reason for the delta)
+    tok_m, lm = bfcl.load_model(model, device, model_tok)
+    stops_ok = rows_ok = True
+    row_ids: list[int] = []
+    if m.stop_tokens:
+        st = stops_check(tok_m, lm, m.stop_tokens)
+        _print_stops(rep, st)
+        checks["stops"] = st
+        stops_ok = st["passes"]
+    if m.embed_rows:
+        row_ids = T.token_ids(tok_m, m.embed_rows)
+        rw = rows_check(lm, model, m.embed_rows, row_ids, prof.tokenizer_for(model))
+        _print_rows(rep, rw)
+        checks["embed_rows"] = rw
+        rows_ok = rw["passes"]
+
     # 4. the merge check: an untrained adapter (B = 0) merged gives the base model's replies
     rep.section("Merging an untrained adapter (B = 0): replies vs the base model")
     dev = ours.limit_per_kind(splits["dev"], dev_limit)
@@ -702,21 +1024,27 @@ def run_check(root: Path, quick: bool, model: str | None, dev_limit: int | None,
         rep.note(f"(the first {dev_limit} of each kind, of {len(splits['dev'])})")
     rep.kv("batch size", batch)
     rep.kv("determinism", determinism, wrap=True)
-    tok_m, lm = bfcl.load_model(model, device)
     base = ours.score(tok_m, lm, dev, samples=1, temperature=0.0, seed=SEED, batch_size=batch,
                       on_item=progress.items("merge check: base model", len(dev)))
     import torch
 
     wrapped = inject_lora(lm, ATTENTION_MLP, rank=s.rank, alpha=s.alpha,
                           generator=torch.Generator().manual_seed(1))
+    rows0 = inject_rows(lm, row_ids) if row_ids else None  # delta = 0
     b0 = m.out / "b0-adapter.safetensors"  # not under a run's directory: not fetched
-    save_adapter(b0, adapter_state(wrapped),
+    save_adapter(b0, adapter_state(wrapped, rows0),
                  {"base_model": model, "arm": "untrained (B = 0)", "seed": "1",
                   "rank": str(s.rank), "alpha": str(s.alpha), "targets": ",".join(ATTENTION_MLP)})
-    tok2, merged, _, n_mod = load_merged(model, b0, device)
+    tok2, merged, _, n_mod = load_merged(model, b0, device, model_tok)
+    set_stops(merged, tok2, m.stop_tokens)
     same_w = sum(torch.equal(merged.get_submodule(n).weight, a.base.weight)
                  for n, a in wrapped.items())
-    del lm, wrapped
+    same_rows = tied_after = None
+    if rows0 is not None:
+        w0, w1 = lm.get_input_embeddings().weight, merged.get_input_embeddings().weight
+        same_rows = sum(torch.equal(w0[i], w1[i]) for i in row_ids)
+        tied_after = tied(merged)
+    del lm, wrapped, rows0
     _free(device)
     again = ours.score(tok2, merged, dev, samples=1, temperature=0.0, seed=SEED,
                        batch_size=batch, on_item=progress.items("merge check: merged B = 0",
@@ -726,23 +1054,35 @@ def run_check(root: Path, quick: bool, model: str | None, dev_limit: int | None,
     identical = sum(a.replies[0] == b.replies[0] for a, b in zip(base, again, strict=True))
     rep.kv("modules merged", n_mod)
     rep.kv("  weights equal to the base's", f"{same_w} of {n_mod}")
+    if same_rows is not None:
+        rep.kv("embedding rows merged (delta = 0)", len(row_ids))
+        rep.kv("  rows equal to the base's", f"{same_rows} of {len(row_ids)}")
+        rep.kv("  output head still the embedding", tied_after)
     rep.kv("replies byte-identical", f"{identical} of {len(dev)}")
     rep.note("The adapter: A drawn as training draws it (seed 1), B = 0. Merging")
     rep.note("computes W + (alpha/r) B A in float32 and casts it to the weight's")
     rep.note("dtype once, the path every trained adapter is scored through.")
+    if same_rows is not None:
+        rep.note("The rows: E + delta, the same way, into the tied embedding.")
     checks["merge_b0"] = {"model": model, "tasks": len(dev), "identical": identical,
                           "modules": n_mod, "weights_equal": same_w, "batch_size": batch,
                           "device": device.type}
+    if same_rows is not None:
+        checks["merge_b0"] |= {"rows": len(row_ids), "rows_equal": same_rows,
+                               "tied": tied_after}
 
     # 4b. the merge check with a nonzero B: logits, merged vs the LoRA model (T8 review S3)
     rep.section("Merging an adapter with random B: logits vs the LoRA model")
     few = ours.limit_per_kind(splits["dev"], MERGE_PER_KIND)
-    mg = merge_check_random_b(s, model, [ours.prompt(tok_m, t) for t in few], device)
+    mg = merge_check_random_b(s, model, [ours.prompt(tok_m, t) for t in few], device,
+                              model_tok, m.embed_rows)
     rep.kv("model", model)
     rep.kv("prompts", f"{len(few)} dev tasks, {MERGE_PER_KIND} per kind")
     rep.kv("compared", "the logits at every position")
     rep.kv("adapter", f"A: seed 1; B = {MERGE_B_SCALE:g} x N(0, 1), seed {MERGE_B_SEED}")
-    rep.kv("dtype", "float32, all three models")
+    if "embed_rows" in mg:
+        rep.kv("  embedding rows", f"delta = {MERGE_B_SCALE:g} x N(0, 1), seed {MERGE_ROWS_SEED}")
+    rep.kv("dtype", "float32, all " + ("four" if "embed_rows" in mg else "three") + " models")
     rep.kv("modules merged", mg["modules"])
     rep.table(["vs the LoRA model", "relative gap", "max |diff|", "argmax same"],
               [[k, f"{v['relative']:.2e}", f"{v['max_abs']:.2e}",
@@ -754,6 +1094,8 @@ def run_check(root: Path, quick: bool, model: str | None, dev_limit: int | None,
     rep.note("nothing, 1). Passes: the merge within the tolerance and the")
     rep.note("mis-scaled merge outside it. In float32, so rounding is the only")
     rep.note("gap; the cast to the weights' dtype is what the B = 0 check runs.")
+    if "embed_rows" in mg:
+        rep.note("With the embedding rows: the merge without them must fail too.")
     checks["merge_random_b"] = mg
     T.write_json(m.out / "checks.json", checks)
     from dataclasses import asdict
@@ -767,9 +1109,13 @@ def run_check(root: Path, quick: bool, model: str | None, dev_limit: int | None,
         "gradient_checkpointing": mem["needs_checkpointing"],
         "cuda_alloc_conf": mem["allocator"],
         "generation": {"seed": SEED, "samples": SAMPLES, "temperature": TEMPERATURE,
-                       "batch_size": batch}})
+                       "batch_size": batch},
+        **({"profile": m.profile, "tokenizer": m.tokenizer, "embed_rows": list(m.embed_rows),
+            "stop_tokens": list(m.stop_tokens)} if m.profile != "main" else {})})
     passed = ok and pinned and census[f"over {s.max_length}"] == 0 and closed == turns \
-        and identical == len(dev) and same_w == n_mod and mem["fits"] and mg["passes"]
+        and identical == len(dev) and same_w == n_mod and mem["fits"] and mg["passes"] \
+        and prompts_ok and stops_ok and rows_ok and same_rows in (None, len(row_ids)) \
+        and tied_after in (None, True)
     rep.blank()
     rep.kv("all checks pass", passed)
     rep.close()
@@ -797,16 +1143,16 @@ def _print_score(rep, info: dict, d: Path) -> None:
 
 def _score_one(root: Path, m: Mode, label: str, adapter: Path | None, device, batch: int,
                rep) -> dict:
-    from . import bfcl, progress
+    from . import progress
 
     setup = _setup(device, batch)
     if adapter is None:
         progress.status(f"loading {m.settings.model} on {device}")
-        tok, lm = bfcl.load_model(m.settings.model, device)
+        tok, lm = load_for(m, device)
         extra = {"adapter": None}
     else:
         progress.status(f"loading {m.settings.model} + {adapter.parent.name}, merged, on {device}")
-        tok, lm, meta, n = load_merged(m.settings.model, adapter, device)
+        tok, lm, meta, n = load_for(m, device, adapter)
         from .lora import load_adapter
 
         extra = {"adapter": str(adapter.relative_to(root)), "modules_merged": n,
@@ -834,6 +1180,7 @@ def _header(rep, m: Mode, device, determinism: str, batch: int, deadline: float 
     rep.header()
     rep.section("Setup")
     rep.kv("model", m.settings.model)
+    _profile_lines(rep, m)
     rep.kv("output directory", str(m.out.name))
     rep.kv("decoding", f"{SAMPLES} at T={TEMPERATURE:g} (train-sample only)" if floor else
            f"greedy; {SAMPLES} at T={TEMPERATURE:g} (train-sample)")
@@ -850,8 +1197,21 @@ def _header(rep, m: Mode, device, determinism: str, batch: int, deadline: float 
            time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(deadline)))
 
 
+def _profile_lines(rep, m: Mode) -> None:
+    """The Setup lines a profile other than main adds (main's Setup is unchanged)."""
+    if m.profile == "main":
+        return
+    rep.kv("profile", m.profile)
+    rep.kv("  chat template and tokenizer", m.tokenizer)
+    if m.stop_tokens:
+        rep.kv("  replies end at", ", ".join(m.stop_tokens))
+    if m.embed_rows:
+        rep.kv("  embedding rows trained", len(m.embed_rows))
+        rep.note("    " + " ".join(m.embed_rows))
+
+
 def _context(root: Path, quick: bool, batch_size: int | None, token_budget: int | None = None,
-             checkpointing: bool = False):
+             checkpointing: bool = False, profile: str = "main"):
     from dataclasses import replace
 
     from .cli import _quiet_hf
@@ -859,8 +1219,8 @@ def _context(root: Path, quick: bool, batch_size: int | None, token_budget: int 
     from .engine import default_batch_size
 
     _quiet_hf()
-    base = T.QUICK if quick else T.MAIN
-    m0 = mode(quick, root, base)
+    base = T.PROFILES[profile].settings(quick)
+    m0 = mode(quick, root, base, profile)
     checks = m0.out / "checks.json"
     if not checkpointing and token_budget is None and checks.exists():
         # sft-check measured the largest micro-batch on this machine: its verdict decides
@@ -868,7 +1228,7 @@ def _context(root: Path, quick: bool, batch_size: int | None, token_budget: int 
             "needs_checkpointing", False)
     s = replace(base, token_budget=token_budget or base.token_budget,
                 grad_checkpointing=checkpointing)
-    m = mode(quick, root, s)
+    m = mode(quick, root, s, profile)
     device = get_device()
     determinism = set_determinism(device)  # before any model loads (cuBLAS workspace)
     cuda_allocator(device)  # likewise (the CUDA caching allocator reads it once)
@@ -876,23 +1236,23 @@ def _context(root: Path, quick: bool, batch_size: int | None, token_budget: int 
 
 
 def run_score(root: Path, quick: bool, adapter: Path | None, batch_size: int | None,
-              floor: bool = False) -> int:
+              floor: bool = False, profile: str = "main") -> int:
     """``floor``: the untrained model's train-sample samples again with generation seed
     :data:`FLOOR_SEED` (r6a's noise floor), into ``<out>/FLOOR/``."""
-    from . import bfcl, progress
+    from . import progress
     from .report import Report
 
     if floor and adapter is not None:
         raise ValueError("the noise floor is the untrained model's")
-    m, device, determinism, batch = _context(root, quick, batch_size)
+    m, device, determinism, batch = _context(root, quick, batch_size, profile=profile)
     label = FLOOR if floor else UNTRAINED if adapter is None else adapter.parent.name
-    rep = Report(f"tinytools sft-score ({label})" + (" --quick" if quick else ""),
+    rep = Report(f"tinytools sft-score ({label})" + m.title + (" --quick" if quick else ""),
                  out=root / "outputs" / f"sft-score-{label}{m.suffix}.txt")
     _header(rep, m, device, determinism, batch, None,
             gen_seed=FLOOR_SEED if floor else SEED, floor=floor)
     if floor:
         progress.status(f"loading {m.settings.model} on {device}")
-        tok, lm = bfcl.load_model(m.settings.model, device)
+        tok, lm = load_for(m, device)
         try:
             info = score_floor(tok, lm, m, batch, _setup(device, batch))
         finally:
@@ -935,16 +1295,32 @@ def _train_one(root: Path, m: Mode, arm: str, seed: int, device, rep,
     label = run_label(arm, seed, repeat)
     res = T.train(m.settings, arm, seed, set_path(root, arm, seed), m.out / label, device,
                   real_path=None if arm == "real" else set_path(root, "real", seed),
-                  label=f"{label}, {m.settings.model.split('/')[-1]}")
+                  label=f"{label}, {m.settings.model.split('/')[-1]}",
+                  tokenizer=m.tokenizer, embed_rows=m.embed_rows)
     _free(device)
     rep.section(f"Trained: {label}")
     rep.kv("rows / steps", f"{res.rows} / {res.steps} ({res.micro_batches} micro-batches)")
     rep.kv("loss, first / last step", f"{res.losses[0]:.4f} / {res.losses[-1]:.4f}")
     rep.kv("wall time", f"{res.seconds / 60:.1f} min")
     rep.kv("adapter tensors sha256 (first 16)", res.adapter_sha256[:16])
+    if res.embed_rows is not None:
+        _print_trained_rows(rep, res.embed_rows)
     if res.note:
         rep.note(res.note, wrap=True)
     return res
+
+
+def _print_trained_rows(rep, r: dict) -> None:
+    """The embedding rows after training: the delta's size per token, and whether the four
+    rows (base + delta) are still one direction."""
+    rep.kv("embedding rows (delta)", f"{r['trainable']:,} parameters")
+    rep.table(["token", "id", "|delta|"],
+              [[t, i, f"{n:.3f}"] for t, i, n in zip(r["tokens"], r["ids"], r["delta_norms"],
+                                                     strict=True)])
+    rep.kv("pairwise cosine, before", f"{r['before']['cos_min']:.4f} to "
+           f"{r['before']['cos_max']:.4f}")
+    rep.kv("pairwise cosine, after", f"{r['after']['cos_min']:.4f} to "
+           f"{r['after']['cos_max']:.4f}")
 
 
 def _not_started(rep, what: str, need: float, deadline: float) -> None:
@@ -962,12 +1338,14 @@ def _not_started(rep, what: str, need: float, deadline: float) -> None:
 
 
 def run_train(root: Path, quick: bool, arm: str, seed: int, repeat: bool,
-              deadline: float | None, token_budget: int | None, checkpointing: bool) -> int:
+              deadline: float | None, token_budget: int | None, checkpointing: bool,
+              profile: str = "main") -> int:
     from .report import Report
 
-    m, device, determinism, batch = _context(root, quick, None, token_budget, checkpointing)
+    m, device, determinism, batch = _context(root, quick, None, token_budget, checkpointing,
+                                             profile)
     label = run_label(arm, seed, repeat)
-    rep = Report(f"tinytools sft-train ({label})" + (" --quick" if quick else ""),
+    rep = Report(f"tinytools sft-train ({label})" + m.title + (" --quick" if quick else ""),
                  out=root / "outputs" / f"sft-train-{label}{m.suffix}.txt")
     _header(rep, m, device, determinism, batch, deadline)
     need = needed_seconds(m, root, seed, 1, 0)
@@ -979,7 +1357,8 @@ def run_train(root: Path, quick: bool, arm: str, seed: int, repeat: bool,
     if repeat:
         first = m.out / run_label(arm, seed)
         if (first / "train.json").exists():
-            d = determinism_check(json.loads((first / "train.json").read_text()), asdict_(res),
+            d = determinism_check(json.loads((first / "train.json").read_text()),
+                                  T.result_record(res),
                                   first / "adapter.safetensors",
                                   m.out / label / "adapter.safetensors")
             rep.section(f"Trained twice: {run_label(arm, seed)}")
@@ -996,12 +1375,13 @@ def asdict_(res: T.Result) -> dict:
 
 
 def run_pair(root: Path, quick: bool, seed: int, deadline: float | None, batch_size: int | None,
-             token_budget: int | None, checkpointing: bool) -> int:
+             token_budget: int | None, checkpointing: bool, profile: str = "main") -> int:
     """One seed's pair, whole or not at all: train real, score, train control, score."""
     from .report import Report
 
-    m, device, determinism, batch = _context(root, quick, batch_size, token_budget, checkpointing)
-    rep = Report(f"tinytools sft-pair (seed {seed})" + (" --quick" if quick else ""),
+    m, device, determinism, batch = _context(root, quick, batch_size, token_budget, checkpointing,
+                                             profile)
+    rep = Report(f"tinytools sft-pair (seed {seed})" + m.title + (" --quick" if quick else ""),
                  out=root / "outputs" / f"sft-pair-seed{seed}{m.suffix}.txt")
     _header(rep, m, device, determinism, batch, deadline)
     need = needed_seconds(m, root, seed, 2, 2)
@@ -1122,13 +1502,13 @@ def complete_seeds(out: Path) -> tuple[list[int], list[str]]:
     return seeds, partial
 
 
-def run_report(root: Path, quick: bool) -> int:
+def run_report(root: Path, quick: bool, profile: str = "main") -> int:
     from . import bfcl, ours, tasks
     from .cli import _load_or_make_tasks, _quiet_hf
     from .report import Report
 
     _quiet_hf()
-    m = mode(quick, root)
+    m = mode(quick, root, profile=profile)
     if not (m.out / UNTRAINED / "score.json").exists():
         sys.exit(f"{m.out.relative_to(root)}/{UNTRAINED} is not scored; run sft-score first")
     seeds, partial = complete_seeds(m.out)
@@ -1152,7 +1532,8 @@ def run_report(root: Path, quick: bool) -> int:
     checks = json.loads((m.out / "checks.json").read_text()) if (
         m.out / "checks.json").exists() else {}
 
-    rep = Report("tinytools sft-report" + (" --quick (not for publication)" if quick else ""),
+    rep = Report("tinytools sft-report" + m.title
+                 + (" --quick (not for publication)" if quick else ""),
                  out=root / "outputs" / f"sft{m.suffix}.txt")
     rep.header()
     _report_setup(rep, m, un, seeds, partial, test, sample, items)
@@ -1174,6 +1555,7 @@ def _report_setup(rep, m: Mode, un: Scores, seeds, partial, test, sample, items)
 
     rep.section("Setup")
     rep.kv("model", m.settings.model)
+    _profile_lines(rep, m)
     rep.kv("arms", "untrained, SFT (real), control")
     rep.kv("seeds with a whole pair", ", ".join(map(str, seeds)) or "none")
     if partial:
@@ -1230,6 +1612,16 @@ def _r4c(rep, m: Mode, trains: dict, seeds: list[int], checks: dict) -> None:
     rep.kv("LoRA", f"rank {s['rank']}, alpha {s['alpha']:g}, dropout {s['dropout']:g}")
     rep.kv("  on", ",".join(x.removesuffix("_proj") for x in s["targets"]) + "; all layers")
     rep.kv("  trainable parameters", f"{first['trainable']:,}")
+    er = first.get("embed_rows")
+    if er is not None:
+        rep.kv("embedding rows (delta)", f"{len(er['ids'])} rows, zero at the start")
+        for t, i in zip(er["tokens"], er["ids"], strict=True):
+            rep.kv(f"  {t}", f"id {i}")
+        rep.kv("  trainable parameters", f"{er['trainable']:,}")
+        rep.note("  In LoRA's AdamW group: its lr, schedule and betas; weight decay")
+        rep.note(f"  {er['weight_decay']:g}, as LoRA's. Embeddings are tied: the input embedding")
+        rep.note("  and the output head both see E + delta.")
+        rep.kv("trainable parameters, all", f"{first['trainable'] + er['trainable']:,}")
     for k, v in first["dtypes"].items():
         rep.kv(f"dtype: {k}", v)
     rep.kv("max length", f"{s['max_length']:,} tokens, no truncation")
@@ -1282,9 +1674,36 @@ def _r4c(rep, m: Mode, trains: dict, seeds: list[int], checks: dict) -> None:
             rep.kv("  merged random B vs LoRA", f"gap {gap:.2e} (tolerance {rb['tolerance']:g})")
             rep.note(f"    ({rb['model'].split('/')[-1]}, {rb['prompts']} dev prompts, logits, "
                      f"{rb['dtype']})")
+            if ROWS_LEFT_OUT in rb["rows"]:
+                rep.kv("    merged without the rows", f"gap {rb['rows'][ROWS_LEFT_OUT]['relative']:.2e}"
+                       " (must fail)")
         if pins:
             rep.kv("  SFT sets, sha256 as pinned", f"{sum(v['sha256'] == v['pinned'] for v in pins.values())} "
                    f"of {len(pins)}")
+        _r4c_base_checks(rep, checks)
+
+
+def _r4c_base_checks(rep, checks: dict) -> None:
+    """r4c's lines for the base arm's own checks (absent from main's checks.json)."""
+    pr, st, rw = checks.get("base_prompts"), checks.get("stops"), checks.get("embed_rows")
+    if pr:
+        n = sum(r["n"] for r in pr["sets"])
+        rep.kv("  prompts as the Instruct arm's", f"{sum(r['as_instruct'] for r in pr['sets']):,} "
+               f"of {n:,}")
+        rep.note(f"    (training rows, our tasks, BFCL; {pr['tokenizer'].split('/')[-1]}'s")
+        rep.note(f"    template; the base's own: {sum(r['with_own_template'] for r in pr['sets']):,}"
+                 " identical)")
+    if st:
+        rep.kv("  replies end at", " or ".join(st["names"][str(i)] for i in st["engine_stop"]))
+    if rw:
+        rep.kv("  the four rows, base model", f"cosine {rw['base']['cos_min']:.4f} to "
+               f"{rw['base']['cos_max']:.4f}")
+        rep.note(f"    (norm {min(rw['base']['norms']):.3f}; median row "
+                 f"{rw['median_norm']:.3f}; Instruct cosine "
+                 f"{rw['instruct_rows']['cos_min']:.2f} to {rw['instruct_rows']['cos_max']:.2f})")
+    mg = checks.get("merge_b0", {})
+    if "rows" in mg:
+        rep.kv("  merged delta = 0: rows as base", f"{mg['rows_equal']} of {mg['rows']}")
 
 
 def _r4d(rep, trains: dict, seeds: list[int], out: Path) -> None:

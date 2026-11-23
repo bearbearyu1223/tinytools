@@ -33,6 +33,16 @@ and the shuffle order (``Random("<N>:shuffle:<epoch>")``, a permutation of row
 positions per epoch). Real N and control N share both (their rows are twins in the
 same order, checked), which is what makes them a pair.
 
+**Profiles (plan 3f).** ``main`` is the Instruct arm above. ``base`` runs the same
+pipeline on Qwen2.5-1.5B (base) with two differences, both fixed before any result:
+prompts and training rows are tokenized and rendered with the Instruct model's tokenizer
+and chat template (identical vocabulary and merges, asserted by :func:`load_tokenizer`;
+the base template differs only in its default system line), and four embedding rows
+(``<|im_start|>``, ``<|im_end|>``, ``<tool_call>``, ``</tool_call>``) get a trainable
+float32 delta (``lora.inject_rows``) in the same AdamW group as LoRA's A and B, so the
+same lr, schedule, betas and weight decay (0, as LoRA's). Quick mode runs it on
+Qwen2.5-0.5B (base), whose four rows have the same defect.
+
 Everything above the ``-- running`` line is pure and tested in ``tests/test_train.py``.
 """
 
@@ -82,6 +92,63 @@ MAIN = Settings()
 # epoch, the first at lr 0 as the schedule starts; ~30 s a step in float32 on MPS), a
 # smaller budget for MPS memory; every other setting as MAIN.
 QUICK = replace(MAIN, model=QUICK_MODEL, rows=32, token_budget=4096)
+
+BASE_MODEL = "Qwen/Qwen2.5-1.5B"
+QUICK_BASE_MODEL = "Qwen/Qwen2.5-0.5B"
+# The four rows Qwen2.5 base leaves identical (plan 3f): the turn markers and the call tags.
+EMBED_ROWS = ("<|im_start|>", "<|im_end|>", "<tool_call>", "</tool_call>")
+# What generation stops at in the base arm, set explicitly on the loaded model: the base
+# model's own generation_config stops only at <|endoftext|> (the Instruct model's lists both).
+STOP_TOKENS = ("<|im_end|>", "<|endoftext|>")
+
+
+@dataclass(frozen=True)
+class Profile:
+    """Which model an SFT command runs on, and how (plan 3f). ``main``: the Instruct arm, as
+    it ran. ``base``: the base model, prompts in the Instruct tokenizer's chat template,
+    four embedding rows trained beside LoRA, outputs under ``outputs/base/``."""
+
+    name: str
+    full: Settings
+    quick: Settings
+    tokenizer: str | None = None  # whose tokenizer and chat template; None: the model's own
+    quick_tokenizer: str | None = None
+    embed_rows: tuple[str, ...] = ()
+    stop_tokens: tuple[str, ...] = ()  # () : the model's own generation_config (as main ran)
+
+    def settings(self, quick: bool) -> Settings:
+        return self.quick if quick else self.full
+
+    def tokenizer_for(self, model: str) -> str:
+        """The tokenizer (and chat template) a model is run with under this profile."""
+        if self.tokenizer is None:
+            return model
+        known = {self.full.model: self.tokenizer, self.quick.model: self.quick_tokenizer}
+        if model not in known:
+            raise ValueError(f"profile {self.name} runs {self.full.model} or "
+                             f"{self.quick.model}, not {model}")
+        return known[model]
+
+    def out_name(self, quick: bool) -> str:
+        """The directory under outputs/ (main, main-quick, base, base-quick)."""
+        return self.name + ("-quick" if quick else "")
+
+    def suffix(self, quick: bool) -> str:
+        """In capture names: main's are as they were (``sft.txt``, ``sft-quick.txt``);
+        another profile's carry its name (``sft-base.txt``, ``sft-base-quick.txt``)."""
+        return ("" if self.name == "main" else f"-{self.name}") + ("-quick" if quick else "")
+
+    def title(self) -> str:
+        """Added to a report's title: nothing for main."""
+        return "" if self.name == "main" else f" --profile {self.name}"
+
+
+PROFILES = {
+    "main": Profile("main", MAIN, QUICK),
+    "base": Profile("base", replace(MAIN, model=BASE_MODEL), replace(QUICK, model=QUICK_BASE_MODEL),
+                    tokenizer=MAIN.model, quick_tokenizer=QUICK.model, embed_rows=EMBED_ROWS,
+                    stop_tokens=STOP_TOKENS),
+}
 
 # The settings two runs must share to be compared (a pair, or a run and its repeat).
 PAIRED = ("model", "rank", "alpha", "dropout", "targets", "epochs", "lr", "betas", "eps",
@@ -202,6 +269,35 @@ class Encoded:
     masks: list[list[bool]]
     lengths: list[int]
     scored: list[int]
+
+
+def tokenizers_match(a, b) -> bool:
+    """Two tokenizers split text into the same ids: the same vocabulary, merges,
+    normalizer, pre-tokenizer and added tokens (the backend's whole definition; the chat
+    template and the eos name are not part of it)."""
+    return json.loads(a.backend_tokenizer.to_str()) == json.loads(b.backend_tokenizer.to_str())
+
+
+def load_tokenizer(model: str, tokenizer: str | None = None):
+    """The tokenizer a model runs with: its own, or ``tokenizer``'s (the base arm's
+    Instruct template), which must split text exactly as the model's own does."""
+    from transformers import AutoTokenizer
+
+    tok = AutoTokenizer.from_pretrained(tokenizer or model)
+    if tokenizer is not None and tokenizer != model:
+        own = AutoTokenizer.from_pretrained(model)
+        if not tokenizers_match(tok, own):
+            raise ValueError(f"{tokenizer}'s tokenizer is not {model}'s: ids would differ")
+    return tok
+
+
+def token_ids(tok, tokens: tuple[str, ...] | list[str]) -> list[int]:
+    """Each token's id; every one must be a single token of the vocabulary."""
+    vocab = tok.get_vocab()
+    missing = [t for t in tokens if t not in vocab]
+    if missing:
+        raise ValueError(f"not single tokens of the vocabulary: {missing}")
+    return [vocab[t] for t in tokens]
 
 
 def encode(tok, records: list[dict]) -> Encoded:
@@ -336,11 +432,23 @@ class Result:
     dtypes: dict
     first_step_rows: list[str]  # the first step's row ids, in order (the seed-pair test)
     init_sha256: str  # tensors_sha256 of A's initial values (B starts at 0)
-    adapter_sha256: str  # tensors_sha256 of the trained adapter
+    adapter_sha256: str  # tensors_sha256 of the trained adapter (embedding rows included)
     data_sha256: str
     losses: list[float] = field(default_factory=list)
     seconds: float = 0.0
     note: str = ""
+    # the base arm only (left out of train.json when None, so main's records are unchanged)
+    tokenizer: str | None = None
+    embed_rows: dict | None = None
+
+
+def result_record(res: Result) -> dict:
+    """``train.json``'s content: the Result, without the base arm's fields when unset."""
+    d = asdict(res)
+    for k in ("tokenizer", "embed_rows"):
+        if d[k] is None:
+            del d[k]
+    return d
 
 
 def tensors_sha256(state: dict) -> str:
@@ -358,22 +466,27 @@ def tensors_sha256(state: dict) -> str:
 
 
 def train(s: Settings, arm: str, seed: int, set_path: Path, out_dir: Path, device,
-          real_path: Path | None = None, on_step=None, label: str | None = None) -> Result:
+          real_path: Path | None = None, on_step=None, label: str | None = None,
+          tokenizer: str | None = None, embed_rows: tuple[str, ...] = ()) -> Result:
     """Train one adapter and write ``adapter.safetensors``, ``losses.jsonl`` and
-    ``train.json`` to ``out_dir`` (each written whole, then renamed into place)."""
+    ``train.json`` to ``out_dir`` (each written whole, then renamed into place).
+    ``tokenizer``: whose tokenizer to encode with (the base arm's Instruct one);
+    ``embed_rows``: tokens whose tied embedding rows get a trained delta (the base arm)."""
     import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoModelForCausalLM
 
     from . import progress
     from .device import dtype_name, preferred_dtype
-    from .lora import adapter_state, inject_lora, save_adapter, trainable_parameters
+    from .lora import (adapter_state, inject_lora, inject_rows, row_similarity, save_adapter,
+                       trainable_parameters)
 
     t0 = time.perf_counter()
     records = load_set(set_path, s.rows)
     if real_path is not None and not same_rows(load_set(real_path, s.rows), records):
         raise ValueError(f"{set_path.name} does not hold the real set's rows in its order")
     data_sha = hashlib.sha256(set_path.read_bytes()).hexdigest()
-    tok = AutoTokenizer.from_pretrained(s.model)
+    tok = load_tokenizer(s.model, tokenizer)
+    row_ids = token_ids(tok, embed_rows) if embed_rows else []
     enc = encode(tok, records)
     cut = rows_over(enc.lengths, s.max_length)
     if cut:
@@ -391,6 +504,11 @@ def train(s: Settings, arm: str, seed: int, set_path: Path, out_dir: Path, devic
     wrapped = inject_lora(model, s.targets, rank=s.rank, alpha=s.alpha, generator=gen)
     init_sha = tensors_sha256({k: v for k, v in adapter_state(wrapped).items()
                                if k.endswith(".A")})
+    # after inject_lora, which freezes every parameter it finds; zero at the start
+    rows = inject_rows(model, row_ids) if row_ids else None
+    base_rows = (torch.stack([model.get_input_embeddings().weight[i].detach().float().cpu()
+                              for i in row_ids]) if rows is not None else None)
+    # one AdamW group: the delta gets LoRA's lr, schedule, betas, eps and weight decay (0)
     params = trainable_parameters(model)
     if s.grad_checkpointing:
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
@@ -426,6 +544,11 @@ def train(s: Settings, arm: str, seed: int, set_path: Path, out_dir: Path, devic
                               "LoRA A, B": dtype_name(a.A.dtype),
                               "gradients of A, B": dtype_name(a.A.grad.dtype),
                               "AdamW state": dtype_name(st0["exp_avg"].dtype)}
+                    if rows is not None:
+                        dtypes |= {"embedding rows delta": dtype_name(rows.delta.dtype),
+                                   "gradient of the delta": dtype_name(rows.delta.grad.dtype),
+                                   "AdamW state (delta)": dtype_name(
+                                       opt.state[rows.delta]["exp_avg"].dtype)}
                 opt.zero_grad(set_to_none=True)
                 losses.append(total / n_scored)
                 log.write(json.dumps({"step": k + 1, "epoch": st.epoch + 1, "loss": losses[-1],
@@ -434,9 +557,20 @@ def train(s: Settings, arm: str, seed: int, set_path: Path, out_dir: Path, devic
                 on_step(k, losses[-1])
     finally:
         torch.use_deterministic_algorithms(restore[0], warn_only=restore[1])
-    state = adapter_state(wrapped)
+    state = adapter_state(wrapped, rows)
     meta = {"base_model": s.model, "arm": arm, "seed": str(seed), "rank": str(s.rank),
             "alpha": str(s.alpha), "targets": ",".join(s.targets), "data_sha256": data_sha}
+    rows_rec = None
+    if rows is not None:
+        meta |= {"tokenizer": tokenizer or s.model, "embed_rows_tokens": " ".join(embed_rows),
+                 "embed_rows_ids": ",".join(map(str, row_ids))}
+        delta = rows.delta.detach().float().cpu()
+        rows_rec = {"tokens": list(embed_rows), "ids": row_ids, "trainable": delta.numel(),
+                    "weight_decay": s.weight_decay,
+                    "delta_norms": [float(x) for x in delta.norm(dim=1)],
+                    "before": row_similarity(base_rows),
+                    "after": row_similarity(base_rows + delta)}
+    lora_params = sum(p.numel() for p in params) - (rows.delta.numel() if rows is not None else 0)
     tmp = out_dir / ".adapter.safetensors.tmp"
     save_adapter(tmp, state, meta)
     adapter_sha = tensors_sha256(state)
@@ -447,10 +581,11 @@ def train(s: Settings, arm: str, seed: int, set_path: Path, out_dir: Path, devic
                  len(records), len(steps), warm, sum(len(b) for b in batches),
                  sum(enc.lengths), sum(enc.scored),
                  sum(padded_tokens(b, enc.lengths) for b in batches),
-                 cut, max(enc.lengths), sum(p.numel() for p in params), dtypes,
+                 cut, max(enc.lengths), lora_params, dtypes,
                  [records[i]["id"] for i in steps[0].rows], init_sha, adapter_sha, data_sha,
-                 losses, time.perf_counter() - t0, note)
-    write_json(out_dir / "train.json", asdict(res))
+                 losses, time.perf_counter() - t0, note,
+                 (tokenizer or s.model) if rows is not None else None, rows_rec)
+    write_json(out_dir / "train.json", result_record(res))
     del model, opt
     return res
 

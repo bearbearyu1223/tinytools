@@ -1,0 +1,103 @@
+# Post 9's base arm (plan 3f): the main run's pipeline on Qwen2.5-1.5B (base), a model with no
+# tool calling: untrained, then three seed pairs of LoRA SFT (real ToolACE vs the random-call
+# control), each model scored the same way, then the report. Everything as experiments/main.toml
+# (the same SFT sets, settings, seeds, scoring, noise floor, repeat check and report), except:
+#   - --profile base on every SFT command: outputs/base/, captures sft*-base.txt;
+#   - prompts and training rows rendered with the Instruct tokenizer's chat template (the base
+#     template differs only in its default system line), byte for byte the Instruct arm's;
+#   - replies end at <|im_end|> or <|endoftext|> (the base config stops at <|endoftext|> only);
+#   - four embedding rows trained beside LoRA (<|im_start|>, <|im_end|>, <tool_call>,
+#     </tool_call>: identical and tied in the base model), a zero-initialised float32 delta,
+#     4 x 1,536 = 6,144 parameters, in LoRA's AdamW group; merged into the tied embedding.
+#   scripts/lambda.sh estimate base, then scripts/lambda.sh run base --approve <USD>
+#
+# Stages, in order (each command stops the run if it fails):
+#   0. PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True for every command
+#   1. data: toolace-convert, sft-data --seeds 1,2,3 (shared with main; data/ is not in git)
+#   2. sft-check --profile base: main's checks (sha256 pins, the template renders the four
+#      sets as sft-data did, 0 rows over 3,072 tokens, every <|im_end|> scored, the memory
+#      step with the delta in it, B = 0 merged gives the base model's replies on the 200 dev
+#      tasks byte for byte, now with delta = 0 merged too, and random B with a random delta
+#      merged gives the LoRA model's logits in float32), plus the base arm's: every training
+#      row and every prompt (ours, BFCL) byte-identical to the Instruct arm's, the base
+#      tokenizer splits text as the Instruct one does, replies end at both end tokens, and
+#      the four rows identical in the base model. Exits 1 (and stops the run) if any fails.
+#   3. engine-check --quick: the batched engine on CUDA bf16 (model-independent; as main)
+#   4. the untrained base model scored: our 1,000 test tasks greedy, BFCL's 1,116 eval items
+#      greedy, the 500 train-sample tasks greedy + 8 at T=1; then the noise floor (the 500
+#      tasks' 8 at T=1 again, generation seed 1)
+#   5. per seed 1, 2, 3: sft-pair = train real, score it, train control, score it; pairs that
+#      can't finish before the deadline are not started; a fetch after each
+#   6. seed 1 real trained again (training determinism), skipped if it can't finish
+#   7. sft-report --profile base, and the untrained replies rescored into the r1-r3b captures
+#
+# Hours (the arithmetic, from the main run's measured 3.86 h, 2026-11-23, and Milestone 0's
+# A100 rates for the untrained base model, 2026-11-22):
+#   the main run, as measured (runs/2026-11-23-main/run.json)       3.86 h
+#   less its untrained scoring (10.7 min) and noise floor (6.2 min,
+#     score.json walls)                                            -0.28 h
+#   plus the untrained base model, which runs nearly every reply to
+#     the 512-token cap (Milestone 0: ours 0.43 s/task greedy, 2.90
+#     s/task 8 at T=1, BFCL 0.64 s/item):
+#       1,000 x 0.43 + 1,116 x 0.64 + 500 x (0.43 + 2.90) = 2,809 s  0.78 h
+#       noise floor, 500 x 2.90 = 1,450 s                            0.40 h
+#   plus sft-check's extra: the base model's B = 0 replies run to the
+#     cap on the 200 dev tasks, twice (2 x 200 x (0.43 - 0.08) s =
+#     140 s), the Instruct rows read, the prompts compared, a fourth
+#     float32 model in the merge check (~2 min)                      0.07 h
+#   total                                                            4.83 h (~$9.61 at $1.99/h)
+# Training is taken as main's (7 runs x 22.1 min): the delta adds 6,144 parameters and two
+# one-hot products per micro-batch. Scoring a trained model is taken as main's (~7.2 min) if
+# training teaches the base model to end its turns; if it doesn't, each trained model's
+# scoring takes ~0.78 h like the untrained one's, and seeds 2-3 don't fit: sft-pair estimates
+# each pair from what seed 1's pair measured and doesn't start one that can't finish before
+# the deadline (pairs stay whole; the report says which seeds it has).
+# Worst case: max_hours x the live price, 6.0 h x $1.99 = $11.94, within the $12 cap; with
+# post 9's ledger ($10.48 so far) the post stays within its $50.
+name = "base"
+post = 9
+instance_type = "gpu_1x_a100_sxm4"   # 40 GB; Milestone 0 and the main run ran on it
+max_hours = 6.0                      # 6.0 x $1.99 = $11.94 <= cap_usd
+expected_hours = 4.9                 # 4.83 h above, rounded up
+cap_usd = 12
+commands = [
+  "export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True",
+  "uv run tinytools toolace-convert",
+  "uv run tinytools sft-data --seeds 1,2,3",
+  "uv run tinytools sft-check --profile base --batch-size 64",
+  "uv run tinytools engine-check --quick",
+  "uv run tinytools sft-score --profile base --untrained --batch-size 64",
+  "uv run tinytools sft-score --profile base --untrained --noise-floor --batch-size 64",
+  "echo TINYTOOLS_FETCH_NOW",
+  'uv run tinytools sft-pair --profile base --seed 1 --batch-size 64 --deadline-epoch "$TINYTOOLS_DEADLINE_EPOCH"',
+  "echo TINYTOOLS_FETCH_NOW",
+  'uv run tinytools sft-pair --profile base --seed 2 --batch-size 64 --deadline-epoch "$TINYTOOLS_DEADLINE_EPOCH"',
+  "echo TINYTOOLS_FETCH_NOW",
+  'uv run tinytools sft-pair --profile base --seed 3 --batch-size 64 --deadline-epoch "$TINYTOOLS_DEADLINE_EPOCH"',
+  "echo TINYTOOLS_FETCH_NOW",
+  'uv run tinytools sft-train --profile base --arm real --seed 1 --repeat --deadline-epoch "$TINYTOOLS_DEADLINE_EPOCH"',
+  "uv run tinytools sft-report --profile base",
+  "uv run tinytools rescore --profile base --model Qwen/Qwen2.5-1.5B --split test --replies outputs/score-Qwen2.5-1.5B-test-greedy-limitall-replies.jsonl",
+  "uv run tinytools rescore --profile base --model Qwen/Qwen2.5-1.5B --split train-sample --replies outputs/score-Qwen2.5-1.5B-train-sample-samples8-t1-limitall-replies.jsonl",
+  "uv run tinytools bfcl-rescore --profile base --model Qwen/Qwen2.5-1.5B --replies outputs/bfcl-Qwen2.5-1.5B-eval-greedy-limitall-replies.jsonl",
+]
+# Only files these commands write (fetch also skips any not written during the run).
+# Adapters (unmerged, fp32, with the rows' delta; post 10 may need them), every reply, loss
+# logs, training and scoring records, and the captures. The patterns name the base model's
+# captures exactly (score-Qwen2.5-1.5B-test-*, not score-Qwen2.5-1.5B-*, which would also
+# match the Instruct model's names).
+fetch = [
+  "outputs/base/*.json",
+  "outputs/base/*/*.json",
+  "outputs/base/*/*.jsonl",
+  "outputs/base/*/adapter.safetensors",
+  "outputs/base/r1-prompt.txt",
+  "outputs/sft*-base.txt",
+  "outputs/sft-data.txt",
+  "outputs/toolace-convert.txt",
+  "outputs/engine-check-quick.txt",
+  "outputs/score-Qwen2.5-1.5B-test-*",
+  "outputs/score-Qwen2.5-1.5B-train-sample-*",
+  "outputs/bfcl-Qwen2.5-1.5B-eval-*",
+]
+setup_record = "outputs/base/setup.json"

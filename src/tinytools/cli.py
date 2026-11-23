@@ -45,6 +45,31 @@ from .report import WIDTH, Report
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUTS = ROOT / "outputs"
 DATA = ROOT / "data"
+PROFILE_NAMES = ("main", "base")  # train.PROFILES (not imported here: it pulls in lora/torch)
+
+
+def _profile_tokenizer(profile: str, model: str) -> str | None:
+    """The tokenizer a profile scores ``model`` with; ``None``: the model's own (main)."""
+    from .train import PROFILES
+
+    p = PROFILES[profile]
+    if p.tokenizer is None:
+        return None
+    try:
+        return p.tokenizer_for(model)
+    except ValueError as e:
+        sys.exit(str(e))
+
+
+def _r1_path(profile: str, model: str) -> Path:
+    """Where r1's unbroken prompt goes: outputs/r1-prompt.txt (main, as it was), else the
+    profile's output directory (outputs/base/ or outputs/base-quick/ by the model)."""
+    if profile == "main":
+        return OUTPUTS / "r1-prompt.txt"
+    from .train import PROFILES
+
+    p = PROFILES[profile]
+    return OUTPUTS / p.out_name(model == p.quick.model) / "r1-prompt.txt"
 
 
 def _quiet_hf() -> None:
@@ -546,6 +571,11 @@ def cmd_bfcl_rescore(args) -> None:
                 seed=args.seed, dtype=dtype, determinism=determinism_label(device_type),
                 engine=engine)
     rep.kv("checked by", "bfcl-rescore of the saved replies")
+    profile = getattr(args, "profile", "main")  # main when args are built by hand
+    tok_id = _profile_tokenizer(profile, args.model)
+    if tok_id is not None:
+        rep.kv("chat template and tokenizer", tok_id)
+        rep.note(f"(--profile {profile}: the template the replies were scored with)")
     if name["split"] != source:
         rep.note(f"(the {name['split']} items of a --split {source} replies file)")
     _bfcl_body(rep, results, sampling=sampling, samples=samples, wall=wall)
@@ -1050,11 +1080,17 @@ def cmd_rescore(args) -> None:
                  sampling=sampling, samples=samples, temperature=temperature, seed=args.seed,
                  dtype=dtype, determinism=determinism_label(device_type), engine=engine)
     rep.kv("checked by", "rescore of the saved replies")
+    profile = getattr(args, "profile", "main")  # main when args are built by hand
+    tok_id = _profile_tokenizer(profile, args.model)
+    if tok_id is not None:
+        rep.kv("chat template and tokenizer", tok_id)
+        rep.note(f"(--profile {profile}: the template the replies were scored with)")
     if not sampling:
-        from transformers import AutoTokenizer
+        from .train import load_tokenizer
 
-        _r1_from(rep, AutoTokenizer.from_pretrained(args.model), splits, args.split, greedy,
-                 missing="(not in this replies file: run score to print it)")
+        _r1_from(rep, load_tokenizer(args.model, tok_id), splits, args.split, greedy,
+                 missing="(not in this replies file: run score to print it)",
+                 prompt_path=_r1_path(profile, args.model))
     _score_body(rep, greedy=greedy, sampled=sampled, mode=mode, samples=samples,
                 split=args.split, wall=wall)
     rep.close()
@@ -1066,7 +1102,8 @@ def cmd_rescore(args) -> None:
 
 
 def _r1_from(rep: Report, tok, splits: dict, split: str, greedy,
-             missing: str = "(not among the tasks scored)") -> None:
+             missing: str = "(not among the tasks scored)",
+             prompt_path: Path | None = None) -> None:
     """The r1 block from the greedy pass's own reply to r1's task (``score`` and
     ``rescore`` alike), so the block and the replies file can't disagree."""
     from . import ours
@@ -1074,24 +1111,26 @@ def _r1_from(rep: Report, tok, splits: dict, split: str, greedy,
     task = ours.r1_task(splits["test"])
     raw = next((s.replies[0] for s in greedy if s.task["id"] == task["id"]), None)
     if split == "test" and raw is not None:
-        _r1(rep, tok, task, raw)
+        _r1(rep, tok, task, raw, prompt_path)
     else:
         rep.section(f"One task, whole: {task['id']} ({task['kind']}, {task['tool']})")
         rep.note(missing)
 
 
-def _r1(rep: Report, tok, task: dict, raw: str) -> None:
+def _r1(rep: Report, tok, task: dict, raw: str, prompt_path: Path | None = None) -> None:
     """r1a and r1b: one test task's whole prompt, and the model's reply run through the tool."""
     from . import ours, tasks
     from .checkers import call_text, check_reply
 
+    prompt_path = prompt_path or OUTPUTS / "r1-prompt.txt"
     text = ours.prompt(tok, task)
     census = ours.prompt_census(tok, text)
-    (OUTPUTS / "r1-prompt.txt").write_text(text)
+    prompt_path.parent.mkdir(parents=True, exist_ok=True)
+    prompt_path.write_text(text)
     rep.section(f"One task, whole: {task['id']} ({task['kind']}, {task['tool']})")
     rep.note("The templated prompt, exactly as the model reads it (Qwen2.5's")
     rep.note("chat template; long lines broken with a trailing \\; unbroken copy")
-    rep.note("in outputs/r1-prompt.txt):")
+    rep.note(f"in {prompt_path.relative_to(ROOT)}):")
     rep.blank()
     _block(rep, text)
     rep.blank()
@@ -1411,7 +1450,8 @@ def _deadline(args) -> float | None:
 def cmd_sft_check(args) -> None:
     from . import sftrun
 
-    sys.exit(sftrun.run_check(ROOT, args.quick, args.model, args.dev_limit, args.batch_size))
+    sys.exit(sftrun.run_check(ROOT, args.quick, args.model, args.dev_limit, args.batch_size,
+                              args.profile))
 
 
 def cmd_sft_score(args) -> None:
@@ -1422,7 +1462,7 @@ def cmd_sft_score(args) -> None:
     if args.noise_floor and not args.untrained:
         sys.exit("--noise-floor is the untrained model's (give --untrained)")
     sys.exit(sftrun.run_score(ROOT, args.quick, args.adapter.resolve() if args.adapter else None,
-                              args.batch_size, floor=args.noise_floor))
+                              args.batch_size, floor=args.noise_floor, profile=args.profile))
 
 
 def cmd_sft_train(args) -> None:
@@ -1431,20 +1471,20 @@ def cmd_sft_train(args) -> None:
     if args.repeat and (args.arm, args.seed) != ("real", 1):
         sys.exit("--repeat is seed 1 real (the training determinism check)")
     sys.exit(sftrun.run_train(ROOT, args.quick, args.arm, args.seed, args.repeat, _deadline(args),
-                              args.token_budget, args.grad_checkpointing))
+                              args.token_budget, args.grad_checkpointing, args.profile))
 
 
 def cmd_sft_pair(args) -> None:
     from . import sftrun
 
     sys.exit(sftrun.run_pair(ROOT, args.quick, args.seed, _deadline(args), args.batch_size,
-                             args.token_budget, args.grad_checkpointing))
+                             args.token_budget, args.grad_checkpointing, args.profile))
 
 
 def cmd_sft_report(args) -> None:
     from . import sftrun
 
-    sys.exit(sftrun.run_report(ROOT, args.quick))
+    sys.exit(sftrun.run_report(ROOT, args.quick, args.profile))
 
 
 # -- entry point -------------------------------------------------------------------
@@ -1498,6 +1538,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--split", choices=["eval"], default=None,
                    help="eval: keep only the eval items of an all-split file and write the "
                         "capture bfcl-score --split eval would (default: the file's own split)")
+    s.add_argument("--profile", choices=sorted(PROFILE_NAMES), default="main",
+                   help="base: the replies of post 9's base arm; Setup names the Instruct "
+                        "chat template its prompts had")
     s.set_defaults(fn=cmd_bfcl_rescore)
 
     s = sub.add_parser("tasks", help="generate our tool tasks (test, dev, train) and count them")
@@ -1523,6 +1566,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--model", default="Qwen/Qwen2.5-0.5B-Instruct", help="the model it was scored with")
     s.add_argument("--split", choices=["test", "dev", "train-sample"], default="test")
     s.add_argument("--seed", type=int, default=0, help="the seed it was scored with (printed only)")
+    s.add_argument("--profile", choices=sorted(PROFILE_NAMES), default="main",
+                   help="base: the replies of post 9's base arm (sft-score --profile base); "
+                        "r1 uses the Instruct chat template the arm ran with and writes "
+                        "outputs/base/r1-prompt.txt")
     s.set_defaults(fn=cmd_rescore)
 
     s = sub.add_parser("sft-data", help="the SFT sets: real (truncated), random-call per seed")
@@ -1570,10 +1617,18 @@ def build_parser() -> argparse.ArgumentParser:
                    help="sampled: the first N test tasks by id (default 10; --quick 3)")
     s.set_defaults(fn=cmd_engine_check)
 
-    quick_help = ("Qwen2.5-0.5B-Instruct, the first 32 SFT rows, a few tasks; outputs/main-quick/ "
-                  "(a Mac check; its numbers are not results)")
+    quick_help = ("Qwen2.5-0.5B-Instruct (--profile base: Qwen2.5-0.5B), the first 32 SFT rows, "
+                  "a few tasks; outputs/main-quick/ (base-quick/) (a Mac check; its numbers are "
+                  "not results)")
     deadline_help = ("Unix time by which the work must end (the Lambda runner's "
                      "$TINYTOOLS_DEADLINE_EPOCH): work that can't finish by then is not started")
+
+    def profile_flag(s) -> None:
+        s.add_argument("--profile", choices=sorted(PROFILE_NAMES), default="main",
+                       help="main: Qwen2.5-1.5B-Instruct, outputs/main/ (as the main run ran); "
+                            "base: Qwen2.5-1.5B with the Instruct chat template and four "
+                            "embedding rows trained, outputs/base/, captures *-base.txt "
+                            "(plan 3f)")
 
     def training_flags(s) -> None:
         s.add_argument("--token-budget", type=int, default=None,
@@ -1589,6 +1644,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="merge check on the first N dev tasks of each kind (default: all 200; "
                         "--quick 2; 120 takes all 200)")
     s.add_argument("--batch-size", type=int, default=None, help=BATCH_HELP)
+    profile_flag(s)
     s.set_defaults(fn=cmd_sft_check)
 
     s = sub.add_parser("sft-score", help="score the untrained model or a merged adapter")
@@ -1600,6 +1656,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="with --untrained: only the train-sample tasks' 8 at T=1, generation "
                         "seed 1, into untrained-gen-seed1/ (r6a's noise floor)")
     s.add_argument("--batch-size", type=int, default=None, help=BATCH_HELP)
+    profile_flag(s)
     s.set_defaults(fn=cmd_sft_score)
 
     s = sub.add_parser("sft-train", help="train one LoRA adapter")
@@ -1611,6 +1668,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="seed 1 real again, into real-seed1-repeat/, compared with the first")
     s.add_argument("--deadline-epoch", type=float, default=None, help=deadline_help)
     training_flags(s)
+    profile_flag(s)
     s.set_defaults(fn=cmd_sft_train)
 
     s = sub.add_parser("sft-pair", help="one seed: train real, score, train control, score")
@@ -1619,10 +1677,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--deadline-epoch", type=float, default=None, help=deadline_help)
     s.add_argument("--batch-size", type=int, default=None, help=BATCH_HELP)
     training_flags(s)
+    profile_flag(s)
     s.set_defaults(fn=cmd_sft_pair)
 
     s = sub.add_parser("sft-report", help="r4c, r4d, r5a-d, r6a from saved runs (no model)")
     s.add_argument("--quick", action="store_true", help=quick_help)
+    profile_flag(s)
     s.set_defaults(fn=cmd_sft_report)
     return p
 

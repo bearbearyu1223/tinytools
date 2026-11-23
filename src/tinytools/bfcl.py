@@ -242,12 +242,16 @@ def oracle_reply(item: Item) -> str:
 # -- generation ------------------------------------------------------------------
 
 
-def load_model(model_id: str, device: torch.device):
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+def load_model(model_id: str, device: torch.device, tokenizer: str | None = None):
+    """The model in the device's dtype and its tokenizer: its own, or ``tokenizer``'s
+    (post 9's base arm: the Instruct chat template, the same ids, checked by
+    ``train.load_tokenizer``)."""
+    from transformers import AutoModelForCausalLM
 
     from .device import preferred_dtype
+    from .train import load_tokenizer
 
-    tok = AutoTokenizer.from_pretrained(model_id)
+    tok = load_tokenizer(model_id, tokenizer)
     model = AutoModelForCausalLM.from_pretrained(model_id, dtype=preferred_dtype(device))
     model.to(device)
     model.eval()

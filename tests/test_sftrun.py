@@ -24,7 +24,8 @@ def _main():
 
 def test_the_main_experiment_parses_and_every_command_is_real():
     e = _main()
-    assert (e.post, e.instance_type, e.max_hours, e.cap_usd) == (9, "gpu_1x_a100_sxm4", 8.0, 16.0)
+    # max_hours 7.5 since 29aeae0: the $16 cap less the failed first attempt's $0.87
+    assert (e.post, e.instance_type, e.max_hours, e.cap_usd) == (9, "gpu_1x_a100_sxm4", 7.5, 16.0)
     assert e.expected_hours <= e.max_hours and e.setup_record == "outputs/main/setup.json"
     parser = build_parser()
     commands = []
