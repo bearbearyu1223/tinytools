@@ -46,11 +46,12 @@
 # ($TINYTOOLS_DEADLINE_EPOCH: max_hours less the runner's 10-minute reserve) and estimate,
 # from what has been measured so far x 1.5, whether a pair (or the repeat) can finish with
 # 15 minutes kept for the report; one that can't is not started.
-# Worst case: max_hours x the live price ($15.92 at $1.99/h; refused above $2.00/h).
+# Worst case: max_hours x the live price ($14.93 at $1.99/h for 7.5 h; with the failed first
+# attempt's $0.87 the experiment stays within $16).
 name = "main"
 post = 9
 instance_type = "gpu_1x_a100_sxm4"   # 40 GB; Milestone 0 ran on it
-max_hours = 8.0                      # the plan's cap (3e); hard limit, launch to termination
+max_hours = 7.5                      # 8 h, less the failed first attempt ($0.87), so experiment cap $16 holds (2026-11-22)
 expected_hours = 5.9
 cap_usd = 16                         # the plan's 8 h at $1.99/h
 commands = [
