@@ -1,0 +1,187 @@
+{
+  "experiment": "main",
+  "post": 9,
+  "experiment_file": "experiments/main.toml",
+  "experiment_sha256": "48842a89098696af587fba5d4d2b0c25f2ea8047a1324396c66b82067027536e",
+  "commit": "89f3ce4f3005ac1cbe7f961b34091057783937d4",
+  "commands": [
+    "export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True",
+    "uv run tinytools toolace-convert",
+    "uv run tinytools sft-data --seeds 1,2,3",
+    "uv run tinytools sft-check --batch-size 64",
+    "uv run tinytools engine-check --quick",
+    "uv run tinytools sft-score --untrained --batch-size 64",
+    "uv run tinytools sft-score --untrained --noise-floor --batch-size 64",
+    "echo TINYTOOLS_FETCH_NOW",
+    "uv run tinytools sft-pair --seed 1 --batch-size 64 --deadline-epoch \"$TINYTOOLS_DEADLINE_EPOCH\"",
+    "echo TINYTOOLS_FETCH_NOW",
+    "uv run tinytools sft-pair --seed 2 --batch-size 64 --deadline-epoch \"$TINYTOOLS_DEADLINE_EPOCH\"",
+    "echo TINYTOOLS_FETCH_NOW",
+    "uv run tinytools sft-pair --seed 3 --batch-size 64 --deadline-epoch \"$TINYTOOLS_DEADLINE_EPOCH\"",
+    "echo TINYTOOLS_FETCH_NOW",
+    "uv run tinytools sft-train --arm real --seed 1 --repeat --deadline-epoch \"$TINYTOOLS_DEADLINE_EPOCH\"",
+    "uv run tinytools sft-report",
+    "uv run tinytools rescore --model Qwen/Qwen2.5-1.5B-Instruct --split test --replies outputs/score-Qwen2.5-1.5B-Instruct-test-greedy-limitall-replies.jsonl",
+    "uv run tinytools rescore --model Qwen/Qwen2.5-1.5B-Instruct --split train-sample --replies outputs/score-Qwen2.5-1.5B-Instruct-train-sample-samples8-t1-limitall-replies.jsonl",
+    "uv run tinytools bfcl-rescore --model Qwen/Qwen2.5-1.5B-Instruct --replies outputs/bfcl-Qwen2.5-1.5B-Instruct-eval-greedy-limitall-replies.jsonl"
+  ],
+  "instance": {
+    "id": "cd11d8566da64f9c9b8e773b3dcdea07",
+    "name": "tinytools-main-20261122-211250",
+    "tag": "2026-11-22-main-40531aa9",
+    "type": "gpu_1x_a100_sxm4",
+    "region": "asia-south-1",
+    "price_usd_per_hour": 1.99
+  },
+  "max_hours": 8.0,
+  "launched_at": "2026-11-23T05:12:50+00:00",
+  "ended_at": "2026-11-23T05:39:09+00:00",
+  "hours": 0.4385,
+  "cost_usd": 0.8727,
+  "cost_basis": "API price at launch x (confirmed termination - launch request); worst case while not confirmed. Lambda's invoice is authoritative.",
+  "status": "failed: a command exited 1",
+  "terminated": true,
+  "remote_exit_code": 1,
+  "versions": {
+    "gpu": "NVIDIA A100-SXM4-40GB",
+    "driver": "570.148.08",
+    "cuda (torch build)": "12.6",
+    "torch": "2.13.0+cu126",
+    "transformers": "5.14.1",
+    "bfcl-eval": "2025.12.17",
+    "python": "3.12.16",
+    "uv": "uv 0.13.9 (x86_64-unknown-linux-gnu)",
+    "os": "Linux-6.8.0-60-generic-x86_64-with-glibc2.35"
+  },
+  "seeds": [
+    1,
+    2,
+    3
+  ],
+  "determinism": "deterministic algorithms on, CUBLAS_WORKSPACE_CONFIG=:4096:8",
+  "dtype": "bfloat16",
+  "experiment_setup": {
+    "seeds": [
+      1,
+      2,
+      3
+    ],
+    "determinism": "deterministic algorithms on, CUBLAS_WORKSPACE_CONFIG=:4096:8",
+    "dtype": "bfloat16",
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "training": {
+      "model": "Qwen/Qwen2.5-1.5B-Instruct",
+      "rank": 16,
+      "alpha": 32.0,
+      "dropout": 0.0,
+      "targets": [
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj"
+      ],
+      "epochs": 2,
+      "lr": 0.0002,
+      "betas": [
+        0.9,
+        0.999
+      ],
+      "eps": 1e-08,
+      "weight_decay": 0.0,
+      "warmup_ratio": 0.03,
+      "batch_rows": 16,
+      "max_length": 3072,
+      "token_budget": 8192,
+      "grad_checkpointing": false,
+      "rows": null
+    },
+    "gradient_checkpointing": false,
+    "cuda_alloc_conf": "expandable_segments:True",
+    "generation": {
+      "seed": 0,
+      "samples": 8,
+      "temperature": 1.0,
+      "batch_size": 64
+    }
+  },
+  "fetched": [
+    {
+      "path": "outputs/bfcl-Qwen2.5-1.5B-Instruct-eval-greedy-limitall-replies.jsonl",
+      "sha256": "495ce60f5f882805ca040a9909b49214f6b95ec7dd7cfac642e54223107b9915",
+      "bytes": 663732
+    },
+    {
+      "path": "outputs/engine-check-quick.txt",
+      "sha256": "5b611ccb835dcdecce601f6b6ec70ca6100b54563ac082ef0745d5f9b703ef3c",
+      "bytes": 6294
+    },
+    {
+      "path": "outputs/main/checks.json",
+      "sha256": "42ff807800fe1b3ae351fc1dbfa2349a151c76b0f6b61347c7a09a9290f0ef81",
+      "bytes": 3787
+    },
+    {
+      "path": "outputs/main/setup.json",
+      "sha256": "9369d35e3dbbc240edc5db644f995ac179ff5ed69c63cc4814c24e99001cbd19",
+      "bytes": 903
+    },
+    {
+      "path": "outputs/main/untrained/bfcl-eval-greedy-replies.jsonl",
+      "sha256": "495ce60f5f882805ca040a9909b49214f6b95ec7dd7cfac642e54223107b9915",
+      "bytes": 663732
+    },
+    {
+      "path": "outputs/main/untrained/ours-test-greedy-replies.jsonl",
+      "sha256": "d1f1b5677b48515fc92beaaa62745e16af62dd4bc274b3b25d6af4a238d5b339",
+      "bytes": 626304
+    },
+    {
+      "path": "outputs/main/untrained/score.json",
+      "sha256": "8026bbc4a990a814a4569f1269e5e85fa9f2b92544a878db2c3386ffe22aad73",
+      "bytes": 657
+    },
+    {
+      "path": "outputs/main/untrained/train-sample-samples8-t1-replies.jsonl",
+      "sha256": "7512ea6f152fa904fc30b3e1de1e5c03b8e9d0f0f02c8be5c935a31650d189d0",
+      "bytes": 2950517
+    },
+    {
+      "path": "outputs/score-Qwen2.5-1.5B-Instruct-test-greedy-limitall-replies.jsonl",
+      "sha256": "d1f1b5677b48515fc92beaaa62745e16af62dd4bc274b3b25d6af4a238d5b339",
+      "bytes": 626304
+    },
+    {
+      "path": "outputs/score-Qwen2.5-1.5B-Instruct-train-sample-samples8-t1-limitall-replies.jsonl",
+      "sha256": "7512ea6f152fa904fc30b3e1de1e5c03b8e9d0f0f02c8be5c935a31650d189d0",
+      "bytes": 2950517
+    },
+    {
+      "path": "outputs/sft-check.txt",
+      "sha256": "bfcb1a9c6248baf391e0416a360ce80ea8108fcf98cd1a121ebd1a116502ab04",
+      "bytes": 6585
+    },
+    {
+      "path": "outputs/sft-data.txt",
+      "sha256": "4a2c3a84a9020f085d6c283bfc7e6ac38a14797ae549f5b690266c2943faa770",
+      "bytes": 11447
+    },
+    {
+      "path": "outputs/sft-score-untrained.txt",
+      "sha256": "31a3277c1f96dec9a11fe6a7ce5620a573a381df944dcf9f6cdc0fe1c12c2a1e",
+      "bytes": 2054
+    },
+    {
+      "path": "outputs/toolace-convert.txt",
+      "sha256": "ee5779369cdea1f0ff1c651c1b5b92a8897561f2a423f421fe92e22b737234e9",
+      "bytes": 4430
+    }
+  ],
+  "not_found": [
+    "outputs/main/*/adapter.safetensors",
+    "outputs/r1-prompt.txt"
+  ],
+  "checkpoints": 0
+}

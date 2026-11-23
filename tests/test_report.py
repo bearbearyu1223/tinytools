@@ -39,3 +39,30 @@ def test_a_wrapped_note_keeps_its_indent(tmp_path):
     lines = _lines(tmp_path, lambda r: r.note(text, wrap=True))
     assert len(lines) > 1 and all(len(x) <= WIDTH and x.startswith("    word") for x in lines)
     assert " ".join(x.strip() for x in lines) == text.strip()
+
+
+def test_a_real_run_folds_a_wide_line_instead_of_dying(monkeypatch, capsys):
+    from tinytools import report as R
+
+    monkeypatch.delenv(R.STRICT_ENV, raising=False)
+    rep = R.Report("t")
+    rep.kv("copied for rescore", "score-Qwen2.5-1.5B-Instruct-test-greedy-limitall-replies.jsonl")
+    out = capsys.readouterr()
+    assert all(len(x) <= R.WIDTH for x in out.out.splitlines())
+    assert "".join(x.strip() for x in out.out.splitlines()).endswith("limitall-replies.jsonl")
+    assert "folded" in out.err
+
+
+def test_the_rescore_copies_print_within_the_width_with_the_real_names(capsys):
+    from pathlib import Path
+
+    from tinytools import report as R
+    from tinytools import sftrun
+
+    rep = R.Report("t")  # strict in tests: raises if a line is too wide
+    name = "Qwen2.5-1.5B-Instruct"
+    sftrun.print_copies(rep, [Path(f"score-{name}-test-greedy-limitall-replies.jsonl"),
+                              Path(f"bfcl-{name}-eval-greedy-limitall-replies.jsonl"),
+                              Path(f"score-{name}-train-sample-samples8-t1-limitall-replies.jsonl")])
+    joined = "".join(x.strip() for x in capsys.readouterr().out.splitlines())
+    assert "train-sample-samples8-t1-limitall-replies.jsonl" in joined

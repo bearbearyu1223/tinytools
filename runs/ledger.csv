@@ -1,2 +1,3 @@
 run,experiment,post,commit,instance_type,price_usd_per_hour,launched_at,ended_at,hours,cost_usd,status
 2026-11-22-milestone0,milestone0,9,a9261401fc8a,gpu_1x_a100_sxm4,1.99,2026-11-22T18:09:02+00:00,2026-11-22T19:06:43+00:00,0.9614,1.9132,ok
+2026-11-22-main,main,9,89f3ce4f3005,gpu_1x_a100_sxm4,1.99,2026-11-23T05:12:50+00:00,2026-11-23T05:39:09+00:00,0.4385,0.8727,failed: a command exited 1

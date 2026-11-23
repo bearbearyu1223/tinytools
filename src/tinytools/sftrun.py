@@ -208,6 +208,16 @@ def standard_copies(m: Mode, root: Path) -> list[Path]:
     return done
 
 
+def print_copies(rep, paths: list[Path]) -> None:
+    """The copies ``standard_copies`` made, one file name per line (full runs only: the
+    names are long, so they go on lines of their own, not after a ``kv`` label)."""
+    if not paths:
+        return
+    rep.note("copied for rescore, in outputs/:")
+    for p in paths:
+        rep.note(f"  {p.name}", wrap=True)
+
+
 def load_merged(model_id: str, adapter: Path, device):
     """The base model with a saved adapter merged in (fp32 sum, cast once)."""
     from . import bfcl
@@ -893,8 +903,7 @@ def run_score(root: Path, quick: bool, adapter: Path | None, batch_size: int | N
         return 0
     _score_one(root, m, label, adapter, device, batch, rep)
     if adapter is None:
-        for p in standard_copies(m, root):
-            rep.kv("copied for rescore", p.name[:40])
+        print_copies(rep, standard_copies(m, root))
     rep.close()
     return 0
 

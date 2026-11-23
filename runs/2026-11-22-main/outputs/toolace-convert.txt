@@ -1,0 +1,102 @@
+==========================================================================
+tinytools toolace-convert
+==========================================================================
+device        : cuda (NVIDIA A100-SXM4-40GB)
+torch         : 2.13.0+cu126
+platform      : Linux 6.8.0-60-generic (x86_64)
+device memory : 42.4 GB
+
+--------------------------------------------------------------------------
+The file
+--------------------------------------------------------------------------
+  dataset                            Team-ACE/ToolACE @ 6bda777c88d2
+  data.json sha256                   ba12c083fca7e8da
+  rows                               11300
+
+--------------------------------------------------------------------------
+Language
+--------------------------------------------------------------------------
+  Rule: a row is Chinese if the first 200 characters of its
+  system prompt contain a CJK ideograph (U+4E00-U+9FFF).
+  Chinese rows (dropped)             18
+  English rows                       11282
+  contrast: rows with any CJK        25
+
+--------------------------------------------------------------------------
+English rows that do not convert, by reason
+--------------------------------------------------------------------------
+  reason                                     rows
+  -------------------------------------------------
+  tool list not JSON (format-variation row)   500
+
+  The 500 rows whose tool list is not JSON, by how the list is
+  written (detected from its first characters):
+  format                rows
+  ----------------------------
+  YAML-like lines        151
+  Markdown list           76
+  LaTeX tabular           73
+  HTML table              63
+  JSON with other keys    62
+  XML-like tags           61
+  no tool list at all     14
+  other                    0
+  JSON with other keys: "tool_name", "definition", "arguments"
+  in place of the name / description / parameters schema.
+
+  rows converted                     10782
+    with an empty tool list          248
+    with tool results                797
+    with a date/time line kept       5869
+
+--------------------------------------------------------------------------
+Converted rows by number of assistant turns
+--------------------------------------------------------------------------
+  assistant turns  rows
+  -----------------------
+  1                9982
+  2                   6
+  3                 262
+  4                 232
+  5                 207
+  6                  93
+
+--------------------------------------------------------------------------
+Assistant turns: calls and not-calls
+--------------------------------------------------------------------------
+  A turn is a call if it starts with '[' and ends with ']' (and parses).
+  Not-calls are split by what precedes them: a tool result (answering
+  from it) or a user turn (asking for a missing argument, saying no
+  function fits, or chatting).
+  assistant turns                    13301
+    calls                            9964
+      with 2+ calls in one turn      4127
+    not-calls after a tool result    1034
+    not-calls after a user turn      2303
+  calls in all call turns            18161
+  calls passing an unlisted argument 0
+
+--------------------------------------------------------------------------
+Rows the random-call control can use
+--------------------------------------------------------------------------
+  rows with 2+ tools in the list     7753
+    with at least one call           6980
+
+--------------------------------------------------------------------------
+Masking, tokenized with Qwen/Qwen2.5-0.5B-Instruct
+--------------------------------------------------------------------------
+  tokens, all converted rows         7925395
+  tokens scored (assistant turns)    1137261
+  share scored                       0.1435
+  scored: the tokens the loss is computed on, each assistant turn
+  from after its '<|im_start|>assistant' header through <|im_end|>.
+  tokens straddling a mask edge      0
+
+--------------------------------------------------------------------------
+Written
+--------------------------------------------------------------------------
+  file                               data/toolace-en-qwen.jsonl
+  records                            10782
+  sha256                             beaa841596a4f427
+  Each record: id, tools, messages, text (the chat template's
+  rendering) and train_spans (character spans of assistant turns).
