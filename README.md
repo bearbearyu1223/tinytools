@@ -3,7 +3,8 @@
 Companion project for posts 9-12 of the LLM Architecture Refresh series: teaching a
 small model to call tools (SFT on ToolACE, scored on BFCL), then RL with execution
 rewards. Local only until post 9 publishes. So far: data, evaluation, the SFT training sets, a
-batched generation engine, and Milestone 0 (below) with its Lambda runner; no training loop yet.
+batched generation engine, Milestone 0 (below) with its Lambda runner, and post 9's SFT trainer,
+merged-adapter scoring and report (`sft-*`, "Post 9's main run" below).
 
 ```
 uv sync
@@ -22,6 +23,11 @@ uv run tinytools rescore --replies outputs/score-<...>-replies.jsonl      # no m
 uv run tinytools sft-data --seeds 1,2,3  # SFT sets -> data/sft/ (r4a, r4b)
 uv run tinytools milestone0 --quick      # Milestone 0 end to end, 0.5B, a few items (Mac check)
 uv run tinytools milestone0 --base-when-needed  # instruct models, base only if the rule needs it (A100)
+uv run tinytools sft-check --quick      # template, lengths, memory, B = 0 merge check (0.5B)
+uv run tinytools sft-score --untrained --quick
+uv run tinytools sft-pair --seed 1 --quick   # train real, score, train control, score
+uv run tinytools sft-train --arm real --seed 1 --repeat --quick  # determinism check
+uv run tinytools sft-report --quick     # r4c-r6a from outputs/main-quick/ (no model)
 scripts/lambda.sh doctor                 # Lambda settings, SSH key, API base URL; launches nothing
 scripts/lambda.sh estimate milestone0    # price x hours against the experiment's and the post's cap
 scripts/lambda.sh run milestone0 --approve 8  # up -> setup -> run -> fetch -> down (docs/lambda-playbook.md)
@@ -371,3 +377,64 @@ each seed's hit rate against chance by k, the argument sources and how built
 parameters were filled, how many control calls equal the real call (coincidence
 only: mostly tools that take no arguments), and one row (`toolace-4231`) with its
 seed-1 control twin.
+
+
+## Post 9's main run: SFT, scoring, the report
+
+`experiments/main.toml` (plan 3e, "T8 spec"; A100 40 GB, ~5 h expected, 8 h and $16 at most)
+runs, in order: the data; `sft-check`; `engine-check --quick`; `sft-score --untrained`; then
+per seed 1, 2, 3 `sft-pair` (train real, score it, train control, score it); seed 1 real
+trained again; `sft-report`; and the untrained replies rescored into the r1-r3b captures.
+`scripts/lambda.sh estimate main` prints the live price against the caps.
+
+**Training** (`train.py`, settings fixed before any result and printed in r4c): Qwen2.5-1.5B-
+Instruct with frozen bf16 weights; LoRA rank 16, alpha 32, dropout 0 on q, k, v, o, gate, up,
+down in every layer, with A, B, their gradients and AdamW's state in float32 (the matmuls run
+in the activations' dtype, as autocast does); 2 epochs of the 8,504 rows; 16 rows per step,
+split into micro-batches by a token budget of 8,192 (rows x longest row), gradients
+accumulated; loss the mean over the step's scored tokens; AdamW (0.9, 0.999), weight decay 0,
+no clipping; lr 2e-4, Hugging Face's cosine schedule with 3% warmup (32 of 1,064 steps); max
+length 3,072 with nothing cut (the longest row is 2,975). Seed N sets LoRA A's init and the
+shuffle order; real N and control N share both (the pair). Gradient checkpointing is on only if
+`sft-check`'s memory probe (the largest micro-batch, forward and backward, on the run's GPU)
+runs out of memory without it.
+
+**Scoring** an adapter merges it: W + (alpha/r) BA in float32, cast to the weights' dtype once,
+then the batched engine (batch 64 on CUDA) runs our 1,000 test tasks greedy, BFCL's 1,116 eval
+items greedy, and the 500 train-sample tasks greedy and 8 at T=1. The unmerged adapter is
+saved beside it (post 10 needs it). `sft-check` merges an untrained adapter (B = 0) and checks
+the replies on the 200 dev tasks are the base model's, byte for byte; it also checks the
+1.5B template renders every SFT row as sft-data's 0.5B rendering did, and that every
+assistant turn's `<|im_end|>` is scored.
+
+**Files**: `outputs/main/<label>/` per model (`untrained`, `real-seed<N>`, `control-seed<N>`,
+`real-seed1-repeat`): `adapter.safetensors`, `losses.jsonl`, `train.json`, the three replies
+files and `score.json` (written last; a directory without it is incomplete). Every file is
+written whole and renamed into place. Adapters are compared by a digest of their tensors,
+not the file: safetensors writes its metadata in no fixed order.
+
+**The report** (`sft-report`, `outputs/sft.txt`) re-checks every saved reply with the current
+checkers, so a recapture after review is a rescore (`sft-report`, or `sft-score --adapter` for
+a saved adapter); retraining is needed only if the trainer changes. It reports only seeds
+whose real and control runs are both complete, and prints r4c (settings, dtypes, checks), r4d
+(per run: first and last loss, wall time; seed 1 trained twice: losses and adapters compared),
+r5a (right per arm and category, BFCL calls pooled, gains with paired intervals), r5b (six
+outcomes per arm; right function vs chance), r5c (declining), r5d (the four effects, each
+SFT - untrained, control - untrained, SFT - control, the five primary comparisons marked) and
+r6a (groups of 8 on the train-sample tasks, the untrained -> arm transition table pooled, per
+seed and by kind, share differences and the four movements with intervals; tasks that need a
+call and all kinds). Intervals: paired bootstrap over tasks, 10,000 resamples, numpy
+`default_rng(0)` afresh per comparison, 95% percentile; an arm's per-task value is the mean of
+its seeds' 0/1 (`effects.py`).
+
+**Deadline and fetching.** `sft-pair` and `sft-train --repeat` take `--deadline-epoch`: from
+what has been measured (seconds per token slot of training, seconds per scoring; Milestone 0's
+probe before any) x 1.5, with 15 minutes kept for the report, work that can't finish is not
+started (exit 0, so the report still runs on the whole pairs). After each pair the job prints
+`TINYTOOLS_FETCH_NOW` and the runner fetches what exists (a checkpoint); the final fetch skips
+files a checkpoint already has unchanged.
+
+**Quick mode** (`--quick`, the Mac): Qwen2.5-0.5B-Instruct, the first 32 SFT rows (4 steps),
+2 tasks of each kind and category, into `outputs/main-quick/` and `outputs/sft*-quick.txt`. It
+shows the pipeline works; its numbers are not results.
+

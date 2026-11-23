@@ -1,0 +1,79 @@
+{
+  "template": {
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "rendered_with": "Qwen/Qwen2.5-0.5B-Instruct",
+    "files": {
+      "real.jsonl": {
+        "rows": 8504,
+        "identical": 8504,
+        "differ": []
+      },
+      "control-seed1.jsonl": {
+        "rows": 8504,
+        "identical": 8504,
+        "differ": []
+      },
+      "control-seed2.jsonl": {
+        "rows": 8504,
+        "identical": 8504,
+        "differ": []
+      },
+      "control-seed3.jsonl": {
+        "rows": 8504,
+        "identical": 8504,
+        "differ": []
+      }
+    },
+    "identical": true
+  },
+  "lengths": {
+    "rows": 8504,
+    "longest": 2975,
+    "mean": 739.182855126999,
+    "over 1024": 1369,
+    "over 3072": 0,
+    "tokens": 6286011,
+    "scored": 607322,
+    "assistant_turns": 8571,
+    "im_end_scored": 8571
+  },
+  "memory": {
+    "rows": 4,
+    "longest": 998,
+    "token_slots": 3992,
+    "budget": 4096,
+    "needs_checkpointing": false,
+    "fits": true,
+    "peak_gb": 2.1,
+    "peak_kind": "allocated after the step"
+  },
+  "system_shapes": {
+    "training row with a date line": [
+      "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.",
+      "Today is 2022-03-20, Sunday."
+    ],
+    "training row without one": [
+      "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
+    ],
+    "our test task": [
+      "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.",
+      "The current time is 2026-03-11 09:30, Wednesday."
+    ],
+    "BFCL eval item": [
+      "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
+    ]
+  },
+  "rows_with_date_line": [
+    4198,
+    8504
+  ],
+  "merge_b0": {
+    "model": "Qwen/Qwen2.5-0.5B-Instruct",
+    "tasks": 200,
+    "identical": 200,
+    "modules": 168,
+    "weights_equal": 168,
+    "batch_size": 8,
+    "device": "mps"
+  }
+}

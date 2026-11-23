@@ -1,0 +1,4 @@
+{"step": 1, "epoch": 1, "loss": 0.1956150201511564, "lr": 0.0, "rows": 16, "scored": 527, "micro_batches": 4}
+{"step": 2, "epoch": 1, "loss": 0.09408794654594672, "lr": 0.0002, "rows": 16, "scored": 455, "micro_batches": 4}
+{"step": 3, "epoch": 2, "loss": 0.1574222157302412, "lr": 0.00015000000000000001, "rows": 16, "scored": 515, "micro_batches": 3}
+{"step": 4, "epoch": 2, "loss": 0.04913882984594308, "lr": 5.000000000000002e-05, "rows": 16, "scored": 467, "micro_batches": 4}

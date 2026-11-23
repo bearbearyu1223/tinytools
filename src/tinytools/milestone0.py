@@ -609,7 +609,10 @@ def _time_steps(size: str, method: str, s: Settings, device, batches) -> StepTim
         if method == "full":
             params = list(lm.parameters())
         else:
-            inject_lora(lm, ATTENTION_MLP, rank=s.lora_rank, alpha=s.lora_alpha)
+            # the probe as it ran (its capture says "dtype (weights, grads, optimizer)
+            # bfloat16"): adapters in the base dtype, not lora.py's fp32 default
+            inject_lora(lm, ATTENTION_MLP, rank=s.lora_rank, alpha=s.lora_alpha,
+                        dtype=next(lm.parameters()).dtype)
             params = trainable_parameters(lm)
         trainable = sum(p.numel() for p in params)
         torch.manual_seed(SEED)

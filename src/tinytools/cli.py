@@ -15,6 +15,11 @@ Commands (``tinytools <command> --help`` for each one's flags):
     figures         the post's figures, parsed from the captures, into figures/
     milestone0      six models on the dev split, the model rule's verdict, LoRA vs full timing
     engine-check    the batched engine against the one-at-a-time engine it replaced
+    sft-check       before training: template byte-identity, lengths, the B = 0 merge check
+    sft-score       score the untrained model, or a saved adapter merged into it
+    sft-train       train one LoRA adapter (--repeat: seed 1 real again, compared)
+    sft-pair        one seed's pair: train real, score, train control, score
+    sft-report      r4c, r4d, r5a-d, r6a from the saved runs and replies (no model)
 
 Every command prints a report on stdout (progress goes to stderr) and saves the
 same report under outputs/, so ``tinytools bfcl-score > x.txt`` captures only
@@ -1395,6 +1400,50 @@ def cmd_engine_check(args) -> None:
                      engine_check.sizes_for(args.quick, args.ours, args.bfcl, args.sampled))
 
 
+# -- post 9's SFT runs (sftrun.py) ----------------------------------------------------
+
+
+def _deadline(args) -> float | None:
+    return getattr(args, "deadline_epoch", None)
+
+
+def cmd_sft_check(args) -> None:
+    from . import sftrun
+
+    sys.exit(sftrun.run_check(ROOT, args.quick, args.model, args.dev_limit, args.batch_size))
+
+
+def cmd_sft_score(args) -> None:
+    from . import sftrun
+
+    if args.untrained == (args.adapter is not None):
+        sys.exit("give one of --untrained and --adapter")
+    sys.exit(sftrun.run_score(ROOT, args.quick, args.adapter.resolve() if args.adapter else None,
+                              args.batch_size))
+
+
+def cmd_sft_train(args) -> None:
+    from . import sftrun
+
+    if args.repeat and (args.arm, args.seed) != ("real", 1):
+        sys.exit("--repeat is seed 1 real (the training determinism check)")
+    sys.exit(sftrun.run_train(ROOT, args.quick, args.arm, args.seed, args.repeat, _deadline(args),
+                              args.token_budget, args.grad_checkpointing))
+
+
+def cmd_sft_pair(args) -> None:
+    from . import sftrun
+
+    sys.exit(sftrun.run_pair(ROOT, args.quick, args.seed, _deadline(args), args.batch_size,
+                             args.token_budget, args.grad_checkpointing))
+
+
+def cmd_sft_report(args) -> None:
+    from . import sftrun
+
+    sys.exit(sftrun.run_report(ROOT, args.quick))
+
+
 # -- entry point -------------------------------------------------------------------
 
 BATCH_HELP = ("sequences per forward pass (an item's samples stay in one batch); default "
@@ -1402,6 +1451,13 @@ BATCH_HELP = ("sequences per forward pass (an item's samples stay in one batch);
 
 
 def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
+    t0 = time.perf_counter()
+    args.fn(args)
+    progress.status(f"done in {time.perf_counter() - t0:.0f} s")
+
+
+def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="tinytools", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="command", required=True)
@@ -1511,10 +1567,58 @@ def main(argv: list[str] | None = None) -> None:
                    help="sampled: the first N test tasks by id (default 10; --quick 3)")
     s.set_defaults(fn=cmd_engine_check)
 
-    args = p.parse_args(argv)
-    t0 = time.perf_counter()
-    args.fn(args)
-    progress.status(f"done in {time.perf_counter() - t0:.0f} s")
+    quick_help = ("Qwen2.5-0.5B-Instruct, the first 32 SFT rows, a few tasks; outputs/main-quick/ "
+                  "(a Mac check; its numbers are not results)")
+    deadline_help = ("Unix time by which the work must end (the Lambda runner's "
+                     "$TINYTOOLS_DEADLINE_EPOCH): work that can't finish by then is not started")
+
+    def training_flags(s) -> None:
+        s.add_argument("--token-budget", type=int, default=None,
+                       help="micro-batch budget, rows x longest row (default 8192; --quick 4096)")
+        s.add_argument("--grad-checkpointing", action="store_true",
+                       help="recompute activations in the backward pass (off by default)")
+
+    s = sub.add_parser("sft-check", help="template byte-identity, lengths, B = 0 merge check")
+    s.add_argument("--quick", action="store_true", help=quick_help)
+    s.add_argument("--model", default=None,
+                   help="the model for the merge check (default: 1.5B instruct; --quick 0.5B)")
+    s.add_argument("--dev-limit", type=int, default=None,
+                   help="merge check on the first N dev tasks of each kind (default: all 200; "
+                        "--quick 2; 120 takes all 200)")
+    s.add_argument("--batch-size", type=int, default=None, help=BATCH_HELP)
+    s.set_defaults(fn=cmd_sft_check)
+
+    s = sub.add_parser("sft-score", help="score the untrained model or a merged adapter")
+    s.add_argument("--quick", action="store_true", help=quick_help)
+    s.add_argument("--untrained", action="store_true", help="the base model")
+    s.add_argument("--adapter", type=Path, default=None,
+                   help="outputs/main/<label>/adapter.safetensors (scores into its directory)")
+    s.add_argument("--batch-size", type=int, default=None, help=BATCH_HELP)
+    s.set_defaults(fn=cmd_sft_score)
+
+    s = sub.add_parser("sft-train", help="train one LoRA adapter")
+    s.add_argument("--quick", action="store_true", help=quick_help)
+    s.add_argument("--arm", choices=["real", "control"], required=True)
+    s.add_argument("--seed", type=int, required=True,
+                   help="LoRA init and shuffle order; control N trains control-seedN.jsonl")
+    s.add_argument("--repeat", action="store_true",
+                   help="seed 1 real again, into real-seed1-repeat/, compared with the first")
+    s.add_argument("--deadline-epoch", type=float, default=None, help=deadline_help)
+    training_flags(s)
+    s.set_defaults(fn=cmd_sft_train)
+
+    s = sub.add_parser("sft-pair", help="one seed: train real, score, train control, score")
+    s.add_argument("--quick", action="store_true", help=quick_help)
+    s.add_argument("--seed", type=int, required=True)
+    s.add_argument("--deadline-epoch", type=float, default=None, help=deadline_help)
+    s.add_argument("--batch-size", type=int, default=None, help=BATCH_HELP)
+    training_flags(s)
+    s.set_defaults(fn=cmd_sft_pair)
+
+    s = sub.add_parser("sft-report", help="r4c, r4d, r5a-d, r6a from saved runs (no model)")
+    s.add_argument("--quick", action="store_true", help=quick_help)
+    s.set_defaults(fn=cmd_sft_report)
+    return p
 
 
 if __name__ == "__main__":

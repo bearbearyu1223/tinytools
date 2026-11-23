@@ -575,3 +575,95 @@ def test_list_flags_ours_and_down_terminates(fake, capsys):
     assert lr.cmd_down(api, a, yes=True, poll_s=0.02) == 0
     assert fake.instances[a]["status"] == "terminated"
     assert lr.cmd_down(api, a, yes=True, poll_s=0.02) == 0  # already gone: nothing to do
+
+
+# -- checkpoint fetches (post 9's main run: fetch after each seed pair) ---------------------
+
+
+def test_mark_lines_and_listing_are_parsed_exactly():
+    assert lr.mark_lines("", "a\nTINYTOOLS_FETCH_NOW\nb") == (1, "b")
+    assert lr.mark_lines("TINYTOOLS_FE", "TCH_NOW\n") == (1, "")  # split across chunks
+    assert lr.mark_lines("", "+ echo TINYTOOLS_FETCH_NOW\n") == (0, "")  # the echoed command
+    assert lr.mark_lines("", "TINYTOOLS_FETCH_NOW\r\nTINYTOOLS_FETCH_NOW\n") == (2, "")
+    assert lr.parse_listing("12\toutputs/a b.txt\n  7\tx\nbad line\n\t\n") == [
+        ("outputs/a b.txt", 12), ("x", 7)]
+
+
+def test_a_checkpoint_fetches_mid_run_and_the_final_fetch_skips_unchanged_files(repo, fake,
+                                                                               tmp_path):
+    write_exp(repo, ["mkdir -p outputs", "echo first > outputs/demo-a.jsonl",
+                     "echo TINYTOOLS_FETCH_NOW", "sleep 1",
+                     "echo later > outputs/demo.txt", "echo '{}' > outputs/demo-setup.json"])
+    runner, out = make_runner(repo, fake, tmp_path)
+    assert runner.run() == 0, out.getvalue()
+    rj = run_json(repo)
+    assert rj["checkpoints"] == 1
+    assert {f["path"] for f in rj["fetched"]} == {"outputs/demo-a.jsonl", "outputs/demo.txt",
+                                                  "outputs/demo-setup.json"}
+    assert "checkpoint 1: fetched 1 files" in out.getvalue()
+    assert runner.remote.copied == ["outputs/demo-setup.json", "outputs/demo.txt"]  # a skipped
+    assert fake.statuses() == ["terminated"]
+
+
+class LastFetchFails(LocalRemote):
+    calls = 0
+
+    def fetch(self, *a, **k):
+        LastFetchFails.calls += 1
+        if LastFetchFails.calls > 1:
+            raise RuntimeError("the network went away")
+        return super().fetch(*a, **k)
+
+
+def test_what_a_checkpoint_fetched_survives_a_failed_final_fetch(repo, fake, tmp_path):
+    LastFetchFails.calls = 0
+    write_exp(repo, ["mkdir -p outputs", "echo pair1 > outputs/demo-a.jsonl",
+                     "echo TINYTOOLS_FETCH_NOW", "sleep 1", "echo pair2 > outputs/demo-b.jsonl",
+                     "echo hi > outputs/demo.txt", "echo '{}' > outputs/demo-setup.json"])
+    runner, out = make_runner(repo, fake, tmp_path, remote_cls=LastFetchFails)
+    assert runner.run() == 1  # the final fetch failed: demo.txt never arrived
+    rj = run_json(repo)
+    assert [f["path"] for f in rj["fetched"]] == ["outputs/demo-a.jsonl"]
+    run_dir = next((repo / "runs").glob("*-demo"))
+    assert (run_dir / "outputs" / "demo-a.jsonl").read_text() == "pair1\n"
+    assert "fetch failed: RuntimeError" in out.getvalue()
+    assert fake.statuses() == ["terminated"]
+
+
+def test_a_failed_checkpoint_does_not_stop_the_run(repo, fake, tmp_path):
+    class FirstFetchFails(LocalRemote):
+        n = 0
+
+        def fetch(self, *a, **k):
+            FirstFetchFails.n += 1
+            if FirstFetchFails.n == 1:
+                raise RuntimeError("blip")
+            return super().fetch(*a, **k)
+
+    write_exp(repo, [*WRITES, "echo TINYTOOLS_FETCH_NOW", "sleep 1", "echo done"])
+    runner, out = make_runner(repo, fake, tmp_path, remote_cls=FirstFetchFails)
+    assert runner.run() == 0, out.getvalue()
+    assert "checkpoint fetch failed: RuntimeError: blip; going on" in out.getvalue()
+    assert run_json(repo)["checkpoints"] == 0 and len(run_json(repo)["fetched"]) == 3
+
+
+def test_the_ssh_remote_checkpoint_and_skip_through_a_fake_ssh(repo, fake, tmp_path, shim):
+    home = tmp_path / "home"
+    fake_ssh(shim, home)
+    write_exp(repo, ["mkdir -p outputs", "echo pair-one > outputs/demo-a.jsonl",
+                     "echo TINYTOOLS_FETCH_NOW", "sleep 1", "echo more >> outputs/demo-a.jsonl",
+                     "echo x > outputs/demo.txt", "echo '{}' > outputs/demo-setup.json"])
+    env = env_for(fake)
+    exp, path = lr.load_experiment(repo, "demo")
+    out = io.StringIO()
+    runner = lr.Runner(repo, exp, path, lr.make_api(env, rate_wait=RATE_WAIT), env,
+                       remote_factory=lambda ip: lr.SSHRemote(ip, KEY_PATH, tmp_path / "kh"),
+                       approve=100.0, setup_script="cd ~/tinytools && " + SETUP, poll_s=0.1,
+                       boot_poll_s=0.02, reserve_s=1.0, margin_s=0.5, confirm_s=5,
+                       keep_awake=False, stream=out)
+    assert runner.run() == 0, out.getvalue()
+    run_dir = next((repo / "runs").glob("*-demo"))
+    # appended to after the checkpoint: its size changed, so the final fetch copied it again
+    assert (run_dir / "outputs" / "demo-a.jsonl").read_text() == "pair-one\nmore\n"
+    assert run_json(repo)["checkpoints"] == 1
+    assert "checkpoint 1: fetched 1 files (0 unchanged)" in out.getvalue()

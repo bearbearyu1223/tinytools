@@ -1,0 +1,44 @@
+{
+  "label": "real-seed1",
+  "model": "Qwen/Qwen2.5-0.5B-Instruct",
+  "dtype": "float32",
+  "device": "mps",
+  "engine": "batched",
+  "batch_size": 8,
+  "seed": 0,
+  "samples": 8,
+  "temperature": 1.0,
+  "max_new_tokens": 512,
+  "limits": {
+    "ours": 2,
+    "bfcl": 2,
+    "sample": 2
+  },
+  "passes": {
+    "ours test, greedy": {
+      "items": 6,
+      "seconds": 7.20201837499917
+    },
+    "BFCL eval, greedy": {
+      "items": 10,
+      "seconds": 11.092695291998098
+    },
+    "train-sample, greedy + 8 at T=1": {
+      "items": 6,
+      "seconds": 23.594040124997264
+    }
+  },
+  "wall_s": 41.888950249995105,
+  "adapter": "outputs/main-quick/real-seed1/adapter.safetensors",
+  "modules_merged": 168,
+  "adapter_sha256": "8b2776b2170f7dcd710d865a181faa181e38507eff74d5c9ef56a2df5fc25820",
+  "adapter_meta": {
+    "seed": "1",
+    "alpha": "32.0",
+    "arm": "real",
+    "rank": "16",
+    "data_sha256": "2cf7f25a4545d4d01dfa3c2f5d678c5d9194e20724ca417d2464b31cbdf1cdb8",
+    "targets": "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj",
+    "base_model": "Qwen/Qwen2.5-0.5B-Instruct"
+  }
+}

@@ -18,3 +18,7 @@ outputs/*.err
 lambda.env
 /.lambda/
 /runs/*/log.txt
+
+# quick-mode adapters (a Mac check; tens of MB each)
+/outputs/main-quick/*/adapter.safetensors
+/outputs/main-quick/b0-adapter.safetensors

@@ -1,0 +1,46 @@
+{
+  "seeds": [
+    1,
+    2,
+    3
+  ],
+  "determinism": "not set on mps (the CUDA flags only)",
+  "dtype": "float32",
+  "model": "Qwen/Qwen2.5-0.5B-Instruct",
+  "training": {
+    "model": "Qwen/Qwen2.5-0.5B-Instruct",
+    "rank": 16,
+    "alpha": 32.0,
+    "dropout": 0.0,
+    "targets": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj",
+      "gate_proj",
+      "up_proj",
+      "down_proj"
+    ],
+    "epochs": 2,
+    "lr": 0.0002,
+    "betas": [
+      0.9,
+      0.999
+    ],
+    "eps": 1e-08,
+    "weight_decay": 0.0,
+    "warmup_ratio": 0.03,
+    "batch_rows": 16,
+    "max_length": 3072,
+    "token_budget": 4096,
+    "grad_checkpointing": false,
+    "rows": 32
+  },
+  "gradient_checkpointing": false,
+  "generation": {
+    "seed": 0,
+    "samples": 8,
+    "temperature": 1.0,
+    "batch_size": 8
+  }
+}

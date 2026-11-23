@@ -1,0 +1,79 @@
+{
+  "arm": "control",
+  "seed": 1,
+  "settings": {
+    "model": "Qwen/Qwen2.5-0.5B-Instruct",
+    "rank": 16,
+    "alpha": 32.0,
+    "dropout": 0.0,
+    "targets": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj",
+      "gate_proj",
+      "up_proj",
+      "down_proj"
+    ],
+    "epochs": 2,
+    "lr": 0.0002,
+    "betas": [
+      0.9,
+      0.999
+    ],
+    "eps": 1e-08,
+    "weight_decay": 0.0,
+    "warmup_ratio": 0.03,
+    "batch_rows": 16,
+    "max_length": 3072,
+    "token_budget": 4096,
+    "grad_checkpointing": false,
+    "rows": 32
+  },
+  "rows": 32,
+  "steps": 4,
+  "warmup": 1,
+  "micro_batches": 16,
+  "tokens": 22607,
+  "scored": 976,
+  "padded_tokens": 49680,
+  "rows_cut": 0,
+  "longest": 1065,
+  "trainable": 8798208,
+  "dtypes": {
+    "base weights": "float32",
+    "activations (compute)": "float32",
+    "LoRA A, B": "float32",
+    "gradients of A, B": "float32",
+    "AdamW state": "float32"
+  },
+  "first_step_rows": [
+    "toolace-4",
+    "toolace-9",
+    "toolace-18",
+    "toolace-15",
+    "toolace-26",
+    "toolace-29",
+    "toolace-25",
+    "toolace-12",
+    "toolace-13",
+    "toolace-22",
+    "toolace-2",
+    "toolace-0",
+    "toolace-28",
+    "toolace-7",
+    "toolace-23",
+    "toolace-10"
+  ],
+  "init_sha256": "a0843c56ea82762724c5e595d9cf64981b5a0280ae2ccf9515b018e067d8066b",
+  "adapter_sha256": "71b44b4ab734b56b0a522d1fdbeeaca504d2024e799a6bf4d315f69fb7325e24",
+  "data_sha256": "1a8b98c21361edc3dcc3d0e37e238b74c97e43d2dfc37c7a4f58ea83f1ec5f7f",
+  "losses": [
+    1.286780892437651,
+    1.2385959794036054,
+    0.7245731738305861,
+    0.8793750047683716
+  ],
+  "seconds": 116.71813858298992,
+  "note": ""
+}

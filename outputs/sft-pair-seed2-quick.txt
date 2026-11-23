@@ -1,0 +1,76 @@
+==========================================================================
+tinytools sft-pair (seed 2) --quick
+==========================================================================
+device        : mps (Apple arm64)
+torch         : 2.13.0
+platform      : Darwin 24.6.0 (arm64)
+device memory : 17.2 GB
+
+--------------------------------------------------------------------------
+Setup
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-0.5B-Instruct
+  output directory                   main-quick
+  decoding                           greedy; 8 at T=1 (train-sample)
+  top_p / top_k / repetition penalty 1.0 / off / 1.0
+  max new tokens                     512
+  seed (generation)                  0 (+ task id and sample number)
+  engine                             batched, sorted by length
+    batch size, greedy               8 sequences
+    batch size, 8 samples            8 sequences (1 item x 8)
+  Left padding with the attention mask; a reply ends at the model's
+  eos or <|im_end|>. Seconds per item: the batch's seconds x the
+  item's share of its rows.
+  determinism                        not set on mps (the CUDA flags only)
+  deadline                           none
+
+--------------------------------------------------------------------------
+Trained: real-seed2
+--------------------------------------------------------------------------
+  rows / steps                       32 / 4 (15 micro-batches)
+  loss, first / last step            0.1956 / 0.0491
+  wall time                          1.5 min
+  adapter tensors sha256 (first 16)  396a79bbce8ad2fa
+
+--------------------------------------------------------------------------
+Scored: real-seed2
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-0.5B-Instruct
+  adapter                            merged into the weights
+  adapter tensors sha256 (first 16)  396a79bbce8ad2fa
+  ours test, greedy, right           3 of 6
+  BFCL eval, greedy, right           8 of 10
+  train-sample, greedy, right        3 of 6
+    ours test, greedy                6 items, 0.1 min
+    BFCL eval, greedy                10 items, 0.2 min
+    train-sample, greedy + 8 at T=1  6 items, 0.4 min
+  (per arm, outcome by outcome and with intervals: sft-report)
+
+--------------------------------------------------------------------------
+Trained: control-seed2
+--------------------------------------------------------------------------
+  rows / steps                       32 / 4 (15 micro-batches)
+  loss, first / last step            1.0644 / 0.8336
+  wall time                          1.4 min
+  adapter tensors sha256 (first 16)  9bc9ea439d7a695a
+
+--------------------------------------------------------------------------
+Scored: control-seed2
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-0.5B-Instruct
+  adapter                            merged into the weights
+  adapter tensors sha256 (first 16)  9bc9ea439d7a695a
+  ours test, greedy, right           3 of 6
+  BFCL eval, greedy, right           6 of 10
+  train-sample, greedy, right        3 of 6
+    ours test, greedy                6 items, 0.1 min
+    BFCL eval, greedy                10 items, 0.2 min
+    train-sample, greedy + 8 at T=1  6 items, 0.9 min
+  (per arm, outcome by outcome and with intervals: sft-report)
+
+--------------------------------------------------------------------------
+The pair: real and control, seed 2
+--------------------------------------------------------------------------
+  same LoRA init (A)                 yes
+  same first-step rows, same order   yes
+  same rows and steps                yes

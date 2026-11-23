@@ -108,6 +108,16 @@ Keep fetch patterns to the files the commands write: a pattern like `milestone0-
 matches the committed `milestone0-quick-*` Mac captures. `data/` is not in git, so an
 experiment's commands rebuild what it needs on the instance.
 
+**Checkpoint fetches.** A line of the job's output that is exactly `TINYTOOLS_FETCH_NOW` (a
+command `echo TINYTOOLS_FETCH_NOW` between two others) makes the runner fetch what the run has
+written so far, while the job goes on (`experiments/main.toml` does it after each seed pair).
+A checkpoint never runs past the deadline (skipped with less than a minute left), and a failed
+one is said and the run goes on. The final fetch skips a file a checkpoint already copied whose
+size on the instance is unchanged (files are written whole and renamed, or only appended to),
+and if the final fetch fails, what the checkpoints copied is still recorded in `run.json`
+(`fetched`; `checkpoints` counts them). A partly written file a checkpoint copied is copied
+again by the final fetch, since its size has changed.
+
 ## A run, step by step
 
 ```
@@ -126,7 +136,7 @@ approve; or an instance named `tinytools-*` is already up.
 | up | launch one instance of the type, named `tinytools-<exp>-<stamp>` and tagged `tinytools-run=<run>-<random>` (if Lambda refuses the tag, a 4xx with error code `global/invalid-parameters` whose message names the `tags` field, launched again without it; any other refusal is final); the ledger gets a row at the worst-case cost *before* the launch call; wait until it is active (a 404 just after the launch means "not listed yet"; 20 minutes at most), then until SSH answers (10 minutes at most) |
 | setup | copy the repo at the recorded commit (`git archive`: tracked files only) with rsync; install uv if missing; `uv sync --frozen` (torch from the CUDA 12.6 index on Linux); print GPU, driver and versions; fail if torch can't see the GPU. Copying and the setup script together get 25 minutes (`SETUP_TIMEOUT_S`); past that the run fails and the instance is terminated |
 | run | the commands, in order, stopping at the first that fails, detached on the instance (`nohup setsid`, so a dropped SSH connection doesn't stop them) under a remote `timeout`; `job.sh` touches `.run/start` first and exports `TINYTOOLS_DEADLINE_EPOCH`, the Unix time the remote `timeout` fires, for commands that can stop themselves in time (`milestone0 --deadline-epoch`). The laptop polls every 15 s (each poll also checks that `job.sh` is alive: one that died without an exit code ends the run; polls that fail for 10 minutes in a row, SSH gone, end the run), asks Lambda for the instance's status every 5 minutes (`unhealthy`, `preempted`, `terminated` or gone ends the run), streams the output to the terminal and `runs/<date>-<exp>/log.txt`, and keeps the Mac awake with `caffeinate -i -s` (in its own session, so Ctrl-C doesn't end it) |
-| fetch | copy the `fetch` files **written during the run** (newer than `.run/start`) into `runs/<date>-<exp>/` (same relative paths), record each one's sha256 and size; patterns that matched nothing written are listed, and make `run` exit 1 even when every command succeeded. A committed file the commands didn't rewrite is not fetched. Fetching takes at most 7 minutes, and never the last 5 minutes before the hard limit (kept for terminating) |
+| fetch | copy the `fetch` files **written during the run** (newer than `.run/start`) into `runs/<date>-<exp>/` (same relative paths), record each one's sha256 and size; patterns that matched nothing written are listed, and make `run` exit 1 even when every command succeeded. A committed file the commands didn't rewrite is not fetched; one a checkpoint already copied, unchanged in size, is not copied again. Fetching takes at most 7 minutes, and never the last 5 minutes before the hard limit (kept for terminating) |
 | down | terminate through the API until Lambda reports the instance `terminated` or `preempted`: retried after every failure, not sent while Lambda says it can't (`actions.terminate.available` false, `vm-has-not-launched`, while it boots), re-sent every 60 s after a call that was accepted but didn't take. An id Lambda named in terminate's answer counts as seen, so a later 404 for it means it is gone. Up to 2 hours; if still not confirmed, the final check lists the account and, if this run's instance is still up, makes a second attempt of up to 2 hours (so up to 4 hours in all: **the laptop must stay awake and online throughout**); then exit 3 |
 
 `down <id>` and `list` also work on their own, for recovery.

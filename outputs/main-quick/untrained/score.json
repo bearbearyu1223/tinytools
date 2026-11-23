@@ -1,0 +1,33 @@
+{
+  "label": "untrained",
+  "model": "Qwen/Qwen2.5-0.5B-Instruct",
+  "dtype": "float32",
+  "device": "mps",
+  "engine": "batched",
+  "batch_size": 8,
+  "seed": 0,
+  "samples": 8,
+  "temperature": 1.0,
+  "max_new_tokens": 512,
+  "limits": {
+    "ours": 2,
+    "bfcl": 2,
+    "sample": 2
+  },
+  "passes": {
+    "ours test, greedy": {
+      "items": 6,
+      "seconds": 6.967166332993656
+    },
+    "BFCL eval, greedy": {
+      "items": 10,
+      "seconds": 11.135955457997625
+    },
+    "train-sample, greedy + 8 at T=1": {
+      "items": 6,
+      "seconds": 33.74386987500475
+    }
+  },
+  "wall_s": 51.8471927500068,
+  "adapter": null
+}

@@ -98,6 +98,11 @@ POST_CAP_USD = 50.0  # the plan's cap per post, summed over the post's experimen
 # also bash's code for a command SIGKILLed by anyone (the OOM killer): see exit_status
 KILLED = 137
 DEADLINE_ENV = "TINYTOOLS_DEADLINE_EPOCH"  # job.sh: when the remote `timeout` fires (epoch s)
+# A line of the job's output exactly this asks for a checkpoint fetch (an experiment's
+# commands can `echo` it, e.g. after each seed pair): what was written so far is fetched
+# while the job goes on, so a run cut off later still leaves those files on the laptop.
+CHECKPOINT_MARK = "TINYTOOLS_FETCH_NOW"
+CHECKPOINT_MIN_S = 60  # a checkpoint fetch is skipped with less than this before the deadline
 DIED = "died"  # poll(): the job is gone and left no exit code
 EXIT_OK, EXIT_FAILED, EXIT_REFUSED, EXIT_UNCONFIRMED = 0, 1, 2, 3
 LEDGER_FIELDS = ("run", "experiment", "post", "commit", "instance_type", "price_usd_per_hour",
@@ -741,6 +746,24 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def parse_listing(out: str) -> list[tuple[str, int]]:
+    """``size<TAB>path`` lines (fetch's listing) -> (path, size). Pure."""
+    rows = []
+    for line in out.splitlines():
+        size, sep, path = line.partition("\t")
+        if sep and path.strip() and size.strip().isdigit():
+            rows.append((path, int(size)))
+    return rows
+
+
+def mark_lines(pending: str, chunk: str) -> tuple[int, str]:
+    """How many complete lines of ``pending + chunk`` are exactly :data:`CHECKPOINT_MARK`,
+    and the unfinished last line to carry into the next chunk. Pure."""
+    text = pending + chunk
+    *lines, rest = text.split("\n")
+    return sum(line.rstrip("\r") == CHECKPOINT_MARK for line in lines), rest[-4096:]
+
+
 # -- the remote side over SSH ---------------------------------------------------------------
 
 
@@ -806,21 +829,29 @@ class SSHRemote:
         """TERM every process in the job's session, wait for them to end, then KILL."""
         self._ssh(STOP_SCRIPT.format(wait=max(1, int(wait_s))), wait_s + 30)
 
-    def fetch(self, patterns: tuple[str, ...], dest: Path, timeout: float) -> list[str]:
-        """The files matching ``patterns`` that this run wrote (newer than .run/start)."""
+    def fetch(self, patterns: tuple[str, ...], dest: Path, timeout: float,
+              skip: dict[str, int] | None = None) -> list[str]:
+        """The files matching ``patterns`` that this run wrote (newer than .run/start).
+        A file in ``skip`` whose size there is still the size given is not copied again
+        (an earlier checkpoint fetched it; the run's files are written whole or only
+        appended to, so an unchanged size means an unchanged file); it is still listed
+        in the result."""
         t0 = time.time()
         r = self._ssh(f"cd {REMOTE_DIR} && [ -f .run/start ] && shopt -s nullglob && "
                       f"for f in {' '.join(patterns)}; do [ -f \"$f\" ] && "
-                      '[ -n "$(find "$f" -maxdepth 0 -newer .run/start)" ] && echo "$f"; '
+                      '[ -n "$(find "$f" -maxdepth 0 -newer .run/start)" ] && '
+                      'printf \'%s\\t%s\\n\' "$(wc -c < "$f" | tr -d \' \')" "$f"; '
                       "done; true", min(60.0, timeout))
-        files = [f for f in r.stdout.splitlines() if f.strip()]
-        if not files:
-            return []
+        listed = parse_listing(r.stdout)
+        files = sorted({f for f, _ in listed})
+        todo = sorted({f for f, n in listed if (skip or {}).get(f) != n})
+        if not todo:
+            return files
         dest.mkdir(parents=True, exist_ok=True)
         # a tar stream over ssh: macOS ships openrsync, whose --files-from with a remote
         # source is not something to find out about mid-run
         tar = subprocess.run(["ssh", "-n", *self.opts, self.host,
-                              f"cd {REMOTE_DIR} && tar -cf - " + " ".join(map(shlex.quote, files))],
+                              f"cd {REMOTE_DIR} && tar -cf - " + " ".join(map(shlex.quote, todo))],
                              stdin=subprocess.DEVNULL, capture_output=True,
                              timeout=max(1.0, timeout - (time.time() - t0)), check=True).stdout
         with tarfile.open(fileobj=io.BytesIO(tar)) as t:
@@ -878,6 +909,8 @@ class RunState:
     versions: dict = field(default_factory=dict)
     fetched: list[dict] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
+    have: dict = field(default_factory=dict)  # path -> size of the copy a checkpoint fetched
+    checkpoints: int = 0  # checkpoint fetches that completed
 
 
 class Runner:
@@ -1081,7 +1114,7 @@ class Runner:
             "versions": st.versions,
             "seeds": setup.get("seeds"), "determinism": setup.get("determinism"),
             "dtype": setup.get("dtype"), "experiment_setup": setup,
-            "fetched": st.fetched, "not_found": st.missing,
+            "fetched": st.fetched, "not_found": st.missing, "checkpoints": st.checkpoints,
         }
         (st.run_dir / "run.json").write_text(self.redact(json.dumps(data, indent=2)) + "\n")
         write_ledger_row(self.root / "runs" / "ledger.csv", {
@@ -1242,6 +1275,7 @@ class Runner:
         offset, failures = 0, 0
         failing_since: float | None = None
         last_check = time.time()
+        pending = ""  # the job output's unfinished last line
         while True:
             self._check_deadline()
             try:
@@ -1259,6 +1293,9 @@ class Runner:
             if chunk:
                 offset += len(chunk)
                 self._job_output(chunk)
+                marks, pending = mark_lines(pending, chunk.decode("utf-8", "replace"))
+                if marks and code is None:
+                    self._checkpoint()
             if code == DIED:
                 raise RuntimeError("the job on the instance ended without an exit code "
                                    "(killed, or the instance restarted)")
@@ -1345,6 +1382,37 @@ class Runner:
             st.instance_id = found[0]
         return found
 
+    def _checkpoint(self) -> None:
+        """The job asked for a fetch (:data:`CHECKPOINT_MARK`): copy what it has written so
+        far, while it goes on. Never past the deadline; a failure is said and the run goes on
+        (the final fetch tries again)."""
+        st = self.state
+        budget = min(FETCH_TIMEOUT_S, self.deadline - time.time())
+        if budget < CHECKPOINT_MIN_S:
+            self.say("checkpoint: too close to the deadline to fetch; going on")
+            return
+        try:
+            files = self.remote.fetch(self.exp.fetch, st.run_dir, timeout=budget, skip=st.have)
+        except Exception as e:  # noqa: BLE001 - the job goes on; the final fetch tries again
+            self.say(f"checkpoint fetch failed: {type(e).__name__}: {e}; going on")
+            return
+        new = [f for f in files if (st.run_dir / f).is_file()
+               and st.have.get(f) != (st.run_dir / f).stat().st_size]
+        for f in files:
+            if (st.run_dir / f).is_file():
+                st.have[f] = (st.run_dir / f).stat().st_size
+        st.checkpoints += 1
+        self._set_fetched(list(st.have))
+        self.say(f"checkpoint {st.checkpoints}: fetched {len(new)} files "
+                 f"({len(files) - len(new)} unchanged) into {st.run_dir.relative_to(self.root)}")
+        self._guard("writing run.json / ledger", self._record)
+
+    def _set_fetched(self, files: list[str]) -> None:
+        st = self.state
+        st.fetched = [{"path": f, "sha256": sha256_file(st.run_dir / f),
+                       "bytes": (st.run_dir / f).stat().st_size}
+                      for f in sorted(set(files)) if (st.run_dir / f).is_file()]
+
     def _fetch(self) -> None:
         st = self.state
         budget = fetch_budget(self.hard_end, time.time(),
@@ -1354,12 +1422,12 @@ class Runner:
             self.say("no time left to fetch before the hard limit: terminating without it")
         else:
             try:
-                files = self.remote.fetch(self.exp.fetch, st.run_dir, timeout=budget)
+                files = self.remote.fetch(self.exp.fetch, st.run_dir, timeout=budget,
+                                          skip=st.have)
             except Exception as e:  # noqa: BLE001
                 self.say(f"fetch failed: {type(e).__name__}: {e}")
-        st.fetched = [{"path": f, "sha256": sha256_file(st.run_dir / f),
-                       "bytes": (st.run_dir / f).stat().st_size}
-                      for f in sorted(files) if (st.run_dir / f).is_file()]
+        # what checkpoints fetched counts too (if this fetch failed, those copies are what's left)
+        self._set_fetched([*files, *st.have])
         got = [f["path"] for f in st.fetched]
         st.missing = [p for p in self.exp.fetch if not any(Path(g).match(p) for g in got)]
         self.say(f"fetched {len(st.fetched)} files this run wrote into "

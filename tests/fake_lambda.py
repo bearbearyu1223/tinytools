@@ -370,16 +370,20 @@ class LocalRemote:
             stop_session(self.proc.pid, min(wait_s, 5.0))
             self.proc.poll()
 
-    def fetch(self, patterns, dest: Path, timeout: float) -> list[str]:
+    def fetch(self, patterns, dest: Path, timeout: float, skip=None) -> list[str]:
         start = self.dir / ".run" / "start"
         if not start.exists():
             return []
         t0 = start.stat().st_mtime_ns
         files = sorted({str(p.relative_to(self.dir)) for pat in patterns for p in self.dir.glob(pat)
                         if p.is_file() and p.stat().st_mtime_ns > t0})
+        self.copied = []
         for f in files:
+            if (skip or {}).get(f) == (self.dir / f).stat().st_size:
+                continue  # an earlier checkpoint has it, unchanged
             (dest / f).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(self.dir / f, dest / f)
+            self.copied.append(f)
         return files
 
 

@@ -1,0 +1,79 @@
+# Post 9's main run (plan 3e, "T8 spec"): Qwen2.5-1.5B-Instruct untrained, then three seed
+# pairs of LoRA SFT (real ToolACE vs the random-call control), each model scored the same
+# way, then the report. Generation: the batched engine, 64 sequences per batch.
+#   scripts/lambda.sh estimate main, then scripts/lambda.sh run main --approve <USD>
+#
+# Stages, in order (each command stops the run if it fails):
+#   1. data: toolace-convert, sft-data --seeds 1,2,3 (data/ is not in git)
+#   2. sft-check: the 1.5B template renders the 8,504 rows (and the control sets) byte for
+#      byte as sft-data's 0.5B rendering; 0 rows over 3,072 tokens; every <|im_end|> scored;
+#      the largest micro-batch's memory (decides gradient checkpointing for every run);
+#      an untrained adapter (B = 0) merged gives the base model's replies on the 200 dev
+#      tasks byte for byte. Exits 1 (and stops the run) if any check fails.
+#   3. engine-check --quick: the batched engine on CUDA bf16, as Milestone 0 ran it
+#   4. the untrained model scored: our 1,000 test tasks greedy, BFCL's 1,116 eval items
+#      greedy, the 500 train-sample tasks greedy + 8 at T=1
+#   5. per seed 1, 2, 3: sft-pair = train real, score it, train control, score it. A pair
+#      that can't finish before the deadline is not started (pairs stay whole); after each
+#      the job prints TINYTOOLS_FETCH_NOW and the runner fetches what exists so far
+#   6. seed 1 real trained again (training determinism: losses and adapters compared),
+#      skipped if it can't finish
+#   7. sft-report (r4c, r4d, r5a-d, r6a; no model), and the untrained replies rescored into
+#      the r1-r3b captures (rescore, bfcl-rescore; no model)
+#
+# Hours (the arithmetic, redone from Milestone 0's A100 measurements, 2026-11-22):
+#   setup (boot, uv sync, downloads)                         0.4 h  (plan 3e)
+#   data + sft-check + engine-check                          0.2 h
+#   scoring, 7 models x ~0.25 h                              1.75 h (1,000 x 0.08 s + 1,116 x
+#                                                                    0.33 s + 500 x 0.79 s, +
+#                                                                    500 greedy and loading)
+#   training, 7 runs x 2 epochs x ~6.4M token slots at
+#     Milestone 0's 0.297 s per 4,096 tokens (72.5 us/token) 1.8 h  (+30-40% if checkpointing)
+#   report, rescoring, final fetch                           0.2 h
+#   total                                                    ~4.4 h, ~5.0 h with checkpointing
+# expected_hours is the checkpointing case. The commands get the deadline
+# ($TINYTOOLS_DEADLINE_EPOCH: max_hours less the runner's 10-minute reserve) and estimate,
+# from what has been measured so far x 1.5, whether a pair (or the repeat) can finish with
+# 15 minutes kept for the report; one that can't is not started.
+# Worst case: max_hours x the live price ($15.92 at $1.99/h; refused above $2.00/h).
+name = "main"
+post = 9
+instance_type = "gpu_1x_a100_sxm4"   # 40 GB; Milestone 0 ran on it
+max_hours = 8.0                      # the plan's cap (3e); hard limit, launch to termination
+expected_hours = 5.0
+cap_usd = 16                         # the plan's 8 h at $1.99/h
+commands = [
+  "uv run tinytools toolace-convert",
+  "uv run tinytools sft-data --seeds 1,2,3",
+  "uv run tinytools sft-check --batch-size 64",
+  "uv run tinytools engine-check --quick",
+  "uv run tinytools sft-score --untrained --batch-size 64",
+  "echo TINYTOOLS_FETCH_NOW",
+  'uv run tinytools sft-pair --seed 1 --batch-size 64 --deadline-epoch "$TINYTOOLS_DEADLINE_EPOCH"',
+  "echo TINYTOOLS_FETCH_NOW",
+  'uv run tinytools sft-pair --seed 2 --batch-size 64 --deadline-epoch "$TINYTOOLS_DEADLINE_EPOCH"',
+  "echo TINYTOOLS_FETCH_NOW",
+  'uv run tinytools sft-pair --seed 3 --batch-size 64 --deadline-epoch "$TINYTOOLS_DEADLINE_EPOCH"',
+  "echo TINYTOOLS_FETCH_NOW",
+  'uv run tinytools sft-train --arm real --seed 1 --repeat --deadline-epoch "$TINYTOOLS_DEADLINE_EPOCH"',
+  "uv run tinytools sft-report",
+  "uv run tinytools rescore --model Qwen/Qwen2.5-1.5B-Instruct --split test --replies outputs/score-Qwen2.5-1.5B-Instruct-test-greedy-limitall-replies.jsonl",
+  "uv run tinytools rescore --model Qwen/Qwen2.5-1.5B-Instruct --split train-sample --replies outputs/score-Qwen2.5-1.5B-Instruct-train-sample-samples8-t1-limitall-replies.jsonl",
+  "uv run tinytools bfcl-rescore --model Qwen/Qwen2.5-1.5B-Instruct --replies outputs/bfcl-Qwen2.5-1.5B-Instruct-eval-greedy-limitall-replies.jsonl",
+]
+# Only files these commands write (fetch also skips any not written during the run).
+# Adapters (unmerged, fp32, ~74 MB each; post 10 needs them), every reply, loss logs,
+# training and scoring records, and the captures.
+fetch = [
+  "outputs/main/*.json",
+  "outputs/main/*/*.json",
+  "outputs/main/*/*.jsonl",
+  "outputs/main/*/adapter.safetensors",
+  "outputs/sft*.txt",
+  "outputs/toolace-convert.txt",
+  "outputs/engine-check-quick.txt",
+  "outputs/score-Qwen2.5-1.5B-Instruct-*",
+  "outputs/bfcl-Qwen2.5-1.5B-Instruct-*",
+  "outputs/r1-prompt.txt",
+]
+setup_record = "outputs/main/setup.json"

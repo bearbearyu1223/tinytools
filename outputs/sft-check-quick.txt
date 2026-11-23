@@ -1,0 +1,82 @@
+==========================================================================
+tinytools sft-check --quick (not for publication)
+==========================================================================
+device        : mps (Apple arm64)
+torch         : 2.13.0
+platform      : Darwin 24.6.0 (arm64)
+device memory : 17.2 GB
+
+--------------------------------------------------------------------------
+The chat template: Qwen/Qwen2.5-1.5B-Instruct vs sft-data's rendering
+--------------------------------------------------------------------------
+  sft-data rendered with             Qwen/Qwen2.5-0.5B-Instruct
+  Each training row re-rendered with this model's tokenizer and chat
+  template: text, scored spans, tokens and scored tokens compared.
+  file                          rows  identical  differ
+  -------------------------------------------------------
+  data/sft/real.jsonl           8504       8504       0
+  data/sft/control-seed1.jsonl  8504       8504       0
+  data/sft/control-seed2.jsonl  8504       8504       0
+  data/sft/control-seed3.jsonl  8504       8504       0
+  byte-identical                     yes
+
+--------------------------------------------------------------------------
+Row lengths (tokens), the real arm
+--------------------------------------------------------------------------
+  rows                               8504
+  longest                            2975
+  mean                               739
+  longer than 1,024                  1369
+  longer than 3,072 (cut: none)      0
+  tokens                             6286011
+    scored                           607322 (9.66%)
+    masked                           5678689
+  assistant turns                    8571
+    ending in a scored <|im_end|>    8571
+
+--------------------------------------------------------------------------
+Memory: the largest micro-batch, forward and backward
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-0.5B-Instruct
+  micro-batch                        4 rows x 998 tokens = 3,992 slots
+  token budget                       4,096
+  fits                               yes
+  gradient checkpointing             not needed: off
+  memory (allocated after the step)  2.1 GB
+  Training reads this: checkpointing is on for every run if, and
+  only if, this micro-batch did not fit without it.
+
+--------------------------------------------------------------------------
+The system prompt's shape: training rows vs our tasks and BFCL
+--------------------------------------------------------------------------
+  The system turn's lines before its tools section, as the model
+  reads them.
+  training row with a date line:
+      You are Qwen, created by Alibaba Cloud. You are a helpful assistant.
+      Today is 2022-03-20, Sunday.
+  training row without one:
+      You are Qwen, created by Alibaba Cloud. You are a helpful assistant.
+  our test task:
+      You are Qwen, created by Alibaba Cloud. You are a helpful assistant.
+      The current time is 2026-03-11 09:30, Wednesday.
+  BFCL eval item:
+      You are Qwen, created by Alibaba Cloud. You are a helpful assistant.
+  training rows with a date line     4198 of 8504 (49.4%)
+  Our tasks state the frozen clock as ToolACE's rows state theirs;
+  BFCL's prompts have Qwen's default sentence alone.
+
+--------------------------------------------------------------------------
+Merging an untrained adapter (B = 0): replies vs the base model
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-0.5B-Instruct
+  tasks                              200 of our dev tasks, greedy
+  batch size                         8
+  determinism                        not set on mps (the CUDA flags only)
+  modules merged                     168
+    weights equal to the base's      168 of 168
+  replies byte-identical             200 of 200
+  The adapter: A drawn as training draws it (seed 1), B = 0. Merging
+  computes W + (alpha/r) B A in float32 and casts it to the weight's
+  dtype once, the path every trained adapter is scored through.
+
+  all checks pass                    yes
