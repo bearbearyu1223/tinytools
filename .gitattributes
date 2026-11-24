@@ -1,3 +1,6 @@
 runs/2026-11-23-base-2/outputs/base/real-seed1/adapter.safetensors filter=lfs diff=lfs merge=lfs -text
 runs/2026-11-23-base-2/outputs/base/real-seed2/adapter.safetensors filter=lfs diff=lfs merge=lfs -text
 runs/2026-11-23-base-2/outputs/base/real-seed3/adapter.safetensors filter=lfs diff=lfs merge=lfs -text
+runs/2026-11-23-main/outputs/main/real-seed1/adapter.safetensors filter=lfs diff=lfs merge=lfs -text
+runs/2026-11-23-main/outputs/main/real-seed2/adapter.safetensors filter=lfs diff=lfs merge=lfs -text
+runs/2026-11-23-main/outputs/main/real-seed3/adapter.safetensors filter=lfs diff=lfs merge=lfs -text
