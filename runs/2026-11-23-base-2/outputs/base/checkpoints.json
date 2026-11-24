@@ -1,0 +1,44 @@
+{
+  "purpose": "post 9's base + SFT checkpoints (real arm), kept for post 10's RL (Han, 2026-11-24)",
+  "base_model": "Qwen/Qwen2.5-1.5B",
+  "base_revision": "8faed761d45a263340a0528343f099c05c9a4323",
+  "base_revision_note": "the Hugging Face commit in the Mac's cache (refs/main) on 2026-11-24; the A100 downloaded the repo on 2026-11-23 and did not record its commit, so this is the most likely match, not a recorded one. Load the base at this revision and check each adapter's tensor digest.",
+  "tokenizer_for_prompts": "Qwen/Qwen2.5-1.5B-Instruct (chat template; vocabularies identical)",
+  "run": "runs/2026-11-23-base-2 (tinytools commit 873d3ff, A100 SXM4, ok)",
+  "loader": "tinytools sftrun.load_merged / lora.merge_into (LoRA r16 alpha 32 + embed_rows delta on ids 151644, 151645, 151657, 151658)",
+  "adapters": [
+    {
+      "seed": 1,
+      "path": "runs/2026-11-23-base-2/outputs/base/real-seed1/adapter.safetensors",
+      "bytes": 73924880,
+      "file_sha256": "0fe7b6c673e8eda6c025d2d1524381336117cc4e7099164e693b3e40061bf1e8",
+      "tensor_digest_sha256": "fa60eae8c9bcf2b134d8d6c6fda1af7682705514fa42945f7d8064f475817405",
+      "data_sha256": "2cf7f25a4545d4d01dfa3c2f5d678c5d9194e20724ca417d2464b31cbdf1cdb8",
+      "rows": 8504,
+      "steps": 1064,
+      "loss_last": 0.07226021719161578
+    },
+    {
+      "seed": 2,
+      "path": "runs/2026-11-23-base-2/outputs/base/real-seed2/adapter.safetensors",
+      "bytes": 73924880,
+      "file_sha256": "a9056d61da0df88ef1ce40d1ae123de001aee9db994637a062d113c1dea28154",
+      "tensor_digest_sha256": "d0a2b0c98e1cc0a1f1fcde9e1b390a3634d5a49b03105bb542cb874c96b19305",
+      "data_sha256": "2cf7f25a4545d4d01dfa3c2f5d678c5d9194e20724ca417d2464b31cbdf1cdb8",
+      "rows": 8504,
+      "steps": 1064,
+      "loss_last": 0.07654795313316276
+    },
+    {
+      "seed": 3,
+      "path": "runs/2026-11-23-base-2/outputs/base/real-seed3/adapter.safetensors",
+      "bytes": 73924880,
+      "file_sha256": "633fdddab440eac20523f5c1b3861011a6f9801257533ab9a76db3cf300f0d72",
+      "tensor_digest_sha256": "5155c2be935cd27956551dd20116647464bdfbc9767ae62efb3f554acff224c1",
+      "data_sha256": "2cf7f25a4545d4d01dfa3c2f5d678c5d9194e20724ca417d2464b31cbdf1cdb8",
+      "rows": 8504,
+      "steps": 1064,
+      "loss_last": 0.07829048142966812
+    }
+  ]
+}
