@@ -1,0 +1,119 @@
+{
+  "template": {
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "rendered_with": "Qwen/Qwen2.5-0.5B-Instruct",
+    "files": {
+      "real-onetool.jsonl": {
+        "rows": 7990,
+        "identical": 7990,
+        "differ": []
+      }
+    },
+    "identical": true
+  },
+  "sha256": {
+    "real-onetool.jsonl": {
+      "sha256": "e47adb4268367946724bc672a29df37cdb683bb7e3c23839f5f1fc5751a4fc75",
+      "pinned": "e47adb4268367946724bc672a29df37cdb683bb7e3c23839f5f1fc5751a4fc75"
+    }
+  },
+  "lengths": {
+    "rows": 7990,
+    "longest": 2975,
+    "mean": 764.4006257822277,
+    "over 1024": 1369,
+    "over 3072": 0,
+    "tokens": 6107561,
+    "scored": 580050,
+    "assistant_turns": 8057,
+    "im_end_scored": 8057
+  },
+  "memory": {
+    "micro_batches": [
+      {
+        "rows": 8,
+        "longest": 1024,
+        "token_slots": 8192
+      },
+      {
+        "rows": 8,
+        "longest": 1024,
+        "token_slots": 8192
+      }
+    ],
+    "budget": 8192,
+    "device_bytes": 42406903808,
+    "headroom": 0.85,
+    "peak_rule": true,
+    "allocator": "expandable_segments:True",
+    "attempts": [
+      {
+        "checkpointing": false,
+        "ran": true,
+        "peak_bytes": 28104944640,
+        "within": true
+      }
+    ],
+    "nondeterminism": "",
+    "needs_checkpointing": false,
+    "fits": true
+  },
+  "system_shapes": {
+    "training row with a date line": [
+      "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.",
+      "Today is 2022-03-20, Sunday."
+    ],
+    "training row without one": [
+      "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
+    ],
+    "our test task": [
+      "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.",
+      "The current time is 2026-03-11 09:30, Wednesday."
+    ],
+    "BFCL eval item": [
+      "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
+    ]
+  },
+  "rows_with_date_line": [
+    4198,
+    7990
+  ],
+  "merge_b0": {
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "tasks": 200,
+    "identical": 200,
+    "modules": 196,
+    "weights_equal": 196,
+    "batch_size": 64,
+    "device": "cuda"
+  },
+  "merge_random_b": {
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "prompts": 6,
+    "modules": 196,
+    "dtype": "float32",
+    "b_scale": 0.01,
+    "tolerance": 0.01,
+    "rows": {
+      "merged": {
+        "relative": 2.732043667503465e-05,
+        "max_abs": 0.00042253732681274414,
+        "argmax_same": 3341,
+        "positions": 3341
+      },
+      "merged, 1.25 x the scaling": {
+        "relative": 0.2741343089165303,
+        "max_abs": 5.165736198425293,
+        "argmax_same": 3276,
+        "positions": 3341
+      },
+      "base (nothing merged)": {
+        "relative": 1.0,
+        "max_abs": 8.677278518676758,
+        "argmax_same": 3141,
+        "positions": 3341
+      }
+    },
+    "passes": true
+  }
+}

@@ -1,0 +1,262 @@
+{
+  "experiment": "onetool",
+  "post": 9,
+  "experiment_file": "experiments/onetool.toml",
+  "experiment_sha256": "11bbffed2ad06576e7d3e57630865497dd15a261b39d76495883a16b21cf98c0",
+  "commit": "6e58b2e59d3db65ef9c738dc9e45834f52e14dbc",
+  "commands": [
+    "export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True",
+    "uv run tinytools toolace-convert",
+    "uv run tinytools sft-data --variant onetool",
+    "uv run tinytools sft-check --profile onetool --batch-size 64",
+    "echo TINYTOOLS_FETCH_NOW",
+    "uv run tinytools sft-pair --profile onetool --seed 1 --batch-size 64 --deadline-epoch \"$TINYTOOLS_DEADLINE_EPOCH\"",
+    "echo TINYTOOLS_FETCH_NOW",
+    "uv run tinytools sft-pair --profile onetool --seed 2 --batch-size 64 --deadline-epoch \"$TINYTOOLS_DEADLINE_EPOCH\"",
+    "echo TINYTOOLS_FETCH_NOW",
+    "uv run tinytools sft-pair --profile onetool --seed 3 --batch-size 64 --deadline-epoch \"$TINYTOOLS_DEADLINE_EPOCH\"",
+    "echo TINYTOOLS_FETCH_NOW",
+    "uv run tinytools sft-report --profile onetool"
+  ],
+  "instance": {
+    "id": "3fcc04610e8d45d5b11ca49e9a420117",
+    "name": "tinytools-onetool-20261124-092418",
+    "tag": "2026-11-24-onetool-1691b531",
+    "type": "gpu_1x_a100_sxm4",
+    "region": "asia-south-1",
+    "price_usd_per_hour": 1.99
+  },
+  "max_hours": 4.0,
+  "launched_at": "2026-11-24T17:24:18+00:00",
+  "ended_at": "2026-11-24T19:01:32+00:00",
+  "hours": 1.6205,
+  "cost_usd": 3.2248,
+  "cost_basis": "API price at launch x (confirmed termination - launch request); worst case while not confirmed. Lambda's invoice is authoritative.",
+  "status": "ok",
+  "terminated": true,
+  "remote_exit_code": 0,
+  "versions": {
+    "gpu": "NVIDIA A100-SXM4-40GB",
+    "driver": "570.148.08",
+    "cuda (torch build)": "12.6",
+    "torch": "2.13.0+cu126",
+    "transformers": "5.14.1",
+    "bfcl-eval": "2025.12.17",
+    "python": "3.12.16",
+    "uv": "uv 0.13.9 (x86_64-unknown-linux-gnu)",
+    "os": "Linux-6.8.0-60-generic-x86_64-with-glibc2.35"
+  },
+  "seeds": [
+    1,
+    2,
+    3
+  ],
+  "determinism": "deterministic algorithms on, CUBLAS_WORKSPACE_CONFIG=:4096:8",
+  "dtype": "bfloat16",
+  "experiment_setup": {
+    "seeds": [
+      1,
+      2,
+      3
+    ],
+    "determinism": "deterministic algorithms on, CUBLAS_WORKSPACE_CONFIG=:4096:8",
+    "dtype": "bfloat16",
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "training": {
+      "model": "Qwen/Qwen2.5-1.5B-Instruct",
+      "rank": 16,
+      "alpha": 32.0,
+      "dropout": 0.0,
+      "targets": [
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj"
+      ],
+      "epochs": 2,
+      "lr": 0.0002,
+      "betas": [
+        0.9,
+        0.999
+      ],
+      "eps": 1e-08,
+      "weight_decay": 0.0,
+      "warmup_ratio": 0.03,
+      "batch_rows": 16,
+      "max_length": 3072,
+      "token_budget": 8192,
+      "grad_checkpointing": false,
+      "rows": null
+    },
+    "gradient_checkpointing": false,
+    "cuda_alloc_conf": "expandable_segments:True",
+    "generation": {
+      "seed": 0,
+      "samples": 8,
+      "temperature": 1.0,
+      "batch_size": 64
+    },
+    "profile": "onetool",
+    "tokenizer": null,
+    "embed_rows": [],
+    "stop_tokens": [],
+    "real_set": "real-onetool.jsonl"
+  },
+  "fetched": [
+    {
+      "path": "outputs/onetool/checks.json",
+      "sha256": "83ae93fff3478c10e09589065ce3dd5243453c4aaaf83fa467f2512f79531002",
+      "bytes": 2865
+    },
+    {
+      "path": "outputs/onetool/real-seed1/adapter.safetensors",
+      "sha256": "f1631d8f67ed1dc3b16a2c853f85ea822ed32359a63c0dd0d7ba3345f40759f1",
+      "bytes": 73899976
+    },
+    {
+      "path": "outputs/onetool/real-seed1/bfcl-eval-greedy-replies.jsonl",
+      "sha256": "c7cc6c5b03c3c020681e323b7e3104c8a05e4dcb9ee99d007eb6e8faeca952b1",
+      "bytes": 612452
+    },
+    {
+      "path": "outputs/onetool/real-seed1/losses.jsonl",
+      "sha256": "948daf576c6f236333dd2b449856ae9e67ad3e0b3b3e9ca0b43ddc6130a3228f",
+      "bytes": 131784
+    },
+    {
+      "path": "outputs/onetool/real-seed1/ours-test-greedy-replies.jsonl",
+      "sha256": "c7d5227387d68db487405dd6c5dc2a2250dc63c8cf637a03f8e784d018193c70",
+      "bytes": 640338
+    },
+    {
+      "path": "outputs/onetool/real-seed1/score.json",
+      "sha256": "48edf0337ee45e99853f97205b47b1595fce8a880169dbb1898e9311a6db877e",
+      "bytes": 1219
+    },
+    {
+      "path": "outputs/onetool/real-seed1/train-sample-samples8-t1-replies.jsonl",
+      "sha256": "24eb678ad55524d86ec67bc0a635a80f02fc0a039b5f06d03dbd57796ab05775",
+      "bytes": 2908972
+    },
+    {
+      "path": "outputs/onetool/real-seed1/train.json",
+      "sha256": "e35ad0a34c151ae2cd478e4ad50c89d6efbd93d168b6848b58f5bc077a7403b4",
+      "bytes": 26504
+    },
+    {
+      "path": "outputs/onetool/real-seed2/adapter.safetensors",
+      "sha256": "0581a83028b1030ac8074dcf28e61f000c56f5c959a2cbff55b1d0884f5d63e7",
+      "bytes": 73899976
+    },
+    {
+      "path": "outputs/onetool/real-seed2/bfcl-eval-greedy-replies.jsonl",
+      "sha256": "66c0e7881d5c48d8e0347554ebbadda3b3d1caf743ef1d77db5b22d0c6360e7e",
+      "bytes": 610877
+    },
+    {
+      "path": "outputs/onetool/real-seed2/losses.jsonl",
+      "sha256": "85bf1b58915b19070136c724a83fc7d70b1b5b7fd0bbd6e419eed259e53cb05e",
+      "bytes": 131802
+    },
+    {
+      "path": "outputs/onetool/real-seed2/ours-test-greedy-replies.jsonl",
+      "sha256": "5afd7dccb448a1c5adad6237983b84b159671e40373e398c9778b35c34362440",
+      "bytes": 640251
+    },
+    {
+      "path": "outputs/onetool/real-seed2/score.json",
+      "sha256": "40dafee9af33c792221e01ae295cc623794cd56a1d7fdcd65934df6971a54065",
+      "bytes": 1224
+    },
+    {
+      "path": "outputs/onetool/real-seed2/train-sample-samples8-t1-replies.jsonl",
+      "sha256": "65b48d0e9aab1716e0122556d2751c1907d90aea3538cc66b0e36a2e0eb3aacd",
+      "bytes": 2903803
+    },
+    {
+      "path": "outputs/onetool/real-seed2/train.json",
+      "sha256": "23a87de9360c29bc54e62c9df62df619d38035ab1ae7081e676c785cb7134f05",
+      "bytes": 26491
+    },
+    {
+      "path": "outputs/onetool/real-seed3/adapter.safetensors",
+      "sha256": "dd895409cdf5b2938c49e0d9e23ea8ef53d1af5cfe939fa53c696323559ee963",
+      "bytes": 73899976
+    },
+    {
+      "path": "outputs/onetool/real-seed3/bfcl-eval-greedy-replies.jsonl",
+      "sha256": "f58a9443b9ef9f25bbd1820e927b985a27a80792d81adcb5f48d08f12447f538",
+      "bytes": 612237
+    },
+    {
+      "path": "outputs/onetool/real-seed3/losses.jsonl",
+      "sha256": "0cf8890f8ff53e2575b56fd169a1613319ffae5419935a39c1a66d529690b832",
+      "bytes": 131825
+    },
+    {
+      "path": "outputs/onetool/real-seed3/ours-test-greedy-replies.jsonl",
+      "sha256": "505f7d606ee763e2f745cc3bbcddcc73e826d1f06391ab08d323338ab503f481",
+      "bytes": 637580
+    },
+    {
+      "path": "outputs/onetool/real-seed3/score.json",
+      "sha256": "9cea864f509e30bbe8fb6392ad3e40ca20cec80af241668597befe1ad03a4278",
+      "bytes": 1225
+    },
+    {
+      "path": "outputs/onetool/real-seed3/train-sample-samples8-t1-replies.jsonl",
+      "sha256": "dc7eff79e34c475e7fc42a31aca63162f48ff3bbb263798f158d071c3f614521",
+      "bytes": 2910927
+    },
+    {
+      "path": "outputs/onetool/real-seed3/train.json",
+      "sha256": "cc7169b67ca005da501f44d12206ffb96b58944ab415d557f6f9c27f71b2b1e0",
+      "bytes": 26523
+    },
+    {
+      "path": "outputs/onetool/setup.json",
+      "sha256": "eb94960666ba4c835e545525b54f3d9f223f712ec2a7d3571bbc67444e219738",
+      "bytes": 1025
+    },
+    {
+      "path": "outputs/sft-check-onetool.txt",
+      "sha256": "c5494cd9811c9d21bf6b5b8bb31d3997f45a3a4ffdfba91d253e881f93b24aea",
+      "bytes": 6246
+    },
+    {
+      "path": "outputs/sft-data-onetool.txt",
+      "sha256": "c367ec2368bc89747f9100633a33b457771377c43b14b76ec1a437542fac00e4",
+      "bytes": 3558
+    },
+    {
+      "path": "outputs/sft-onetool.txt",
+      "sha256": "f70b4830d08aef6858cf0682e9e2b49c46aeb3bb39ed87f4ffa9183eba59ed4f",
+      "bytes": 10286
+    },
+    {
+      "path": "outputs/sft-pair-seed1-onetool.txt",
+      "sha256": "e2f048aafedf66d040842c2b5defaa0917a19a3697dcf318b24587658ea0d3f2",
+      "bytes": 2710
+    },
+    {
+      "path": "outputs/sft-pair-seed2-onetool.txt",
+      "sha256": "1f93548e5a9980dfebd37f3fa593febece8fb2d41427a033159a0fb555f0c306",
+      "bytes": 2710
+    },
+    {
+      "path": "outputs/sft-pair-seed3-onetool.txt",
+      "sha256": "8831240a8aa4530d388dac4432befd3dd1df016e417dd9348a3def6515c86f6b",
+      "bytes": 2710
+    },
+    {
+      "path": "outputs/toolace-convert.txt",
+      "sha256": "ee5779369cdea1f0ff1c651c1b5b92a8897561f2a423f421fe92e22b737234e9",
+      "bytes": 4430
+    }
+  ],
+  "not_found": [],
+  "checkpoints": 4
+}

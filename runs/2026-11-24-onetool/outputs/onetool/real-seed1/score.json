@@ -1,0 +1,48 @@
+{
+  "label": "real-seed1",
+  "model": "Qwen/Qwen2.5-1.5B-Instruct",
+  "dtype": "bfloat16",
+  "device": "cuda",
+  "engine": "batched",
+  "batch_size": 64,
+  "seed": 0,
+  "samples": 8,
+  "temperature": 1.0,
+  "max_new_tokens": 512,
+  "limits": {
+    "ours": null,
+    "bfcl": null,
+    "sample": null
+  },
+  "passes": {
+    "ours test, greedy": {
+      "items": 1000,
+      "seconds": 64.799669515
+    },
+    "BFCL eval, greedy": {
+      "items": 1116,
+      "seconds": 92.88316264599985
+    },
+    "train-sample, greedy + 8 at T=1": {
+      "items": 500,
+      "seconds": 245.98891260599999
+    }
+  },
+  "wall_s": 403.6721701690001,
+  "adapter": "outputs/onetool/real-seed1/adapter.safetensors",
+  "modules_merged": 196,
+  "adapter_sha256": "77cfc51a90bb24825fc735cec1a643f61d701e929493ce8b9bc406765c6adb8c",
+  "adapter_meta": {
+    "data_sha256": "e47adb4268367946724bc672a29df37cdb683bb7e3c23839f5f1fc5751a4fc75",
+    "seed": "1",
+    "rank": "16",
+    "base_model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "alpha": "32.0",
+    "arm": "real",
+    "targets": "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+  },
+  "profile": "onetool",
+  "tokenizer": null,
+  "stop_tokens": [],
+  "real_set": "real-onetool.jsonl"
+}

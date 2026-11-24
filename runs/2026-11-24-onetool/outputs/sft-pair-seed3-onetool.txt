@@ -1,0 +1,52 @@
+==========================================================================
+tinytools sft-pair (seed 3) --profile onetool
+==========================================================================
+device        : cuda (NVIDIA A100-SXM4-40GB)
+torch         : 2.13.0+cu126
+platform      : Linux 6.8.0-60-generic (x86_64)
+device memory : 42.4 GB
+
+--------------------------------------------------------------------------
+Setup
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-1.5B-Instruct
+  profile                            onetool
+    training set                     data/sft/real-onetool.jsonl
+    arms                             real
+  output directory                   onetool
+  decoding                           greedy; 8 at T=1 (train-sample)
+  top_p / top_k / repetition penalty 1.0 / off / 1.0
+  max new tokens                     512
+  seed (generation)                  0 (+ task id and sample number)
+  engine                             batched, sorted by length
+    batch size, greedy               64 sequences
+    batch size, 8 samples            64 sequences (8 items x 8)
+  Left padding with the attention mask; a reply ends at the model's
+  eos or <|im_end|>. Seconds per item: the batch's seconds x the
+  item's share of its rows.
+  determinism                        deterministic algorithms on,
+                                     CUBLAS_WORKSPACE_CONFIG=:4096:8
+  PYTORCH_CUDA_ALLOC_CONF            expandable_segments:True
+  deadline                           2026-11-24 21:13:51 UTC
+
+--------------------------------------------------------------------------
+Trained: real-seed3
+--------------------------------------------------------------------------
+  rows / steps                       7990 / 1000 (2528 micro-batches)
+  loss, first / last step            0.1011 / 0.0105
+  wall time                          21.3 min
+  adapter tensors sha256 (first 16)  f672670779397774
+
+--------------------------------------------------------------------------
+Scored: real-seed3
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-1.5B-Instruct
+  adapter                            merged into the weights
+  adapter tensors sha256 (first 16)  f672670779397774
+  ours test, greedy, right           742 of 1000
+  BFCL eval, greedy, right           916 of 1116
+  train-sample, greedy, right        384 of 500
+    ours test, greedy                1000 items, 1.0 min
+    BFCL eval, greedy                1116 items, 1.6 min
+    train-sample, greedy + 8 at T=1  500 items, 4.5 min
+  (per arm, outcome by outcome and with intervals: sft-report)

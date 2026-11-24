@@ -4,3 +4,4 @@ run,experiment,post,commit,instance_type,price_usd_per_hour,launched_at,ended_at
 2026-11-23-main,main,9,29aeae0b9628,gpu_1x_a100_sxm4,1.99,2026-11-23T17:15:17+00:00,2026-11-23T21:07:11+00:00,3.8649,7.6912,ok
 2026-11-23-base,base,9,44b5cb6d7da3,gpu_1x_a100_sxm4,1.99,2026-11-24T00:37:11+00:00,2026-11-24T01:23:02+00:00,0.7642,1.5207,interrupted (Ctrl-C)
 2026-11-23-base-2,base,9,873d3ff5d6ef,gpu_1x_a100_sxm4,1.99,2026-11-24T02:28:37+00:00,2026-11-24T07:20:09+00:00,4.8586,9.6687,ok
+2026-11-24-onetool,onetool,9,6e58b2e59d3d,gpu_1x_a100_sxm4,1.99,2026-11-24T17:24:18+00:00,2026-11-24T19:01:32+00:00,1.6205,3.2248,ok
