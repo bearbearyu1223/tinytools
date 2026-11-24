@@ -384,7 +384,7 @@ seed-1 control twin.
 
 ## Post 9's main run: SFT, scoring, the report
 
-`experiments/main.toml` (plan 3e, "T8 spec"; A100 40 GB, ~5.9 h expected, 8 h and $16 at
+`experiments/main.toml` (plan 3e, "T8 spec"; A100 40 GB, ~5.9 h expected, 7.5 h and $16 at
 most) runs, in order: the data; `sft-check`; `engine-check --quick`; `sft-score --untrained`;
 `sft-score --untrained --noise-floor` (r6a's baseline); then
 per seed 1, 2, 3 `sft-pair` (train real, score it, train control, score it); seed 1 real
@@ -451,6 +451,23 @@ rewritten at the same size is fetched again.
 2 tasks of each kind and category, into `outputs/main-quick/` and `outputs/sft*-quick.txt`. It
 shows the pipeline works; its numbers are not results.
 
+**The run (2026-11-23).** `runs/2026-11-23-main/` (commit 29aeae0): ok in 3.86 h, $7.69,
+terminated and confirmed. A first attempt (`runs/2026-11-22-main/`, $0.87) stopped at untrained
+scoring on a report line wider than 74 columns, printed only in full mode; since fa690fc a wide
+line is folded outside tests rather than raised. Every `sft-check` gate passed (memory 28.6 of
+36.0 GB without checkpointing; both merges), and seed 1 trained twice gave identical losses
+and a bitwise-identical adapter. Its captures are copied into `outputs/` (`sft.txt` is the
+report; `sft-check.txt`, `sft-score-untrained*.txt`, `sft-pair-seed<N>.txt`,
+`sft-train-real-seed1-repeat.txt`, and the 1.5B-Instruct `score-*` / `bfcl-*` rescores), which
+is where the post's receipts are checked. The seven adapters (about 70 MB each) are in the run
+directory, not in git. What the report says, in short (seed means; read the numbers in
+`outputs/sft.txt`): on our tasks that need a call, right goes from 60.0% to 90.0%, mostly by
+filling arguments (wrong arguments 25.5% -> 8.4%; the control gets worse); calling at all rises
+in both arms alike (the format, not the content); declining where no tool fits gets worse; on
+BFCL's call items right falls from 85.1% to 51.3%, because both arms often reply with a request
+for parameters the question already gives (ToolACE's no-call rows). The untrained Instruct model
+already calls (BFCL calls 85.1% right), which is why post 9 adds the base arm below.
+
 
 ## Post 9's base arm: the same SFT on a model with no tool calling
 
@@ -474,9 +491,15 @@ result:
   profile sets `<|im_end|>` and `<|endoftext|>` on every model it loads, and `sft-check` prints
   what the engine stops at.
 * **Four embedding rows.** In the base model `<|im_start|>`, `<|im_end|>`, `<tool_call>` and
-  `</tool_call>` have the same embedding (pairwise cosine 1.0000, norm 0.414 against a median
-  1.032; the Instruct model's are distinct), and the embedding is tied to the output head, so
-  "end the turn" and "start a call" score the same from any hidden state. The base arm trains
+  `</tool_call>` (ids 151644, 151645, 151657, 151658: a token's id is its row) have the same
+  embedding (pairwise cosine 1.0000, norm 0.414 against a median 1.032; the Instruct model's are
+  distinct, cosine 0.92-0.95). They are not alone: on 1.5B base 2,234 rows share
+  `<|im_start|>`'s direction (21 added tokens, 1,942 rare byte tokens such as 'À', and the 271
+  padding rows past the tokenizer's 151,665 ids). These tokens never appeared in pretraining,
+  and a row that is never a target gets the same softmax push down as its twins, so rows that
+  start equal stay equal. The embedding is tied to the output head, so "end the turn" and
+  "start a call" score the same from any hidden state, and LoRA, which adapts only attention and
+  MLP, can't separate them. The base arm trains
   a float32 delta on those rows (4 x 1,536 = 6,144 parameters, zero at the start) beside LoRA,
   in the same AdamW group (lr, schedule, betas, weight decay 0). One parameter feeds both the
   input embedding and the tied head (`lora.inject_rows`: one-hot products, no scatter, so CUDA's
@@ -486,11 +509,13 @@ result:
   both parameter counts; each `sft-pair` capture prints the delta's size per row and the four
   rows' cosines before and after.
 * **Checks** (`sft-check --profile base`, all gating): main's, with the delta in the memory
-  step and in both merges (B = 0 and delta = 0 merged gives the base model's replies byte for
+  step (which also probes the micro-batch with the most scored tokens: the delta adds a
+  full-vocabulary term per scored token) and in both merges (B = 0 and delta = 0 merged gives the base model's replies byte for
   byte; random B and a random delta merged gives the LoRA model's float32 logits, and the merge
   without the rows must fail); plus the prompts against the Instruct arm's, the stop tokens,
   and the four rows' identity in the base model beside the Instruct model's (the reason for
-  the delta, as a receipt).
+  the delta, as a receipt: the four rows' cosines, and the count of every row in the embedding
+  that shares them).
 * **Files.** `outputs/base/` (`outputs/base-quick/` with `--quick`, on Qwen2.5-0.5B, whose rows
   have the same defect), captures `outputs/sft*-base.txt` (`-base-quick`), the untrained copies
   `outputs/score-Qwen2.5-1.5B-*` and `outputs/bfcl-Qwen2.5-1.5B-*`, r1's prompt in
@@ -498,5 +523,17 @@ result:
 * **Deadline.** The untrained base model runs nearly every reply to the 512-token cap (~0.8 h to
   score), so the base arm estimates a pair from the trained models' scoring once one is
   measured (before that, the plan's prior), not from the untrained one's; main's rule is
-  unchanged.
+  unchanged. Known case (review T9e S3): if the stages before the pairs took about twice their
+  expected time, seed 1's pair could be started late enough to reach the hard limit; the
+  runner's limit and caps still hold.
+* **Two readings, and the rule.** The untrained base model can't write the tags but often
+  writes the call itself as bare JSON (`{"name": ..., "arguments": ...}`, then text to the cap;
+  Milestone 0: 32 of 160 dev call tasks). So every arm, base and Instruct, is reported on two
+  readings: strict (calls only inside `<tool_call>` tags, as everything above) and tag-free (the
+  call objects at the start of the reply, tags or not). The base arm's rule, fixed before the
+  run (plan 3f): it is featured in the post if SFT - untrained on our tasks that need a call,
+  right, on the tag-free reading, has a 95% interval excluding 0; otherwise it is reported in a
+  paragraph. Both arms are shown side by side either way. The tag-free rescore reads saved
+  replies (no model).
+* **The run.** `runs/2026-11-23-base/` (commit 44b5cb6), launched 2026-11-23 16:37.
 
