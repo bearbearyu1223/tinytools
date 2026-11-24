@@ -1,0 +1,97 @@
+==========================================================================
+tinytools bfcl-score (greedy)
+==========================================================================
+device        : cuda (NVIDIA A100-SXM4-40GB)
+torch         : 2.13.0+cu126
+platform      : Linux 6.8.0-60-generic (x86_64)
+device memory : 42.4 GB
+
+--------------------------------------------------------------------------
+Setup
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-1.5B-Instruct
+  bfcl-eval                          2025.12.17
+  split                              eval: every item minus the dev slice
+    dev slice                        10% of each category, seed 0
+  items per category                 all in the split
+  decoding                           greedy
+  top_p / top_k / repetition penalty 1.0 / off / 1.0
+  max new tokens                     512
+  dtype                              bfloat16
+  determinism                        deterministic algorithms on,
+                                     CUBLAS_WORKSPACE_CONFIG=:4096:8
+  seed                               0 (+ item id and sample number)
+  engine                             batched, sorted by length
+    batch size                       64 sequences
+  Left padding with the attention mask; a reply ends at the model's
+  eos or <|im_end|>. Seconds per item: the batch's seconds x the
+  item's share of its rows.
+  checked by                         bfcl-rescore of the saved replies
+
+--------------------------------------------------------------------------
+Tasks that need a call: every reply
+--------------------------------------------------------------------------
+  category     n  no call  unparse  wrong fn  wrong n  bad args  right
+  ----------------------------------------------------------------------
+  simple     360        1        1         0        0        32    326
+  multiple   180        0        0         2        0        23    155
+  parallel   180        0        4         0       15        15    146
+  par_multi  180        0        1         4        7        29    139
+  total      900        1        6         6       22        99    766
+  wrong fn: names differ as a set; wrong n: the right names, too
+  many or too few calls; bad args: the right calls, arguments the
+  checker rejects; right: BFCL's checker accepts the reply (BFCL's
+  accuracy on these categories).
+
+  category   hit token cap  counted above as
+  --------------------------------------------
+  simple                 0                 -
+  multiple               0                 -
+  parallel               3         unparse 3
+  par_multi              1         unparse 1
+  total                  4         unparse 4
+  hit token cap: the model's reply ran to max new tokens (Setup)
+  and was cut off there; it is counted in the table above.
+
+--------------------------------------------------------------------------
+Tasks where no tool fits: every reply
+--------------------------------------------------------------------------
+  category       n  declined  called anyway  bfcl right
+  -------------------------------------------------------
+  irrelevance  216       147             69         147
+  declined: no <tool_call> tag (right); called anyway: any tag.
+  bfcl right: BFCL's own verdict, which also passes a reply whose
+  <tool_call> fails to decode (here it called anyway).
+
+  category           outcome  replies  of which hit token cap
+  -------------------------------------------------------------
+  irrelevance       declined      147                       7
+  irrelevance  called anyway       69                       0
+  hit token cap: the model's reply ran to max new tokens (Setup)
+  and was cut off there. Cut off before any <tool_call> tag, it
+  counts as declined.
+
+--------------------------------------------------------------------------
+Controls
+--------------------------------------------------------------------------
+  category     items  reference passes
+  --------------------------------------
+  simple         360               360
+  multiple       180               180
+  parallel       180               180
+  par_multi      180               180
+  irrelevance    216               216
+  reference passes: BFCL's own answer, written in Qwen's format and
+  scored by the same checker (the harness can give full marks).
+
+--------------------------------------------------------------------------
+Wall clock (varies run to run)
+--------------------------------------------------------------------------
+  category     tasks  s/task  new tokens/task
+  ---------------------------------------------
+  simple         360    0.04               38
+  multiple       180    0.06               38
+  parallel       180    0.25              105
+  par_multi      180    0.25              115
+  irrelevance    216    0.27               97
+  total         1116    0.16               73

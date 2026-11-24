@@ -1,0 +1,123 @@
+==========================================================================
+tinytools sft-check
+==========================================================================
+device        : cuda (NVIDIA A100-SXM4-40GB)
+torch         : 2.13.0+cu126
+platform      : Linux 6.8.0-60-generic (x86_64)
+device memory : 42.4 GB
+
+--------------------------------------------------------------------------
+The chat template: Qwen/Qwen2.5-1.5B-Instruct vs sft-data's rendering
+--------------------------------------------------------------------------
+  sft-data rendered with             Qwen/Qwen2.5-0.5B-Instruct
+  Each training row re-rendered with this model's tokenizer and chat
+  template: text, scored spans, tokens and scored tokens compared.
+  file                          rows  identical  differ
+  -------------------------------------------------------
+  data/sft/real.jsonl           8504       8504       0
+  data/sft/control-seed1.jsonl  8504       8504       0
+  data/sft/control-seed2.jsonl  8504       8504       0
+  data/sft/control-seed3.jsonl  8504       8504       0
+  byte-identical                     yes
+
+--------------------------------------------------------------------------
+The SFT sets: sha256 against the Mac's
+--------------------------------------------------------------------------
+  file                          sha256 (first 16)  as pinned
+  ------------------------------------------------------------
+  data/sft/real.jsonl            2cf7f25a4545d4d0        yes
+  data/sft/control-seed1.jsonl   1a8b98c21361edc3        yes
+  data/sft/control-seed2.jsonl   08d89acedda694f5        yes
+  data/sft/control-seed3.jsonl   f5968d457419f1a8        yes
+  all four as pinned (sft.py)        yes
+
+--------------------------------------------------------------------------
+Row lengths (tokens), the real arm
+--------------------------------------------------------------------------
+  rows                               8504
+  longest                            2975
+  mean                               739
+  longer than 1,024                  1369
+  longer than 3,072 (cut: none)      0
+  tokens                             6286011
+    scored                           607322 (9.66%)
+    masked                           5678689
+  assistant turns                    8571
+    ending in a scored <|im_end|>    8571
+
+--------------------------------------------------------------------------
+Memory: one training step, the two largest micro-batches
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-1.5B-Instruct
+  micro-batch 1                      8 rows x 1,024 tokens = 8,192 slots
+  micro-batch 2                      8 rows x 1,024 tokens = 8,192 slots
+  token budget                       8,192
+  the step                           both micro-batches, then AdamW
+  device memory                      42.4 GB
+  limit (85% of it)                  36.0 GB
+  PYTORCH_CUDA_ALLOC_CONF            expandable_segments:True
+  checkpointing  memory (peak)  within the limit
+  ------------------------------------------------
+  off                  28.6 GB               yes
+  gradient checkpointing             not needed: off
+  fits                               yes
+  Training reads this: checkpointing is off for every run only if
+  this step's peak without it is at most 85% of the device.
+
+--------------------------------------------------------------------------
+The system prompt's shape: training rows vs our tasks and BFCL
+--------------------------------------------------------------------------
+  The system turn's lines before its tools section, as the model
+  reads them.
+  training row with a date line:
+      You are Qwen, created by Alibaba Cloud. You are a helpful assistant.
+      Today is 2022-03-20, Sunday.
+  training row without one:
+      You are Qwen, created by Alibaba Cloud. You are a helpful assistant.
+  our test task:
+      You are Qwen, created by Alibaba Cloud. You are a helpful assistant.
+      The current time is 2026-03-11 09:30, Wednesday.
+  BFCL eval item:
+      You are Qwen, created by Alibaba Cloud. You are a helpful assistant.
+  training rows with a date line     4198 of 8504 (49.4%)
+  Our tasks state the frozen clock as ToolACE's rows state theirs;
+  BFCL's prompts have Qwen's default sentence alone.
+
+--------------------------------------------------------------------------
+Merging an untrained adapter (B = 0): replies vs the base model
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-1.5B-Instruct
+  tasks                              200 of our dev tasks, greedy
+  batch size                         64
+  determinism                        deterministic algorithms on,
+                                     CUBLAS_WORKSPACE_CONFIG=:4096:8
+  modules merged                     196
+    weights equal to the base's      196 of 196
+  replies byte-identical             200 of 200
+  The adapter: A drawn as training draws it (seed 1), B = 0. Merging
+  computes W + (alpha/r) B A in float32 and casts it to the weight's
+  dtype once, the path every trained adapter is scored through.
+
+--------------------------------------------------------------------------
+Merging an adapter with random B: logits vs the LoRA model
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-1.5B-Instruct
+  prompts                            6 dev tasks, 2 per kind
+  compared                           the logits at every position
+  adapter                            A: seed 1; B = 0.01 x N(0, 1), seed 2
+  dtype                              float32, all three models
+  modules merged                     196
+  vs the LoRA model           relative gap  max |diff|   argmax same
+  --------------------------------------------------------------------
+  merged                          2.73e-05    4.23e-04  3341 of 3341
+  merged, 1.25 x the scaling      2.74e-01    5.17e+00  3276 of 3341
+  base (nothing merged)           1.00e+00    8.68e+00  3141 of 3341
+  tolerance (relative gap)           0.01
+  passes                             yes
+  relative gap: |merged - LoRA| / |LoRA - base| over every logit: the
+  error as a share of the adapter's effect (base: a merge that did
+  nothing, 1). Passes: the merge within the tolerance and the
+  mis-scaled merge outside it. In float32, so rounding is the only
+  gap; the cast to the weights' dtype is what the B = 0 check runs.
+
+  all checks pass                    yes

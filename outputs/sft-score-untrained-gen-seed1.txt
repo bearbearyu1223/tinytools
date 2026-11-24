@@ -1,0 +1,37 @@
+==========================================================================
+tinytools sft-score (untrained-gen-seed1)
+==========================================================================
+device        : cuda (NVIDIA A100-SXM4-40GB)
+torch         : 2.13.0+cu126
+platform      : Linux 6.8.0-60-generic (x86_64)
+device memory : 42.4 GB
+
+--------------------------------------------------------------------------
+Setup
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-1.5B-Instruct
+  output directory                   main
+  decoding                           8 at T=1 (train-sample only)
+  top_p / top_k / repetition penalty 1.0 / off / 1.0
+  max new tokens                     512
+  seed (generation)                  1 (+ task id and sample number)
+  engine                             batched, sorted by length
+    batch size, greedy               64 sequences
+    batch size, 8 samples            64 sequences (8 items x 8)
+  Left padding with the attention mask; a reply ends at the model's
+  eos or <|im_end|>. Seconds per item: the batch's seconds x the
+  item's share of its rows.
+  determinism                        deterministic algorithms on,
+                                     CUBLAS_WORKSPACE_CONFIG=:4096:8
+  PYTORCH_CUDA_ALLOC_CONF            expandable_segments:True
+  deadline                           none
+
+--------------------------------------------------------------------------
+Scored: untrained-gen-seed1 (r6a's noise floor)
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-1.5B-Instruct, untrained
+  train-sample, 8 at T=1, right      2320 of 4000
+  all wrong / mixed / all right      107 / 223 / 170 tasks
+    train-sample, 8 at T=1           500 items, 6.2 min
+  Generation seed 1 where the untrained scoring used 0: the same
+  model drawn again. sft-report reads r6a's movements beyond it.

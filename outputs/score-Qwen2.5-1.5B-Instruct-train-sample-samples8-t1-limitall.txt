@@ -1,0 +1,665 @@
+==========================================================================
+tinytools score (train-sample, samples8-t1)
+==========================================================================
+device        : cuda (NVIDIA A100-SXM4-40GB)
+torch         : 2.13.0+cu126
+platform      : Linux 6.8.0-60-generic (x86_64)
+device memory : 42.4 GB
+
+--------------------------------------------------------------------------
+Setup
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-1.5B-Instruct
+  tasks                              train-sample split, seed 0
+    sha256 (first 16)                fd6c706bd0e1bfe7
+  tasks scored                       all
+  decoding                           8 samples, temperature 1
+  top_p / top_k / repetition penalty 1.0 / off / 1.0
+  max new tokens                     512
+  dtype                              bfloat16
+  determinism                        deterministic algorithms on,
+                                     CUBLAS_WORKSPACE_CONFIG=:4096:8
+  seed                               0 (+ task id and sample number)
+  Each reply draws from its own generator, seeded with the seed,
+  its task id and sample number: its draws don't depend on its batch.
+  engine                             batched, sorted by length
+    batch size                       64 sequences (8 items x 8)
+  Left padding with the attention mask; a reply ends at the model's
+  eos or <|im_end|>. Seconds per item: the batch's seconds x the
+  item's share of its rows.
+  right means                        execution match (exact beside it)
+  checked by                         rescore of the saved replies
+
+--------------------------------------------------------------------------
+Tasks that need a call: every reply (all samples)
+--------------------------------------------------------------------------
+  kind            n  no call  unparse  wrong fn  wrong n  bad args  right
+  ------------------------------------------------------------------------
+    -
+  choose+fill  2400      414        8        40        2       489   1447
+  tricky args   800      103        3        29        0       286    379
+  total        3200      517       11        69        2       775   1826
+  wrong fn: another tool; wrong n: the right tool, more than one
+  call; bad args: the right tool, arguments that fail execution
+  match; right: execution match.
+
+  kind         hit token cap  counted above as
+  ----------------------------------------------
+  choose+fill              0                 -
+  tricky args              1         no call 1
+  total                    1         no call 1
+  hit token cap: the model's reply ran to max new tokens (Setup)
+  and was cut off there; it is counted in the table above.
+
+--------------------------------------------------------------------------
+Tasks where no tool fits: every reply (all samples)
+--------------------------------------------------------------------------
+  kind            n  declined  called anyway
+  --------------------------------------------
+  no tool fits  800       537            263
+  declined: no <tool_call> tag (right); called anyway: any tag.
+
+  kind                outcome  replies  of which hit token cap
+  --------------------------------------------------------------
+  no tool fits       declined      537                       0
+  no tool fits  called anyway      263                       0
+  hit token cap: the model's reply ran to max new tokens (Setup)
+  and was cut off there. Cut off before any <tool_call> tag, it
+  counts as declined.
+
+--------------------------------------------------------------------------
+Right by execution and by exact match (all samples)
+--------------------------------------------------------------------------
+  kind            right by execution  right by exact match
+  ----------------------------------------------------------
+  choose+fill   1447 of 2400 (60.3%)  1411 of 2400 (58.8%)
+  tricky args     379 of 800 (47.4%)    324 of 800 (40.5%)
+  no tool fits    537 of 800 (67.1%)    537 of 800 (67.1%)
+  total         2363 of 4000 (59.1%)  2272 of 4000 (56.8%)
+  The same replies, two checks. On no-tool-fits tasks both mean
+  declined.
+
+--------------------------------------------------------------------------
+Controls, scored by the same checks
+--------------------------------------------------------------------------
+  reference answers right (both)     500 of 500 (100.0%)
+  never calling right                100 of 500 (20.0%)
+  reference answers: the harness can give full marks. never calling:
+  what declining every task scores (right on no-tool-fits only).
+
+--------------------------------------------------------------------------
+Execution match but not exact match
+--------------------------------------------------------------------------
+  replies                            91
+  train-0114 sample 8  search_documents
+      ref: {"name": "search_documents", "arguments": {"query": "Q4 \
+      hiring plan"}}
+      got: {"name": "search_documents", "arguments": {"query": "Q4 \
+      hiring"}}
+  train-0154 sample 3  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": "Vet \
+      appointment", "date": "2026-03-26", "start_time": "10:00", \
+      "duration_minutes": 15}}
+      got: {"name": "create_calendar_event", "arguments": {"title": "Vet \
+      appointment", "date": "2026-03-26", "start_time": "10:00", \
+      "duration_minutes": 15, "attendees": []}}
+  train-0191 sample 1  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "584 * 56 \
+      / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "584 * \
+      0.56"}}
+  train-0191 sample 2  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "584 * 56 \
+      / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "584 * \
+      0.56"}}
+  train-0191 sample 3  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "584 * 56 \
+      / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "584*0.56"}}
+  train-0191 sample 5  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "584 * 56 \
+      / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "56 / 100 \
+      * 584"}}
+  train-0191 sample 6  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "584 * 56 \
+      / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "0.56 * \
+      584"}}
+  train-0191 sample 7  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "584 * 56 \
+      / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "0.56 * \
+      584"}}
+  train-0191 sample 8  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "584 * 56 \
+      / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "56 / 100 \
+      * 584"}}
+  train-0367 sample 7  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Strategy session", "date": "2026-03-17", "start_time": "17:00", \
+      "duration_minutes": 90, "attendees": ["Zoe Adams"]}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Strategy Session", "date": "2026-03-17", "start_time": "17:00", \
+      "duration_minutes": 90, "attendees": ["Zoe Adams"]}}
+  train-0636 sample 7  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Budget workshop", "date": "2026-03-12", "start_time": "12:15", \
+      "duration_minutes": 45}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Budget Workshop", "date": "2026-03-12", "start_time": "12:15", \
+      "duration_minutes": 45}}
+  train-0646 sample 1  search_contacts
+      ref: {"name": "search_contacts", "arguments": {"query": "Raj \
+      Patel"}}
+      got: {"name": "search_contacts", "arguments": {"query": "raj \
+      patel"}}
+  train-0682 sample 2  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Team offsite", "date": "2026-03-27", "start_time": "15:00", \
+      "duration_minutes": 20}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Team offsite", "date": "2026-03-27", "start_time": "15:00", \
+      "duration_minutes": 20, "attendees": []}}
+  train-0758 sample 7  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "9 * \
+      1.609344"}}
+      got: {"name": "calculator", "arguments": {"expression": "1.609344 \
+      * 9"}}
+  train-0758 sample 8  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "9 * \
+      1.609344"}}
+      got: {"name": "calculator", "arguments": {"expression": "1.609344 \
+      * 9"}}
+  train-0816 sample 4  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Code review", "date": "2026-03-23", "start_time": "16:00", \
+      "duration_minutes": 90}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Code review", "date": "2026-03-23", "start_time": "16:00", \
+      "duration_minutes": 90, "attendees": []}}
+  train-0820 sample 1  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Design critique", "date": "2026-03-15", "start_time": "08:00", \
+      "duration_minutes": 30}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Design critique", "date": "2026-03-15", "start_time": "08:00", \
+      "duration_minutes": 30, "attendees": []}}
+  train-0820 sample 3  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Design critique", "date": "2026-03-15", "start_time": "08:00", \
+      "duration_minutes": 30}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Design critique", "date": "2026-03-15", "start_time": "08:00", \
+      "duration_minutes": 30, "attendees": []}}
+  train-0820 sample 6  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Design critique", "date": "2026-03-15", "start_time": "08:00", \
+      "duration_minutes": 30}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Design critique", "date": "2026-03-15", "start_time": "08:00", \
+      "duration_minutes": 30, "attendees": []}}
+  train-0820 sample 7  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Design critique", "date": "2026-03-15", "start_time": "08:00", \
+      "duration_minutes": 30}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Design critique", "date": "2026-03-15", "start_time": "08:00:00", \
+      "duration_minutes": 30}}
+  train-0948 sample 1  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Study group", "date": "2026-03-18", "start_time": "09:15", \
+      "duration_minutes": 45}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Study group", "date": "2026-03-18", "start_time": "09:15", \
+      "duration_minutes": 45, "attendees": []}}
+  train-0970 sample 8  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "2 * 60"}}
+      got: {"name": "calculator", "arguments": {"expression": "60 * 2"}}
+  train-0999 sample 2  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "2506.9 * \
+      74 / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "2506.9 * \
+      0.74"}}
+  train-0999 sample 4  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "2506.9 * \
+      74 / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "0.74 * \
+      2506.9"}}
+  train-0999 sample 5  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "2506.9 * \
+      74 / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "0.74 * \
+      2506.9"}}
+  train-0999 sample 7  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "2506.9 * \
+      74 / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "0.74 * \
+      2506.9"}}
+  train-0999 sample 8  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "2506.9 * \
+      74 / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "2506.9 * \
+      0.74"}}
+  train-1118 sample 2  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "27 * 24"}}
+      got: {"name": "calculator", "arguments": {"expression": "24*27"}}
+  train-1345 sample 8  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Design critique", "date": "2026-03-19", "start_time": "10:00", \
+      "duration_minutes": 150}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Design critique", "date": "2026-03-19", "start_time": "10:00", \
+      "duration_minutes": 150, "attendees": []}}
+  train-1518 sample 4  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Study group", "date": "2026-03-15", "start_time": "15:00", \
+      "duration_minutes": 75}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Study Group", "date": "2026-03-15", "start_time": "15:00", \
+      "duration_minutes": 75}}
+  train-1854 sample 2  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Budget sync", "date": "2026-03-23", "start_time": "08:15", \
+      "duration_minutes": 15, "attendees": ["Lucas Silva", "Mia Lopez"]}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Budget sync", "date": "2026-03-23", "start_time": "08:15:00", \
+      "duration_minutes": 15, "attendees": ["Lucas Silva", "Mia Lopez"]}}
+  train-1939 sample 5  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Town hall prep", "date": "2026-03-14", "start_time": "16:15", \
+      "duration_minutes": 150, "attendees": ["Karen Doyle"]}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Town hall prep", "date": "2026-03-14", "start_time": "16:15:00", \
+      "duration_minutes": 150, "attendees": ["Karen Doyle"]}}
+  train-2378 sample 2  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Town hall prep", "date": "2026-04-06", "start_time": "13:30", \
+      "duration_minutes": 90}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Town hall prep", "date": "2026-04-06", "start_time": "13:30", \
+      "duration_minutes": 90, "attendees": []}}
+  train-2453 sample 3  search_contacts
+      ref: {"name": "search_contacts", "arguments": {"query": "Isaac \
+      Mensah"}}
+      got: {"name": "search_contacts", "arguments": {"query": "isaac \
+      mensah"}}
+  train-2476 sample 3  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": "Vet \
+      appointment", "date": "2026-03-26", "start_time": "16:45", \
+      "duration_minutes": 60}}
+      got: {"name": "create_calendar_event", "arguments": {"title": "Vet \
+      appointment", "date": "2026-03-26", "start_time": "16:45", \
+      "duration_minutes": 60, "attendees": []}}
+  train-2476 sample 7  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": "Vet \
+      appointment", "date": "2026-03-26", "start_time": "16:45", \
+      "duration_minutes": 60}}
+      got: {"name": "create_calendar_event", "arguments": {"title": "Vet \
+      appointment", "date": "2026-03-26", "start_time": "16:45", \
+      "duration_minutes": 60, "attendees": []}}
+  train-2517 sample 2  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Quarterly planning", "date": "2026-03-25", "start_time": "09:15", \
+      "duration_minutes": 75}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Quarterly Planning", "date": "2026-03-25", "start_time": "09:15", \
+      "duration_minutes": 75, "attendees": []}}
+  train-2517 sample 6  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Quarterly planning", "date": "2026-03-25", "start_time": "09:15", \
+      "duration_minutes": 75}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Quarterly planning", "date": "2026-03-25", "start_time": "09:15", \
+      "duration_minutes": 75, "attendees": []}}
+  train-2560 sample 8  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Lunch with Omar", "date": "2026-04-17", "start_time": "11:15", \
+      "duration_minutes": 90}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Lunch with Omar", "date": "2026-04-17", "start_time": "11:15", \
+      "duration_minutes": 90, "attendees": []}}
+  train-2604 sample 7  search_contacts
+      ref: {"name": "search_contacts", "arguments": {"query": "Zoe \
+      Adams"}}
+      got: {"name": "search_contacts", "arguments": {"query": "zoe \
+      adams"}}
+  train-2762 sample 5  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Team offsite", "date": "2026-03-31", "start_time": "17:30", \
+      "duration_minutes": 15}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Team offsite", "date": "2026-03-31", "start_time": "17:30", \
+      "duration_minutes": 15, "attendees": []}}
+  train-2863 sample 3  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Coffee chat", "date": "2026-04-14", "start_time": "08:15", \
+      "duration_minutes": 75}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Coffee chat", "date": "2026-04-14", "start_time": "08:15", \
+      "duration_minutes": 75, "attendees": []}}
+  train-2863 sample 5  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Coffee chat", "date": "2026-04-14", "start_time": "08:15", \
+      "duration_minutes": 75}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Coffee chat", "date": "2026-04-14", "start_time": "08:15", \
+      "duration_minutes": 75, "attendees": []}}
+  train-3013 sample 7  search_contacts
+      ref: {"name": "search_contacts", "arguments": {"query": "Dmitry \
+      Volkov"}}
+      got: {"name": "search_contacts", "arguments": {"query": "dmitry"}}
+  train-3061 sample 5  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "8 * 60"}}
+      got: {"name": "calculator", "arguments": {"expression": "(60 * 8)"}}
+  train-3121 sample 1  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "2426.6 * \
+      39 / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "2426.6 * \
+      0.39"}}
+  train-3121 sample 2  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "2426.6 * \
+      39 / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "0.39 * \
+      2426.6"}}
+  train-3121 sample 4  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "2426.6 * \
+      39 / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "0.39 * \
+      2426.6"}}
+  train-3121 sample 5  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "2426.6 * \
+      39 / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "0.39 * \
+      2426.6"}}
+  train-3121 sample 6  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "2426.6 * \
+      39 / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "2426.6 * \
+      0.39"}}
+  train-3121 sample 7  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "2426.6 * \
+      39 / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "0.39 * \
+      2426.6"}}
+  train-3121 sample 8  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "2426.6 * \
+      39 / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "0.39 * \
+      2426.6"}}
+  train-3159 sample 1  search_contacts
+      ref: {"name": "search_contacts", "arguments": {"query": "Zoe \
+      Adams"}}
+      got: {"name": "search_contacts", "arguments": {"query": "zoe \
+      adams"}}
+  train-3213 sample 2  get_calendar_event
+      ref: {"name": "get_calendar_event", "arguments": {"date": \
+      "2026-03-30"}}
+      got: {"name": "get_calendar_event", "arguments": {"date": \
+      "2026-03-30", "title": "Meeting"}}
+  train-3213 sample 6  get_calendar_event
+      ref: {"name": "get_calendar_event", "arguments": {"date": \
+      "2026-03-30"}}
+      got: {"name": "get_calendar_event", "arguments": {"date": \
+      "2026-03-30", "title": "Meeting"}}
+  train-3247 sample 5  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Quarterly planning", "date": "2026-03-31", "start_time": "14:30", \
+      "duration_minutes": 15, "attendees": ["Rosa Jimenez"]}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Quarterly Planning", "date": "2026-03-31", "start_time": "14:30", \
+      "duration_minutes": 15, "attendees": ["Rosa Jimenez"]}}
+  train-3418 sample 8  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Lunch with Omar", "date": "2026-03-31", "start_time": "11:15", \
+      "duration_minutes": 60}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Lunch with Omar", "date": "2026-03-31", "start_time": "11:15", \
+      "duration_minutes": 60, "attendees": []}}
+  train-3537 sample 6  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Quarterly planning", "date": "2026-03-22", "start_time": "13:00", \
+      "duration_minutes": 20}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Quarterly planning", "date": "2026-03-22", "start_time": "13:00", \
+      "duration_minutes": 20, "attendees": []}}
+  train-3554 sample 1  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "1561 * \
+      1.12"}}
+      got: {"name": "calculator", "arguments": {"expression": \
+      "(1561*1.12)/1"}}
+  train-3590 sample 1  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": "Car \
+      pickup", "date": "2026-04-24", "start_time": "15:30", \
+      "duration_minutes": 180}}
+      got: {"name": "create_calendar_event", "arguments": {"title": "Car \
+      pickup", "date": "2026-04-24", "start_time": "15:30", \
+      "duration_minutes": 180, "attendees": []}}
+  train-3590 sample 6  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": "Car \
+      pickup", "date": "2026-04-24", "start_time": "15:30", \
+      "duration_minutes": 180}}
+      got: {"name": "create_calendar_event", "arguments": {"title": "Car \
+      pickup", "date": "2026-04-24", "start_time": "15:30", \
+      "duration_minutes": 180, "attendees": []}}
+  train-3720 sample 6  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "16 * \
+      86400"}}
+      got: {"name": "calculator", "arguments": {"expression": "86400 * \
+      16"}}
+  train-3819 sample 4  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Budget sync", "date": "2026-03-21", "start_time": "12:00", \
+      "duration_minutes": 45}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Budget sync", "date": "2026-03-21", "start_time": "12:00", \
+      "duration_minutes": 45, "attendees": []}}
+  train-3860 sample 6  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Vendor review", "date": "2026-04-02", "start_time": "16:00", \
+      "duration_minutes": 90}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Vendor Review", "date": "2026-04-02", "start_time": "16:00", \
+      "duration_minutes": 90}}
+  train-3867 sample 2  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Demo prep", "date": "2026-04-05", "start_time": "14:15", \
+      "duration_minutes": 15}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Demo prep", "date": "2026-04-05", "start_time": "14:15", \
+      "duration_minutes": 15, "attendees": []}}
+  train-3867 sample 3  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Demo prep", "date": "2026-04-05", "start_time": "14:15", \
+      "duration_minutes": 15}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Demo prep", "date": "2026-04-05", "start_time": "14:15", \
+      "duration_minutes": 15, "attendees": []}}
+  train-3867 sample 4  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Demo prep", "date": "2026-04-05", "start_time": "14:15", \
+      "duration_minutes": 15}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Demo prep", "date": "2026-04-05", "start_time": "14:15", \
+      "duration_minutes": 15, "attendees": []}}
+  train-3867 sample 8  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Demo prep", "date": "2026-04-05", "start_time": "14:15", \
+      "duration_minutes": 15}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Demo prep", "date": "2026-04-05", "start_time": "14:15", \
+      "duration_minutes": 15, "attendees": []}}
+  train-4218 sample 1  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "4916 * 20 \
+      / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "0.2 * \
+      4916"}}
+  train-4218 sample 2  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "4916 * 20 \
+      / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "0.20 * \
+      4916"}}
+  train-4218 sample 3  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "4916 * 20 \
+      / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "0.2 * \
+      4916"}}
+  train-4218 sample 4  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "4916 * 20 \
+      / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "4916 * \
+      0.2"}}
+  train-4218 sample 5  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "4916 * 20 \
+      / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "4916 * \
+      0.20"}}
+  train-4218 sample 6  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "4916 * 20 \
+      / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "0.20 * \
+      4916"}}
+  train-4218 sample 7  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "4916 * 20 \
+      / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "0.20 * \
+      4916"}}
+  train-4218 sample 8  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "4916 * 20 \
+      / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "4916 * \
+      0.2"}}
+  train-4224 sample 7  search_contacts
+      ref: {"name": "search_contacts", "arguments": {"query": "Omar \
+      Farouk"}}
+      got: {"name": "search_contacts", "arguments": {"query": "omar \
+      farouk"}}
+  train-4278 sample 2  search_documents
+      ref: {"name": "search_documents", "arguments": {"query": "Q1 \
+      hiring plan"}}
+      got: {"name": "search_documents", "arguments": {"query": "Q1 \
+      hiring"}}
+  train-4489 sample 3  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Interview debrief", "date": "2026-03-14", "start_time": "14:45", \
+      "duration_minutes": 60}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Interview debrief", "date": "2026-03-14", "start_time": "14:45", \
+      "duration_minutes": 60, "attendees": []}}
+  train-4489 sample 6  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Interview debrief", "date": "2026-03-14", "start_time": "14:45", \
+      "duration_minutes": 60}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Interview debrief", "date": "2026-03-14", "start_time": "14:45", \
+      "duration_minutes": 60, "attendees": []}}
+  train-4489 sample 8  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Interview debrief", "date": "2026-03-14", "start_time": "14:45", \
+      "duration_minutes": 60}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Interview debrief", "date": "2026-03-14", "start_time": "14:45", \
+      "duration_minutes": 60, "attendees": []}}
+  train-4517 sample 5  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Yoga", "date": "2026-04-15", "start_time": "10:00", \
+      "duration_minutes": 30}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Yoga", "date": "2026-04-15", "start_time": "10:00:00", \
+      "duration_minutes": 30}}
+  train-4545 sample 6  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "9 * 7"}}
+      got: {"name": "calculator", "arguments": {"expression": "7*9"}}
+  train-4623 sample 3  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Design critique", "date": "2026-03-19", "start_time": "16:15", \
+      "duration_minutes": 60}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Design critique", "date": "2026-03-19", "start_time": "16:15", \
+      "duration_minutes": 60, "attendees": []}}
+  train-4693 sample 1  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "2319 * 95 \
+      / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "(2319 / \
+      100) * 95"}}
+  train-4693 sample 3  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "2319 * 95 \
+      / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "2319 * \
+      0.95"}}
+  train-4693 sample 4  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "2319 * 95 \
+      / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "0.95 * \
+      2319"}}
+  train-4693 sample 5  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "2319 * 95 \
+      / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "0.95 * \
+      2319"}}
+  train-4693 sample 7  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "2319 * 95 \
+      / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "(2319 * \
+      0.95)"}}
+  train-4693 sample 8  calculator
+      ref: {"name": "calculator", "arguments": {"expression": "2319 * 95 \
+      / 100"}}
+      got: {"name": "calculator", "arguments": {"expression": "0.95 * \
+      2319"}}
+  train-4908 sample 8  create_calendar_event
+      ref: {"name": "create_calendar_event", "arguments": {"title": \
+      "Code review", "date": "2026-03-25", "start_time": "16:30", \
+      "duration_minutes": 45}}
+      got: {"name": "create_calendar_event", "arguments": {"title": \
+      "Code Review", "date": "2026-03-25", "start_time": "16:30", \
+      "duration_minutes": 45}}
+
+--------------------------------------------------------------------------
+Exact match but not execution match (a check: should be 0)
+--------------------------------------------------------------------------
+  replies                            0
+
+--------------------------------------------------------------------------
+Groups of 8: how many samples are right per task
+--------------------------------------------------------------------------
+  kind           0   1   2   3   4   5   6   7    8
+  ---------------------------------------------------
+  choose+fill   57  25  12  16  17  11  13  43  106
+  tricky args   22  16   6   7   2   9   7  13   18
+  no tool fits  14   9   4   3   3   1   9  16   41
+  total         93  50  22  26  22  21  29  72  165
+
+--------------------------------------------------------------------------
+Groups with signal (some right, some wrong)
+--------------------------------------------------------------------------
+  kind          tasks  all wrong  mixed  all right  share  per 1k
+  -----------------------------------------------------------------
+  choose+fill     300         57    137        106  45.7%    57.1
+  tricky args     100         22     60         18  60.0%    75.0
+  no tool fits    100         14     45         41  45.0%    56.3
+  total           500         93    242        165  48.4%    60.5
+  share: mixed groups / tasks.
+  per 1k: mixed groups per 1,000 answers = (1000 / 8) x share.
+  Both rounded half up.
+
+--------------------------------------------------------------------------
+Greedy right vs pass@8
+--------------------------------------------------------------------------
+  kind          tasks        greedy right              pass@8
+  -------------------------------------------------------------
+  choose+fill     300  189 of 300 (63.0%)  243 of 300 (81.0%)
+  tricky args     100   54 of 100 (54.0%)   78 of 100 (78.0%)
+  no tool fits    100   67 of 100 (67.0%)   86 of 100 (86.0%)
+  total           500  310 of 500 (62.0%)  407 of 500 (81.4%)
+  pass@8: tasks with at least one right answer in 8 samples.
+
+--------------------------------------------------------------------------
+Wall clock (varies run to run)
+--------------------------------------------------------------------------
+  pass         tasks  s/task  new tokens/task  hit token cap
+  ------------------------------------------------------------
+  greedy         500    0.06               37              0
+  samples8-t1    500    0.72              337              1
