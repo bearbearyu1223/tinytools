@@ -101,7 +101,7 @@ ROW_TYPES = (R_CALL, R_NO_CALL_2, R_NO_CALL_1, R_NO_CALL_0, R_OUT)
 # onetool (plan 3g, Han 2026-11-24): every one-tool training row is a no-call row (the
 # one-tool rows with a call are R_OUT), so the variant trains no one-tool row at all.
 VARIANTS = {"onetool": (R_NO_CALL_1,)}
-VARIANT_NOTE = {"onetool": "left out, plan 3g"}
+VARIANT_NOTE = {"onetool": "left out"}
 # sha256 of each variant's file as sft-data --variant made it on the Mac (outputs/
 # sft-data-onetool.txt); sft-check --profile onetool fails unless the file is these bytes.
 VARIANT_SHA256 = {

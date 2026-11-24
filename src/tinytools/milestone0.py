@@ -905,7 +905,7 @@ def _probe(rep, s: Settings, device, root: Path) -> list[StepTiming]:
         rep.note(f"(skipped: {path.relative_to(root)} is missing; run toolace-convert and")
         rep.note("sft-data first)")
         return []
-    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").split("\n") if line]
     tok = AutoTokenizer.from_pretrained(f"Qwen/Qwen2.5-{s.timing_sizes[0]}-Instruct")
     batches, ids, scored = _probe_batches(tok, rows, s, device)
     rep.kv("rows", f"{path.relative_to(root)} ({len(rows)} rows)")

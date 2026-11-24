@@ -470,7 +470,7 @@ r6a: untrained -> SFT, task by task
                    mixed      50.0%  41.7%    -8.3   [-75.0, +58.3]
                all right       0.0%  25.0%   +25.0     [0.0, +58.3]
 
-  The movements (plan 3d), share of tasks (seed mean):
+  The movements (named before the run), share of tasks (seed mean):
     mixed -> all right: SFT taught it; RL has less left to do there
     all wrong -> mixed: new signal
     mixed -> all wrong: damage
@@ -541,7 +541,7 @@ r6a: untrained -> control, task by task
                    mixed      50.0%    83.3%   +33.3   [0.0, +66.7]
                all right       0.0%     0.0%     0.0     [0.0, 0.0]
 
-  The movements (plan 3d), share of tasks (seed mean):
+  The movements (named before the run), share of tasks (seed mean):
     mixed -> all right: control taught it; RL has less left to do there
     all wrong -> mixed: new signal
     mixed -> all wrong: damage

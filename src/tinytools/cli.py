@@ -22,7 +22,7 @@ Commands (``tinytools <command> --help`` for each one's flags):
     sft-pair        one seed's pair: train real, score, train control, score
                     (--profile onetool: the real arm only, train and score)
     sft-report      r4c, r4d, r5a-d, r6a from the saved runs and replies (no model);
-                    --reading tagfree: on the tag-free reading (plan 3f)
+                    --reading tagfree: on the tag-free reading
     sft-followup    section 5's follow-ups: ToolACE's no-call wording, BFCL no-call
                     replies and the parameters they ask for, right pooled (no model)
 
@@ -1204,7 +1204,7 @@ def cmd_sft_data(args) -> None:
         sys.exit(f"{sft.CONVERTED} is missing; run `tinytools toolace-convert` first")
     raw = src.read_bytes()
     src_sha = hashlib.sha256(raw).hexdigest()
-    converted = [json.loads(line) for line in raw.decode("utf-8").splitlines()]
+    converted = [json.loads(line) for line in raw.decode("utf-8").split("\n") if line]
     tok = AutoTokenizer.from_pretrained(args.tokenizer)
     variant = getattr(args, "variant", None)  # None when args are built by hand
     if variant is not None:
@@ -1675,8 +1675,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--tokenizer", default="Qwen/Qwen2.5-0.5B-Instruct",
                    help="whose chat template to render with")
     s.add_argument("--variant", choices=["onetool"], default=None,
-                   help="onetool: only the real set without its 'no call, 1 tool' rows (plan "
-                        "3g), into data/sft/real-onetool.jsonl, capture sft-data-onetool.txt; "
+                   help="onetool: only the real set without its 'no call, 1 tool' rows, "
+                        "into data/sft/real-onetool.jsonl, capture sft-data-onetool.txt; "
                         "the four sets are not touched and --seeds is not used")
     s.set_defaults(fn=cmd_sft_data)
 
@@ -1728,10 +1728,10 @@ def build_parser() -> argparse.ArgumentParser:
         s.add_argument("--profile", choices=sorted(PROFILE_NAMES), default="main",
                        help="main: Qwen2.5-1.5B-Instruct, outputs/main/ (as the main run ran); "
                             "base: Qwen2.5-1.5B with the Instruct chat template and four "
-                            "embedding rows trained, outputs/base/, captures *-base.txt "
-                            "(plan 3f); onetool: main's settings, the real arm only, on "
+                            "embedding rows trained, outputs/base/, captures *-base.txt; "
+                            "onetool: main's settings, the real arm only, on "
                             "data/sft/real-onetool.jsonl, outputs/onetool/, captures "
-                            "*-onetool.txt (plan 3g)")
+                            "*-onetool.txt")
 
     def training_flags(s) -> None:
         s.add_argument("--token-budget", type=int, default=None,
@@ -1788,7 +1788,7 @@ def build_parser() -> argparse.ArgumentParser:
     profile_flag(s)
     s.add_argument("--reading", choices=("strict", "tagfree"), default="strict",
                    help="strict (default): calls only inside <tool_call> tags, sft*.txt; "
-                        "tagfree: bare call JSON at a reply's start counts too (plan 3f), "
+                        "tagfree: bare call JSON at a reply's start counts too, "
                         "r5a-d and r6a beside a strict vs tag-free table, sft-tagfree*.txt")
     s.add_argument("--from", dest="source", default=None,
                    help="the arm tree to read (e.g. runs/2026-11-23-main/outputs/main; "

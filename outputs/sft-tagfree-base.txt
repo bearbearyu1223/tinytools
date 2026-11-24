@@ -36,7 +36,7 @@ Setup
   Claims come from the five primary comparisons (r5d, marked);
   every other interval is descriptive.
   replies read from                  runs/2026-11-23-base-2/outputs/base
-  reading                            tag-free (plan 3f); strict beside it
+  reading                            tag-free; strict beside it
   strict: a call counts only inside <tool_call> tags.
   tag-free: a reply with a <tool_call> tag is read as strict. Any
   other reply's call is the JSON object at its very start, if it has
@@ -334,11 +334,11 @@ The effects: three paired differences each (r5d)
   Intervals: bootstrap, 10,000 resamples, seed 0, 95%, over tasks.
 
 --------------------------------------------------------------------------
-The base arm's rule (plan 3f)
+The base arm's rule (fixed before the run)
 --------------------------------------------------------------------------
-  base-arm rule (plan 3f): SFT - untrained, ours, tasks that need a call,
-  right, tag-free: +74.3 points [+71.4, +77.3], excludes 0: yes ->
-  featured
+  base-arm rule (fixed before the run): SFT - untrained, ours, tasks that
+  need a call, right, tag-free: +74.3 points [+71.4, +77.3], excludes 0:
+  yes -> featured
   (untrained 12.3%, SFT 86.6%, seed mean; bootstrap, 10,000 resamples,
   seed 0, 95%, over 800 tasks.)
   Strict, for contrast (not the rule's reading): +86.6 points [+84.4,
@@ -504,7 +504,7 @@ r6a: untrained -> SFT, task by task
                    mixed       7.2%  42.3%   +35.1  [+30.5, +39.7]
                all right      17.6%  40.1%   +22.5  [+16.2, +28.6]
 
-  The movements (plan 3d), share of tasks (seed mean):
+  The movements (named before the run), share of tasks (seed mean):
     mixed -> all right: SFT taught it; RL has less left to do there
     all wrong -> mixed: new signal
     mixed -> all wrong: damage
@@ -581,7 +581,7 @@ r6a: untrained -> control, task by task
                    mixed       7.2%     3.3%    -3.9    [-6.4, -1.4]
                all right      17.6%     0.0%   -17.6  [-21.2, -14.4]
 
-  The movements (plan 3d), share of tasks (seed mean):
+  The movements (named before the run), share of tasks (seed mean):
     mixed -> all right: control taught it; RL has less left to do there
     all wrong -> mixed: new signal
     mixed -> all wrong: damage

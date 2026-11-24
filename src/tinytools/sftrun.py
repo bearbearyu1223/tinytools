@@ -1775,7 +1775,7 @@ def _tagfree_setup(rep, source: str) -> None:
     from .tagfree import RULE
 
     rep.kv("replies read from", source, wrap=True)
-    rep.kv("reading", "tag-free (plan 3f); strict beside it")
+    rep.kv("reading", "tag-free; strict beside it")
     for line in RULE:
         rep.note(line)
     rep.note("Training (r4c, r4d) is the same on both readings: see sft-report.")
@@ -1847,10 +1847,10 @@ def base_rule(un: Scores, sft: list[Scores], ids: list[str]):
 def _base_rule(rep, tagfree: Arms, strict: Arms, test, items) -> None:
     from . import effects as E
 
-    rep.section("The base arm's rule (plan 3f)")
+    rep.section("The base arm's rule (fixed before the run)")
     _, ids = _sets(test, items)[E.OURS_CALL]
     p, q = base_rule(tagfree.un, tagfree.sft, ids), base_rule(strict.un, strict.sft, ids)
-    rep.note(f"base-arm rule (plan 3f): SFT - untrained, ours, tasks that need a call, "
+    rep.note(f"base-arm rule (fixed before the run): SFT - untrained, ours, tasks that need a call, "
              f"right, tag-free: {E.points(p.diff)} points {E.interval(p.lo, p.hi)}, excludes 0: "
              f"{'yes' if p.excludes_zero else 'no'} -> "
              f"{'featured' if p.excludes_zero else 'a paragraph'}", wrap=True)
@@ -2370,7 +2370,7 @@ def _r6a(rep, un, sft, ctl, seeds, sample, floor: dict | None = None) -> None:
         rep.table(["tasks", "group", "untrained", arm, "points", "95% interval"], rows)
 
         rep.blank()
-        rep.note("The movements (plan 3d), share of tasks (seed mean):")
+        rep.note("The movements (named before the run), share of tasks (seed mean):")
         for (frm, to), reading in E.MOVEMENTS:
             rep.note(f"  {frm} -> {to}: {reading.format(arm=arm)}")
         if floor is not None:

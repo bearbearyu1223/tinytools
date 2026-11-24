@@ -212,9 +212,44 @@ def test_the_rule_reads_the_interval_upward_only():
     for lo, hi in ((-0.01, 0.2), (0.0, 0.2), (-0.3, -0.1)):  # a drop excludes 0 too: not up
         assert O.verdict(p(lo, hi)) == "not confirmed"
     line = O.primary_line(p(0.1234, 0.2104))
-    assert line == ("primary (plan 3g): right on BFCL's one-function call items (simple + "
+    assert line == ("primary: right on BFCL's one-function call items (simple + "
                     "parallel, 540), onetool real - main real: +16.7 points [+12.3, +21.0], "
                     "excludes 0 upward: yes -> confirmed")
+    assert O.primary_line(p(0.1234, 0.2104), [1, 2, 3], [1, 2, 3]) == line
+
+
+def test_the_verdict_is_withheld_unless_both_sides_have_seeds_1_to_3():
+    # T9h review S2: a deadline-skipped seed must not yield a verdict
+    p = E.Paired("onetool real", "main real", 540, E.Fraction(1, 2), E.Fraction(1, 3),
+                 0.1234, 0.2104)
+    for seeds, main_seeds in (([1, 2], [1, 2, 3]), ([1, 2, 3], [1, 3]), ([2, 3], [2, 3])):
+        line = O.primary_line(p, seeds, main_seeds)
+        assert "confirmed" not in line and "excludes 0 upward" not in line
+        assert line.endswith(f"verdict withheld: the rule needs seeds 1-3 on both sides, and "
+                             f"onetool has {', '.join(map(str, seeds))}, main real "
+                             f"{', '.join(map(str, main_seeds))}")
+
+
+def test_check_inputs_names_every_run_off_its_pin():
+    # T9h review S1: the report stops unless every run trained on its side's pinned set
+    one, main = "a" * 64, "b" * 64
+    assert O.check_inputs({"real-seed1": one}, {"real-seed1": main}, one, main) == []
+    swapped = O.check_inputs({"real-seed1": main, "real-seed2": main},
+                             {"real-seed1": one}, one, main)
+    assert len(swapped) == 3 and swapped[0].startswith("onetool real-seed1")
+    assert swapped[2].startswith("main real-seed1")
+    assert O.check_inputs({"real-seed1": None}, {}, one, main) == [
+        f"onetool real-seed1: trained on ?, not the variant's {one[:16]}"]
+
+
+def test_the_report_refuses_main_runs_as_onetool_runs(monkeypatch, tmp_path):
+    # T9h review S1: --from pointed at the main run's tree prints nothing and exits
+    main = ROOT / O.MAIN_FROM
+    if not (main / "real-seed1" / "train.json").exists():
+        pytest.skip("the main run's tree is not here")
+    with pytest.raises(SystemExit, match="did not train on its pinned set"):
+        R.run_report(tmp_path, False, "onetool", "strict", main, main)
+    assert not (tmp_path / "outputs").exists()
 
 
 def test_compare_is_seed_means_paired_by_task():

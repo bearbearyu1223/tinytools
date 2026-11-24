@@ -8,7 +8,9 @@ only, ``--main-from``) and prints, paired by task over seed means:
 
 * the primary comparison, fixed before the run: right on BFCL's one-function call items
   (simple + parallel), onetool real - main real, bootstrap 95% interval; "confirmed" if
-  the interval excludes 0 upward;
+  the interval excludes 0 upward. The verdict is printed only when both sides have the
+  rule's seeds (1-3) and every run trained on its pinned set (:func:`check_inputs`:
+  otherwise the report stops before printing anything);
 * beside it (descriptive): the no-call share there; right and no call on the
   multi-function items (multiple + parallel_multiple); right on our tasks that need a
   call; declining on our no-tool-fits tasks and BFCL irrelevance; BFCL's outcomes per
@@ -33,6 +35,7 @@ from . import train as T
 
 ONE_FUNCTION = ("simple", "parallel")  # BFCL categories whose items offer one function
 MULTI_FUNCTION = ("multiple", "parallel_multiple")
+RULE_SEEDS = [1, 2, 3]  # the rule's seeds, on both sides
 MAIN_FROM = "runs/2026-11-23-main/outputs/main"  # the main run's arm tree (in git)
 QUICK_MAIN_FROM = "outputs/main-quick"
 # score.json fields two scorings must share to be compared
@@ -73,11 +76,33 @@ def compare(onetool: list[list[float]], main: list[list[float]]) -> E.Paired:
                     len(onetool), len(main))
 
 
-def primary_line(p: E.Paired) -> str:
-    return (f"primary (plan 3g): right on BFCL's one-function call items (simple + "
+def primary_line(p: E.Paired, seeds: list[int] | None = None,
+                 main_seeds: list[int] | None = None) -> str:
+    """The primary line. The verdict needs the rule's seeds on both sides
+    (:data:`RULE_SEEDS`); with fewer it is withheld and the seeds are said."""
+    head = (f"primary: right on BFCL's one-function call items (simple + "
             f"parallel, {p.n}), onetool real - main real: {E.points(p.diff)} points "
-            f"{E.interval(p.lo, p.hi)}, excludes 0 upward: "
-            f"{'yes' if excludes_zero_upward(p) else 'no'} -> {verdict(p)}")
+            f"{E.interval(p.lo, p.hi)}, ")
+    if seeds is None or (seeds == RULE_SEEDS and main_seeds == RULE_SEEDS):
+        return (head + f"excludes 0 upward: {'yes' if excludes_zero_upward(p) else 'no'} "
+                f"-> {verdict(p)}")
+    return (head + "verdict withheld: the rule needs seeds 1-3 on both sides, and "
+            f"onetool has {_seed_list(seeds)}, main real {_seed_list(main_seeds or [])}")
+
+
+def _seed_list(seeds: list[int]) -> str:
+    return ", ".join(map(str, seeds)) or "none"
+
+
+def check_inputs(one_shas: dict[str, str], main_shas: dict[str, str], one_pin: str,
+                 main_pin: str) -> list[str]:
+    """Why the report must not print a verdict: each run (label -> the sha256 its
+    train.json records) not trained on its side's pinned set. Empty: all as pinned. Pure."""
+    bad = [f"onetool {k}: trained on {(v or '?')[:16]}, not the variant's {one_pin[:16]}"
+           for k, v in one_shas.items() if v != one_pin]
+    bad += [f"main {k}: trained on {(v or '?')[:16]}, not real.jsonl's {main_pin[:16]}"
+            for k, v in main_shas.items() if v != main_pin]
+    return bad
 
 
 def mean_count(per_seed: list[list[str]], outcome: str) -> str:
@@ -107,7 +132,7 @@ def run_report(root: Path, quick: bool, reading: str = "strict", source: Path | 
     from .tagfree import STRICT, TAGFREE
 
     if reading != STRICT:
-        sys.exit(f"--profile {profile} reports on the strict reading only (plan 3g)")
+        sys.exit(f"--profile {profile} reports on the strict reading only (as fixed before the run)")
     _quiet_hf()
     m = R.mode(quick, root, profile=profile)
     if source is not None:
@@ -121,6 +146,21 @@ def run_report(root: Path, quick: bool, reading: str = "strict", source: Path | 
     main_seeds, _ = arm_seeds(main_dir)
     if not (main_dir / R.UNTRAINED / "score.json").exists() or not main_seeds:
         sys.exit(f"{R._shown(main_dir, root)} has no scored untrained/ and real-seed<N>/")
+    from . import sft
+
+    trains = {d.name: json.loads((d / "train.json").read_text())
+              for d in sorted(m.out.iterdir()) if (d / "train.json").exists()}
+    main_trains = {s: json.loads((main_dir / R.run_label("real", s) / "train.json").read_text())
+                   for s in main_seeds}
+    bad = check_inputs({R.run_label("real", s): trains[R.run_label("real", s)].get("data_sha256")
+                        for s in seeds},
+                       {R.run_label("real", s): t.get("data_sha256")
+                        for s, t in main_trains.items()},
+                       sft.VARIANT_SHA256[T.PROFILES[profile].real_set],
+                       sft.SET_SHA256["real.jsonl"])
+    if bad:
+        sys.exit("not reporting: a run did not train on its pinned set (check --from and "
+                 "--main-from)\n  " + "\n  ".join(bad))
     un_info = json.loads((main_dir / R.UNTRAINED / "score.json").read_text())
     if un_info["model"] != m.settings.model:
         sys.exit(f"{R._shown(main_dir, root)} scored {un_info['model']}, not "
@@ -144,10 +184,6 @@ def run_report(root: Path, quick: bool, reading: str = "strict", source: Path | 
 
     un, main, one = arms(STRICT)
     un_t, main_t, one_t = arms(TAGFREE)
-    trains = {d.name: json.loads((d / "train.json").read_text())
-              for d in sorted(m.out.iterdir()) if (d / "train.json").exists()}
-    main_trains = {s: json.loads((main_dir / R.run_label("real", s) / "train.json").read_text())
-                   for s in main_seeds}
     checks = json.loads((m.out / "checks.json").read_text()) if (
         m.out / "checks.json").exists() else {}
 
@@ -158,7 +194,7 @@ def run_report(root: Path, quick: bool, reading: str = "strict", source: Path | 
     _setup(rep, m, root, main_dir, seeds, partial, main_seeds, un, main, one, test, items)
     _reading(rep, (un, main, one), (un_t, main_t, one_t), test, items)
     sets = _sets(test, items)
-    _primary(rep, un, main, one, sets)
+    _primary(rep, un, main, one, sets, seeds, main_seeds)
     _beside(rep, main, one, sets)
     _bfcl_outcomes(rep, un, main, one, items)
     R._r4c(rep, m, trains, seeds, checks)
@@ -193,7 +229,7 @@ def _setup(rep, m, root, main_dir, seeds, partial, main_seeds, un, main, one, te
     rep.kv("the main run, read from", R._shown(main_dir, root), wrap=True)
     rep.kv("  its arms read", "untrained, real")
     rep.kv("  real, seeds", ", ".join(map(str, main_seeds)))
-    rep.note("The untrained scores are the main run's (plan 3g): the same model,")
+    rep.note("The untrained scores are the main run's: the same model,")
     rep.note("tasks, prompts and decoding, so it was not scored again.")
     diff = sorted({k for x in one for k in differing(x.info, main[0].info, SCORED_AS)}
                   | {k for x in main for k in differing(x.info, un.info, SCORED_AS)})
@@ -221,7 +257,7 @@ def _reading(rep, strict, tagfree, test, items) -> None:
     rep.section("The reading: strict")
     rep.note("A call counts only inside <tool_call> tags. The Instruct model")
     rep.note("writes its calls in them; replies whose outcome the tag-free")
-    rep.note("reading (plan 3f) would change, ours and BFCL, greedy:")
+    rep.note("reading would change, ours and BFCL, greedy:")
     sets = _sets(test, items)
     ids = {src: [i for s_, ids_ in sets.values() if s_ == src for i in ids_]
            for src in ("ours", "bfcl")}
@@ -240,16 +276,16 @@ def _reading(rep, strict, tagfree, test, items) -> None:
     rep.table(["arm", "runs", "replies", "changed"], rows)
 
 
-def _primary(rep, un, main, one, sets) -> None:
+def _primary(rep, un, main, one, sets, seeds, main_seeds) -> None:
     src, ids = sets["one-function"]
     p = compare([R._right(x, src, ids) for x in one], [R._right(x, src, ids) for x in main])
     u = E.exact_mean(R._right(un, src, ids), 1)
-    rep.section("The prediction (plan 3g, fixed before the run)")
+    rep.section("The prediction (fixed before the run)")
     rep.note("Leaving out the one-tool no-call rows raises right on BFCL's")
     rep.note("one-function call items; confirmed if the interval excludes 0")
     rep.note("upward. Paired by task, seed means.")
     rep.blank()
-    rep.note(primary_line(p), wrap=True)
+    rep.note(primary_line(p, seeds, main_seeds), wrap=True)
     rep.note(f"(untrained {E.percent(u)}, main real {E.percent(p.share_b)}, onetool real "
              f"{E.percent(p.share_a)}; {R.RESAMPLES_TEXT}, over {p.n} items.)", wrap=True)
 
@@ -279,7 +315,7 @@ def _beside(rep, main, one, sets) -> None:
     rep.note("* the primary comparison, above. points: onetool - main real.")
     rep.note("one-function: BFCL simple + parallel; multi-function: multiple +")
     rep.note("parallel_multiple; ours, call tasks: the kinds that need a call;")
-    rep.note("no fit / irrelevance: declined is right. Predicted (plan 3g):")
+    rep.note("no fit / irrelevance: declined is right. Predicted before the run:")
     rep.note("multi-function and our tasks barely move (our tasks never offer")
     rep.note("one tool); declining: no prediction.")
 

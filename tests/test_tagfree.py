@@ -212,7 +212,7 @@ def test_tagfree_report_quick_base(monkeypatch, tmp_path):
     text = _report(monkeypatch, tmp_path, src, True, "base", "tagfree")
     assert all(len(x) <= 74 for x in text.splitlines())
     for want in ("Strict vs tag-free, right, per arm", "(r5a)", "(r5b)", "(r5c)", "(r5d)",
-                 "base-arm rule (plan 3f)", "(r6a)", *TF.RULE):
+                 "base-arm rule (fixed before the run)", "(r6a)", *TF.RULE):
         assert want in text
     assert "(r4c)" not in text
 

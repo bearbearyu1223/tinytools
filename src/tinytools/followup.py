@@ -110,9 +110,11 @@ def asked_parameters(reply: str) -> list[str] | None:
 def value_in_question(options: list, question: str) -> bool:
     """Whether one of BFCL's allowed values for a parameter appears in the question.
 
-    Strings: case-insensitive substring (empty strings, BFCL's "may be omitted",
-    skipped). Numbers: as written or, if whole, as an integer, not inside a longer
-    number. Booleans, lists and dicts: never (not checkable by text). Pure.
+    Strings: case-insensitive, as a whole word or words, allowing a plural ending
+    ("house price" in "house prices"), so "en" is not found in "sentiment" nor "GOOG"
+    in "Google" (empty strings, BFCL's "may be omitted", skipped). Numbers: as written
+    or, if whole, as an integer, not inside a longer number. Booleans, lists and
+    dicts: never (not checkable by text). Pure.
     """
     q = question.lower()
     for v in options:
@@ -123,7 +125,8 @@ def value_in_question(options: list, question: str) -> bool:
             if any(re.search(r"(?<![\d.])" + re.escape(f) + r"(?!\.?\d)", question)
                    for f in forms):
                 return True
-        elif isinstance(v, str) and v.strip() and v.lower() in q:
+        elif isinstance(v, str) and v.strip() and re.search(
+                r"(?<![a-z0-9])" + re.escape(v.lower()) + r"(?:e?s)?(?![a-z0-9])", q):
             return True
     return False
 
@@ -275,8 +278,9 @@ def run(root: Path, source: Path) -> int:
     rep.note("  not in the schema: no offered function has the parameter;")
     rep.note("  optional: the schema doesn't list it as required;")
     rep.note("  in the question: required, and one of BFCL's allowed values for it")
-    rep.note("    appears in the question (strings: case-insensitive substring;")
-    rep.note("    numbers: as a number; booleans, lists, dicts: never);")
+    rep.note("    appears in the question (strings: case-insensitive, as whole")
+    rep.note("    words, a plural ending allowed; numbers: as a number; booleans,")
+    rep.note("    lists, dicts: never);")
     rep.note("  may be omitted: required, but BFCL's answer allows leaving it out;")
     rep.note("  not found: required, and its value is not in the question.")
     rep.note("A reply takes the first of its parameters' classes in the order")

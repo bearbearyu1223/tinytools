@@ -410,3 +410,53 @@ def test_movements_floor_must_agree():
         "mixed -> all right           29.5%   8.0%", "mixed -> all right           29.5%   8.1%")
     with pytest.raises(F.CaptureError, match="floor"):
         F.parse_movements(text)
+
+
+BASE_TF_TXT = F.OUTPUTS / "sft-tagfree-base.txt"
+INSTRUCT_TF_TXT = F.OUTPUTS / "sft-tagfree.txt"
+
+
+def test_movements_panels_name_their_model():
+    assert F.panel_title(SFT_TXT.read_text()) == "Qwen2.5-1.5B-Instruct"
+    base = BASE_TF_TXT.read_text()
+    assert F.panel_title(base) == "Qwen2.5-1.5B (base), read tag-free"
+    mv = F.parse_movements(base)
+    assert mv.n == 400 and F.largest_beyond(mv).name == "all wrong -> mixed"
+    assert mv.rows[1].sft_beyond == F.Diff("SFT - floor", 38.8, 34.0, 43.5, True)
+
+
+def test_base_panel_needs_the_tag_free_reading():
+    strict_reading = BASE_TF_TXT.read_text().replace(
+        "  reading                            tag-free; strict beside it",
+        "  reading                            strict")
+    with pytest.raises(F.CaptureError, match="tag-free reading"):
+        F.panel_title(strict_reading)
+    with pytest.raises(F.CaptureError):  # the strict base report has no reading line
+        F.panel_title((F.OUTPUTS / "sft-base.txt").read_text())
+
+
+def test_base_vs_instruct_rows_from_the_captures():
+    base = F.model_shifts(BASE_TF_TXT.read_text())
+    inst = F.model_shifts(SFT_TXT.read_text())
+    assert [(s.untrained, s.sft) for s in base] == [
+        (12.3, 86.6), (81.6, 0.0), (2.9, 9.4), (3.3, 4.0), (16.0, 99.7), (7.1, 32.3),
+        (72.2, 61.9), (14.8, 0.0)]
+    assert [(s.untrained, s.sft) for s in inst] == [
+        (60.0, 90.0), (13.0, 0.6), (25.5, 8.4), (1.5, 1.0), (46.5, 77.7), (85.1, 51.3),
+        (0.8, 41.9), (31.9, 0.0)]
+    # the instruct model's tag-free reading changes none of its replies
+    assert F.model_shifts(INSTRUCT_TF_TXT.read_text()) == inst
+
+
+def test_base_vs_instruct_checks_r5b_against_r5d():
+    text = BASE_TF_TXT.read_text().replace("untrained 2.9%   SFT 9.4%", "untrained 3.0%   SFT 9.4%")
+    with pytest.raises(F.CaptureError, match="r5b gives 2.9"):
+        F.model_shifts(text)
+
+
+def test_r5b_rows_must_sum_to_n():
+    text = SFT_TXT.read_text().replace(
+        "untrained          104        0        12        0       204    480",
+        "untrained          104        0        12        0       204    481")
+    with pytest.raises(F.CaptureError, match="sum to 801"):
+        F.parse_r5b(text)

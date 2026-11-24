@@ -22,14 +22,14 @@ Input
 --------------------------------------------------------------------------
 Which rows train
 --------------------------------------------------------------------------
-  row type                             converted  dropped  trains
-  -----------------------------------------------------------------
-  2+ tools, with a call                     6980        5    6975
-  no call, 2+ tools                          773        6     767
-  no call, 1 tool (left out, plan 3g)        517        3       0
-  no call, empty tool list                   248        0     248
-  1 tool, with a call (left out)            2264        -       0
-  total                                    10782       14    7990
+  row type                        converted  dropped  trains
+  ------------------------------------------------------------
+  2+ tools, with a call                6980        5    6975
+  no call, 2+ tools                     773        6     767
+  no call, 1 tool (left out)            517        3       0
+  no call, empty tool list              248        0     248
+  1 tool, with a call (left out)       2264        -       0
+  total                               10782       14    7990
 
   training rows, the full real set   8504
     left out (no call, 1 tool)       514

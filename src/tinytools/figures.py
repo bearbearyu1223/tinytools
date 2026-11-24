@@ -104,6 +104,11 @@ def section_matching(text: str, pattern: str) -> list[tuple[re.Match, list[str]]
     return [(m, body) for t, body in sections(text) if (m := re.fullmatch(pattern, t))]
 
 
+def report_model(text: str) -> str:
+    """The model a report scored (its Setup's ``model`` line), without the org prefix."""
+    return kv(section(text, "Setup"), "model", "Setup").split("/")[-1]
+
+
 def has_section(text: str, title: str) -> bool:
     return any(t == title for t, _ in sections(text))
 
@@ -713,8 +718,10 @@ def mono_height(text: str, width: int, size: float) -> float:
 # --------------------------------------------------------------------------
 
 
-# The dark theme's tool-list bar: the light theme's muted grey, 4.8:1 on the dark surface.
-TOOL_LIST_DARK = "#898781"
+# The tool list's solid fill, the same in both themes (the muted grey: 3.5:1 on the light
+# surface, 4.8:1 on the dark), on the token bar and behind the tool list in the prompt
+# text, so the two read as the same thing; its ink comes from plotting.ink_for.
+TOOL_LIST_FILL = "#898781"
 
 
 def figure_round_trip(theme: Theme, rt: RoundTrip, out: Path | None = None) -> Path:
@@ -758,14 +765,15 @@ def figure_round_trip(theme: Theme, rt: RoundTrip, out: Path | None = None) -> P
     chars = int((inner - label_w) / cw)
     excerpt, tools_span, req_span = prompt_excerpt(rt.prompt, chars)
     body_h = mono_height(excerpt, chars, size)
-    c1_h = 0.55 + body_h + 0.3 + 0.62
+    c1_h = 0.55 + body_h + 0.3 + 0.35  # the prompt, then one token bar
     c1_top = top - 0.35
     card(px0, px1, c1_top, c1_h, "The chat template puts the tool list and the request "
          "into one prompt", sec)
     step(px0 + 0.33, c1_top - 0.27, 1)
     y_text = c1_top - 0.55
     mono(ax, px0 + 0.18, y_text, excerpt, width=chars, size=size, color=sec,
-         spans=[(tools_span[0], tools_span[1], band), (req_span[0], req_span[1], band)],
+         spans=[(tools_span[0], tools_span[1], TOOL_LIST_FILL),
+                (req_span[0], req_span[1], band)],
          bold_spans=False)
     # side labels for the two highlighted spans, at their lines' middle
     lines = wrap_offsets(excerpt, chars)
@@ -786,25 +794,23 @@ def figure_round_trip(theme: Theme, rt: RoundTrip, out: Path | None = None) -> P
             ax.text(lx + 0.14, y + (len(words) - 1) * 0.1 - j * 0.2, w, ha="left",
                     va="center", fontsize=10, color=sec, zorder=5)
 
-    # token bars: the whole prompt, and the tool list, on one scale
+    # token bars, one scale and one left edge: the whole prompt an outline, the tool list
+    # a solid fill inside it (the same encoding in both themes)
     by = c1_top - 0.55 - body_h - 0.3
     bx0 = px0 + 0.18
     bar_w = inner - 2.3
     per = bar_w / rt.prompt_tokens
-    # light: the prompt solid grey, the tool list a pale band; dark: the prompt an
-    # outline and the tool list filled (>= 3:1 on the surface), so both bars read
-    if theme.name == "light":
-        bar_style = ((grey, "none"), (band, theme.axis))
-    else:
-        bar_style = (("none", grey), (TOOL_LIST_DARK, "none"))
-    for k, (n, label) in enumerate(((rt.prompt_tokens, "tokens in the prompt"),
-                                    (rt.tool_list_tokens, "of them, the tool list"))):
-        y = by - k * 0.36
-        fill, edge = bar_style[k]
-        ax.add_patch(Rectangle((bx0, y - 0.11), n * per, 0.22, facecolor=fill,
-                               edgecolor=edge, lw=1.0, zorder=3))
-        ax.text(bx0 + n * per + 0.1, y, f"{n:,} {label}", ha="left", va="center",
-                fontsize=10.5, color=ink, zorder=5)
+    bar_h = 0.3
+    ax.add_patch(Rectangle((bx0, by - bar_h / 2), rt.prompt_tokens * per, bar_h,
+                           facecolor="none", edgecolor=sec, lw=1.1, zorder=4))
+    ax.add_patch(Rectangle((bx0, by - bar_h / 2), rt.tool_list_tokens * per, bar_h,
+                           facecolor=TOOL_LIST_FILL, edgecolor="none", zorder=3))
+    ax.text(bx0 + rt.prompt_tokens * per + 0.1, by, f"{rt.prompt_tokens:,} tokens in the prompt",
+            ha="left", va="center", fontsize=10.5, color=ink, zorder=5)
+    t = ax.text(bx0 + 0.1, by, f"{rt.tool_list_tokens:,} of them, the tool list", ha="left",
+                va="center", fontsize=10.5, color=ink_for(TOOL_LIST_FILL), zorder=5)
+    if text_width(fig, t) + 0.2 > rt.tool_list_tokens * per:
+        raise CaptureError("layout: the tool list's label is wider than its bar")
     c1_bottom = c1_top - c1_h
 
     # -- 2: the model writes text -------------------------------------------------
@@ -1552,8 +1558,10 @@ def set_label(on: str) -> str:
             "BFCL irrelevance": "BFCL irrelevance"}.get(on, on)
 
 
-def figure_effects(theme: Theme, blocks: list[EffectBlock], out: Path | None = None) -> Path:
-    """Each effect and set a row of three paired differences with their intervals."""
+def figure_effects(theme: Theme, blocks: list[EffectBlock], model: str,
+                   out: Path | None = None) -> Path:
+    """Each effect and set a row of three paired differences with their intervals.
+    ``model``: the report's model, named in the title (the figure is one model's)."""
     ink, sec, muted = theme.ink, theme.secondary, theme.muted
     blue, green = theme.series[0], theme.series[2]
     rows = f5_blocks(blocks)
@@ -1572,14 +1580,17 @@ def figure_effects(theme: Theme, blocks: list[EffectBlock], out: Path | None = N
     styles = {"SFT - untrained": (blue, "o", True), "control - untrained": (green, "s", True),
               "SFT - control": (ink, "D", False)}
     top = 9.5
-    ax.text(0.2, top + 0.3, "What SFT changed: each effect as three paired differences",
-            ha="left", va="center", fontsize=13.5, fontweight="bold", color=ink)
+    ax.text(0.2, top + 0.3, f"What SFT changed on {model}: each effect as three paired "
+            "differences", ha="left", va="center", fontsize=13.5, fontweight="bold", color=ink)
     ax.text(0.2, top - 0.05, "Each effect is the share of tasks with one failure outcome, so "
             "left of 0 is fewer failures. Bars: 95% intervals (paired bootstrap over tasks).",
             ha="left", va="center", fontsize=10, color=sec)
+    ax.text(0.2, top - 0.3, "primary N: one of the five comparisons fixed before the run "
+            "(4, BFCL right, is not a failure share and isn't shown).",
+            ha="left", va="center", fontsize=10, color=sec)
     # legend
     lx = x0
-    ly = top - 0.45
+    ly = top - 0.7
     for label, (c, mk, filled) in styles.items():
         ax.plot([lx, lx + 0.3], [ly, ly], color=c, lw=1.6)
         ax.plot(lx + 0.15, ly, marker=mk, ms=7, color=c, mfc=c if filled else theme.surface,
@@ -1597,7 +1608,7 @@ def figure_effects(theme: Theme, blocks: list[EffectBlock], out: Path | None = N
             title = b.name + (" (a harm check)" if b.harm_check else "")
             ax.text(0.2, y, title, ha="left", va="center", fontsize=11.2, fontweight="bold",
                     color=ink)
-            ax.text(0.2, y - 0.22, f"1 = {b.variable}", ha="left", va="center", fontsize=9.6,
+            ax.text(0.2, y - 0.22, f"counts: {b.variable}", ha="left", va="center", fontsize=9.6,
                     color=muted)
             prev = b.name
             y -= 0.5
@@ -1722,30 +1733,48 @@ def largest_beyond(mv: Movements, arm: str = "sft") -> Movement:
     return max(ok, key=lambda m: getattr(m, key).points)
 
 
-def figure_movements(theme: Theme, mv: Movements, out: Path | None = None) -> Path:
-    """Per movement, three bars on one share scale: the floor (with its interval), SFT
-    and the control; beside them each arm's difference from the floor."""
+def panel_title(text: str) -> str:
+    """A movements panel's title from its report: the model, and for the base profile
+    "(base), read tag-free" (the reading the post uses for the base model)."""
+    head = text.split("\n")[1]
+    model = report_model(text)
+    if "--profile base" not in head:
+        return model
+    reading = kv(section(text, "Setup"), "reading", "Setup")
+    if not reading.startswith("tag-free"):
+        raise CaptureError("the base model's movements are drawn on the tag-free reading")
+    return f"{model} (base), read tag-free"
+
+
+def figure_movements(theme: Theme, panels: list[tuple[str, Movements]],
+                     out: Path | None = None) -> Path:
+    """One panel per model, stacked on one share axis (0-100%): per movement, three
+    bars, the floor (with its interval), SFT and the control; beside them each arm's
+    difference from the floor, the largest beyond the floor in bold."""
     ink, sec, muted = theme.ink, theme.secondary, theme.muted
     blue, green, grey = theme.series[0], theme.series[2], theme.muted
+    ns = {mv.n for _, mv in panels}
+    if len(ns) != 1:
+        raise CaptureError(f"the panels count different tasks: {sorted(ns)}")
+    n = ns.pop()
     W = 12.8
-    fig, ax = canvas(W, 8.0)
+    fig, ax = canvas(W, 14.0)
     x0, x1 = 3.0, 7.9
-    top_share = 50.0
-    if max(max(m.sft, m.control, m.floor_hi) for m in mv.rows) > top_share:
-        raise CaptureError("a movement over 50% of tasks: widen F6's axis")
+    top_share = 100.0
+    if max(max(m.sft, m.control, m.floor_hi) for _, mv in panels for m in mv.rows) > top_share:
+        raise CaptureError("a movement over 100% of tasks")
 
     def X(v):
         return x0 + (x1 - x0) * v / top_share
 
-    top = 7.4
-    best = largest_beyond(mv)
-    ax.text(0.2, top + 0.35, f"Where the {mv.n} tasks that need a call move, from the untrained "
+    top = 13.4
+    ax.text(0.2, top + 0.35, f"Where the {n} tasks that need a call move, from the untrained "
             "model's group to the trained model's", ha="left", va="center", fontsize=13.5,
             fontweight="bold", color=ink)
     ax.text(0.2, top, "Groups of 8 answers at T = 1: all wrong, mixed, all right. "
             "The noise floor is the untrained model sampled again, no training.",
             ha="left", va="center", fontsize=10, color=sec)
-    bar_h, gap = 0.26, 0.05
+    bar_h, gap = 0.22, 0.04
     arms = (("noise floor (sampled again)", grey), ("SFT, mean of 3 seeds", blue),
             ("control, mean of 3 seeds", green))
     lx, ly = x0, top - 0.45
@@ -1763,44 +1792,61 @@ def figure_movements(theme: Theme, mv: Movements, out: Path | None = None) -> Pa
             color=muted)
     ax.text(cx_c, y - 0.2, "points [95% interval]", ha="left", va="center", fontsize=9,
             color=muted)
-    y -= 0.55
+    y -= 0.4
     reading = {"mixed -> all right": "SFT taught it; less left for a reward",
                "all wrong -> mixed": "new signal for a reward",
                "mixed -> all wrong": "damage",
                "all wrong -> all wrong": "neither model gets it in 8 tries"}
-    y_top_axis = y + 0.3
-    for m in mv.rows:
-        label = m.name.replace(" -> ", " to ")
-        ax.text(x0 - 0.15, y + 0.12, label, ha="right", va="center", fontsize=11,
-                fontweight="bold" if m is best else "normal", color=ink)
-        ax.text(x0 - 0.15, y - 0.13, reading[m.name], ha="right", va="center", fontsize=9.2,
-                color=muted)
-        for k, ((_, c), v) in enumerate(zip(arms, (m.floor, m.sft, m.control), strict=True)):
-            yy = y + (bar_h + gap) - k * (bar_h + gap)
-            ax.add_patch(Rectangle((x0, yy - bar_h / 2), max(X(v) - x0, 0.012), bar_h,
-                                   facecolor=c, edgecolor="none", zorder=3))
-            if k == 0:  # the floor's interval
-                ax.plot([X(m.floor_lo), X(m.floor_hi)], [yy, yy], color=ink, lw=1.1, zorder=4)
-                for e in (m.floor_lo, m.floor_hi):
-                    ax.plot([X(e), X(e)], [yy - 0.07, yy + 0.07], color=ink, lw=1.1, zorder=4)
-            ax.text(max(X(v), X(m.floor_hi) if k == 0 else X(v)) + 0.08, yy, f"{v:.1f}%",
-                    ha="left", va="center", fontsize=9.4, color=sec, zorder=5)
-        for cx, d, c in ((cx_s, m.sft_beyond, blue), (cx_c, m.control_beyond, green)):
-            ax.text(cx, y, f"{pts(d.points)}  [{pts(d.lo)}, {pts(d.hi)}]", ha="left",
-                    va="center", fontsize=9.6, family=MONO, color=ink if d.excludes_zero
-                    else muted, fontweight="bold" if (m is best and c == blue) else "normal")
-        ax.plot([0.2, W - 0.2], [y - 0.62, y - 0.62], color=theme.grid, lw=0.8, zorder=1)
-        y -= 1.25
-    y_axis = y + 1.25 - 0.62
+    row_h = 1.0
+    spans = []  # each panel's (top, bottom) for the gridlines
+    for title, mv in panels:
+        best = largest_beyond(mv)
+        ax.text(0.2, y, title, ha="left", va="center", fontsize=12, fontweight="bold",
+                color=ink)
+        ax.plot([0.2, W - 0.2], [y - 0.2, y - 0.2], color=theme.axis, lw=0.9, zorder=1)
+        y -= 0.75
+        y_top = y + 0.45
+        for m in mv.rows:
+            label = m.name.replace(" -> ", " to ")
+            ax.text(x0 - 0.15, y + 0.1, label, ha="right", va="center", fontsize=11,
+                    fontweight="bold" if m is best else "normal", color=ink)
+            ax.text(x0 - 0.15, y - 0.13, reading[m.name], ha="right", va="center",
+                    fontsize=9.2, color=muted)
+            for k, ((_, c), v) in enumerate(zip(arms, (m.floor, m.sft, m.control),
+                                                strict=True)):
+                yy = y + (bar_h + gap) - k * (bar_h + gap)
+                ax.add_patch(Rectangle((x0, yy - bar_h / 2), max(X(v) - x0, 0.012), bar_h,
+                                       facecolor=c, edgecolor="none", zorder=3))
+                if k == 0:  # the floor's interval
+                    ax.plot([X(m.floor_lo), X(m.floor_hi)], [yy, yy], color=ink, lw=1.1,
+                            zorder=4)
+                    for e in (m.floor_lo, m.floor_hi):
+                        ax.plot([X(e), X(e)], [yy - 0.06, yy + 0.06], color=ink, lw=1.1,
+                                zorder=4)
+                ax.text(max(X(v), X(m.floor_hi) if k == 0 else X(v)) + 0.08, yy,
+                        f"{v:.1f}%", ha="left", va="center", fontsize=9.2, color=sec, zorder=5)
+            for cx, d, c in ((cx_s, m.sft_beyond, blue), (cx_c, m.control_beyond, green)):
+                ax.text(cx, y, f"{pts(d.points)}  [{pts(d.lo)}, {pts(d.hi)}]", ha="left",
+                        va="center", fontsize=9.6, family=MONO, color=ink if d.excludes_zero
+                        else muted, fontweight="bold" if (m is best and c == blue) else "normal")
+            y -= row_h
+            if m is not mv.rows[-1]:
+                ax.plot([x0 - 2.8, W - 0.2], [y + row_h / 2, y + row_h / 2], color=theme.grid,
+                        lw=0.8, zorder=1)
+        spans.append((y_top, y + row_h / 2))
+        y -= 0.15
+    y_axis = spans[-1][1]
     ax.plot([x0, x1], [y_axis, y_axis], color=theme.axis, lw=0.8)
     for v in range(0, int(top_share) + 1, 10):
         ax.plot([X(v), X(v)], [y_axis, y_axis - 0.06], color=theme.axis, lw=0.8)
-        ax.plot([X(v), X(v)], [y_axis, y_top_axis], color=theme.grid, lw=0.6, zorder=0)
+        for a, b in spans:
+            ax.plot([X(v), X(v)], [b, a], color=theme.grid, lw=0.6, zorder=0)
         ax.text(X(v), y_axis - 0.2, f"{v}%", ha="center", va="center", fontsize=9.5,
                 color=muted)
-    ax.text((x0 + x1) / 2, y_axis - 0.45, f"share of the {mv.n} tasks", ha="center",
-            va="center", fontsize=10, color=sec)
-    if not all(m.sft_beyond.excludes_zero and m.control_beyond.excludes_zero for m in mv.rows):
+    ax.text((x0 + x1) / 2, y_axis - 0.45, f"share of the {n} tasks (both panels)",
+            ha="center", va="center", fontsize=10, color=sec)
+    if not all(m.sft_beyond.excludes_zero and m.control_beyond.excludes_zero
+               for _, mv in panels for m in mv.rows):
         ax.text(cx_s, y_axis - 0.2, "grey: interval includes 0", ha="left", va="center",
                 fontsize=9, color=muted)
     bottom = y_axis - 0.7
@@ -1810,11 +1856,199 @@ def figure_movements(theme: Theme, mv: Movements, out: Path | None = None) -> Pa
 
 
 # --------------------------------------------------------------------------
+# F7: base vs instruct, untrained -> SFT (sft-report r5b and r5d, both models)
+# --------------------------------------------------------------------------
+
+R5B_TITLE = "Outcomes per arm, tasks that need a call (r5b)"
+R5B_HEADERS = ["arm", "no call", "unparse", "wrong fn", "wrong n", "bad args", "right"]
+R5B_TABLES = {"ours": "ours, tasks that need a call (800), greedy:",
+              "bfcl": "BFCL call items, pooled (900), greedy:"}
+
+
+def parse_r5b(text: str) -> dict[str, dict[str, list[dict[str, int]]]]:
+    """r5b's two count tables: {"ours"|"bfcl": {"untrained": [counts], "SFT": [per seed],
+    "control": [per seed]}}, counts by column; every row checked to sum to the table's n."""
+    lines = section(text, R5B_TITLE)
+    out = {}
+    for key, note in R5B_TABLES.items():
+        n = to_int(match(r".*\((\d+)\), greedy:", note, "r5b").group(1), "r5b n")
+        rows = table(lines, R5B_HEADERS, f"r5b, {key}", start=note_index(lines, note, "r5b"))
+        arms: dict[str, list[dict[str, int]]] = {"untrained": [], "SFT": [], "control": []}
+        arm = None
+        for r in rows:
+            if r[0] in ("SFT, mean", "control, mean"):
+                arm = r[0].split(",")[0]
+                continue
+            if r[0] == "untrained":
+                arm = "untrained"
+            elif not re.fullmatch(r"seed \d", r[0]) or arm in (None, "untrained"):
+                raise CaptureError(f"r5b, {key}: unexpected row {r[0]!r}")
+            counts = {h: to_int(c, f"r5b, {key}, {r[0]}") for h, c in zip(R5B_HEADERS[1:], r[1:],
+                                                                          strict=True)}
+            if sum(counts.values()) != n:
+                raise CaptureError(f"r5b, {key}, {r[0]}: counts sum to {sum(counts.values())}, "
+                                   f"not {n}")
+            arms[arm].append(counts)
+        if len(arms["untrained"]) != 1 or not arms["SFT"]:
+            raise CaptureError(f"r5b, {key}: no untrained row or no SFT seeds")
+        out[key] = {a: v for a, v in arms.items()}
+        out[key]["n"] = n  # type: ignore[assignment]
+    return out
+
+
+# (group, label, source table, r5b columns counted, the r5d block that also prints it)
+BVI_ROWS = (
+    ("Our tasks, a call is needed", "right", "ours", ("right",), None),
+    ("Our tasks, a call is needed", "no call or unparseable", "ours", ("no call", "unparse"),
+     ("calling when a tool fits", "ours, tasks that need a call")),
+    ("Our tasks, a call is needed", "wrong arguments", "ours", ("bad args",),
+     ("filling", "ours, tasks that need a call")),
+    ("Our tasks, a call is needed", "wrong function or number of calls", "ours",
+     ("wrong fn", "wrong n"), ("choosing", "ours, tasks that need a call")),
+    ("Our tasks, no tool fits", "called anyway", None, (),
+     ("declining when none fits", "ours, no tool fits")),
+    ("BFCL, a call is needed", "right", "bfcl", ("right",), ("right", "BFCL call items, pooled")),
+    ("BFCL, a call is needed", "no call or unparseable", "bfcl", ("no call", "unparse"),
+     ("calling when a tool fits", "BFCL call items, pooled")),
+    ("BFCL irrelevance", "called anyway", None, (),
+     ("declining when none fits", "BFCL irrelevance")),
+)
+
+
+@dataclass(frozen=True)
+class Shift:
+    group: str
+    label: str
+    untrained: float   # percent, one decimal, as the reports print it
+    sft: float         # the mean over SFT seeds
+
+
+def model_shifts(text: str) -> list[Shift]:
+    """The eight rows of the post's base-vs-instruct table for one report: from r5b's
+    counts (exact seed means, rounded half up as the reports round) where r5b has them,
+    else r5d's printed shares; every r5b value checked against r5d where both print it."""
+    from fractions import Fraction
+
+    from .effects import percent
+
+    r5b = parse_r5b(text)
+    r5d = {(b.name, b.on): b for b in parse_effects(text)}
+
+    def share(counts: list[dict[str, int]], cols, n) -> float:
+        k = Fraction(sum(sum(c[x] for x in cols) for c in counts), len(counts) * n)
+        return float(percent(k)[:-1])
+
+    out = []
+    for group, label, src, cols, block in BVI_ROWS:
+        b = r5d.get(block) if block else None
+        if block and b is None:
+            raise CaptureError(f"r5d has no {block[0]!r} block on {block[1]!r}")
+        if src is None:
+            un, sft = b.shares["untrained"], b.shares["SFT"]
+        else:
+            t = r5b[src]
+            un, sft = share(t["untrained"], cols, t["n"]), share(t["SFT"], cols, t["n"])
+            if b is not None and (b.shares["untrained"], b.shares["SFT"]) != (un, sft):
+                raise CaptureError(f"{group}, {label}: r5b gives {un} -> {sft}, r5d prints "
+                                   f"{b.shares['untrained']} -> {b.shares['SFT']}")
+        out.append(Shift(group, label, un, sft))
+    return out
+
+
+def figure_base_vs_instruct(theme: Theme, panels: list[tuple[str, list[Shift]]],
+                            out: Path | None = None) -> Path:
+    """Two dumbbell panels sharing one row order: per row, a hollow circle untrained, a
+    filled circle after SFT (mean of 3 seeds), an arrow between, both values printed."""
+    ink, sec, muted = theme.ink, theme.secondary, theme.muted
+    blue = theme.series[0]
+    if len(panels) != 2 or [(s.group, s.label) for s in panels[0][1]] != [
+            (s.group, s.label) for s in panels[1][1]]:
+        raise CaptureError("base-vs-instruct needs two panels with the same rows")
+    rows = panels[0][1]
+    W = 12.8
+    fig, ax = canvas(W, 9.0)
+    label_x = 2.85                 # row labels end here
+    pw, pgap = 3.5, 1.05           # panel width and the gap between panels
+    px = [label_x + 0.6, label_x + 0.6 + pw + pgap]
+    note_x = px[1] + pw + 0.2
+
+    def X(k, v):
+        return px[k] + pw * v / 100
+
+    top = 8.6
+    ax.text(0.2, top + 0.3, "Where SFT takes each model, untrained to trained", ha="left",
+            va="center", fontsize=13.5, fontweight="bold", color=ink)
+    ax.text(0.2, top - 0.05, "Share of tasks with each outcome. Hollow circle: untrained; "
+            "filled: after SFT, mean of 3 seeds; the arrow is SFT's change.",
+            ha="left", va="center", fontsize=10, color=sec)
+    y = top - 0.6
+    for k, (title, _) in enumerate(panels):
+        ax.text(px[k] + pw / 2, y, title, ha="center", va="center", fontsize=11.5,
+                fontweight="bold", color=ink)
+    y -= 0.35
+    y_grid_top = y + 0.1
+    row_h, group_gap = 0.5, 0.42
+    prev = None
+    ys = []
+    for i, r in enumerate(rows):
+        if r.group != prev:
+            y -= group_gap if prev else 0.2
+            ax.text(0.2, y + 0.3, r.group, ha="left", va="center", fontsize=10.3,
+                    fontweight="bold", color=sec)
+            prev = r.group
+        right = r.label == "right"
+        ax.text(label_x, y, r.label, ha="right", va="center", fontsize=10.5, color=ink,
+                fontweight="bold" if right else "normal")
+        ax.text(note_x, y, "higher is better" if right else "lower is better", ha="left",
+                va="center", fontsize=9.2, color=muted)
+        for k, (_, shifts) in enumerate(panels):
+            s = shifts[i]
+            a, b = X(k, s.untrained), X(k, s.sft)
+            if abs(b - a) > 0.12:
+                ax.annotate("", xy=(b, y), xytext=(a, y), arrowprops=dict(
+                    arrowstyle="-|>", color=blue, lw=1.6, shrinkA=5, shrinkB=5,
+                    mutation_scale=11), zorder=3)
+            ax.plot(a, y, marker="o", ms=8, mfc=theme.surface, mec=sec, mew=1.5, zorder=4)
+            ax.plot(b, y, marker="o", ms=8, mfc=blue, mec=blue, mew=1.5, zorder=5)
+            lo, hi = (a, b) if a <= b else (b, a)
+            fw = "bold" if right else "normal"
+            kw = dict(va="center", fontsize=9.2, family=MONO, fontweight=fw, zorder=6)
+            if hi - lo < 0.3:  # too close for a label each side: "untrained -> SFT" after
+                t = ax.text(hi + 0.12, y, f"{s.untrained:.1f} → ", ha="left", color=sec, **kw)
+                ax.text(hi + 0.12 + text_width(fig, t), y, f"{s.sft:.1f}", ha="left",
+                        color=blue, **kw)
+            else:
+                v_lo, v_hi = (s.untrained, s.sft) if a <= b else (s.sft, s.untrained)
+                c_lo, c_hi = (sec, blue) if a <= b else (blue, sec)
+                ax.text(lo - 0.1, y, f"{v_lo:.1f}", ha="right", color=c_lo, **kw)
+                ax.text(hi + 0.1, y, f"{v_hi:.1f}", ha="left", color=c_hi, **kw)
+        ys.append(y)
+        y -= row_h
+    y_axis = ys[-1] - 0.35
+    for k in range(2):
+        ax.plot([X(k, 0), X(k, 100)], [y_axis, y_axis], color=theme.axis, lw=0.8)
+        for v in range(0, 101, 25):
+            ax.plot([X(k, v), X(k, v)], [y_axis, y_grid_top], color=theme.grid, lw=0.7,
+                    zorder=0)
+            ax.text(X(k, v), y_axis - 0.18, f"{v}%", ha="center", va="center", fontsize=9.2,
+                    color=muted)
+        ax.text(px[k] + pw / 2, y_axis - 0.42, "share of tasks", ha="center", va="center",
+                fontsize=10, color=sec)
+    # the centre line between the panels
+    cx = px[0] + pw + pgap / 2
+    ax.plot([cx, cx], [y_axis - 0.1, y_grid_top + 0.35], color=theme.axis, lw=0.9)
+    bottom = y_axis - 0.7
+    ax.set_ylim(bottom, top + 0.6)
+    fig.set_size_inches(W, top + 0.6 - bottom)
+    return save_both(fig, "base-vs-instruct", theme, out)
+
+
+# --------------------------------------------------------------------------
 # Entry point
 # --------------------------------------------------------------------------
 
 NAMES = ("tool-call-round-trip", "two-checks", "untrained-outcomes", "toolace-funnel",
-         "what-sft-trains", "sft-effects", "group-movements")
+         "what-sft-trains", "sft-effects", "group-movements", "base-vs-instruct")
 
 
 def default_score_capture(model: str = MODEL) -> Path:
@@ -1889,9 +2123,24 @@ def make_figures(only: str | None = None, *, score: Path | None = None,
             _say("sft-effects, group-movements: skipped, outputs/sft.txt has no r5d")
         else:
             if "sft-effects" in want:
-                render(figure_effects, parse_effects(r_text))
+                render(figure_effects, parse_effects(r_text), report_model(r_text))
             if "group-movements" in want:
-                render(figure_movements, parse_movements(r_text))
+                base = OUTPUTS / "sft-tagfree-base.txt"
+                panels = [(panel_title(r_text), parse_movements(r_text))]
+                if base.exists():
+                    b_text = base.read_text()
+                    panels.append((panel_title(b_text), parse_movements(b_text)))
+                else:
+                    _say("group-movements: outputs/sft-tagfree-base.txt missing, one panel")
+                render(figure_movements, panels)
+    if "base-vs-instruct" in want:
+        base, inst = OUTPUTS / "sft-tagfree-base.txt", OUTPUTS / "sft.txt"
+        if not (base.exists() and inst.exists()):
+            _say("base-vs-instruct: skipped, outputs/sft-tagfree-base.txt or sft.txt missing")
+        else:
+            b_text, i_text = base.read_text(), inst.read_text()
+            render(figure_base_vs_instruct, [(panel_title(b_text), model_shifts(b_text)),
+                                             (panel_title(i_text), model_shifts(i_text))])
     for p in written:
         _say(f"wrote {p.relative_to(ROOT) if p.is_relative_to(ROOT) else p}")
     return written

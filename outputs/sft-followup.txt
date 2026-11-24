@@ -65,8 +65,9 @@ BFCL call items where a trained model makes no call
     not in the schema: no offered function has the parameter;
     optional: the schema doesn't list it as required;
     in the question: required, and one of BFCL's allowed values for it
-      appears in the question (strings: case-insensitive substring;
-      numbers: as a number; booleans, lists, dicts: never);
+      appears in the question (strings: case-insensitive, as whole
+      words, a plural ending allowed; numbers: as a number; booleans,
+      lists, dicts: never);
     may be omitted: required, but BFCL's answer allows leaving it out;
     not found: required, and its value is not in the question.
   A reply takes the first of its parameters' classes in the order
@@ -79,21 +80,21 @@ BFCL call items where a trained model makes no call
   -------------------------------------------------
   no call                1129     1110          1
     with the phrase       639      599          0
-      in the question     233      231          0
+      in the question     229      228          0
       optional            284      251          0
       may be omitted        3        3          0
-      not found           116      113          0
+      not found           120      116          0
       not in the schema     3        1          0
   On BFCL's 900 call items; SFT and control: 3 seeds pooled.
 
   arm        no call  phrase  in question  optional
   ---------------------------------------------------
-  SFT 1          413     237           90       102
-  SFT 2          356     208           82        86
-  SFT 3          360     194           61        96
-  control 1      376     214           86        87
-  control 2      427     227           94        90
-  control 3      307     158           51        74
+  SFT 1          413     237           89       102
+  SFT 2          356     208           80        86
+  SFT 3          360     194           60        96
+  control 1      376     214           85        87
+  control 2      427     227           93        90
+  control 3      307     158           50        74
   phrase: with the phrase; in question, optional: two of its
   classes above. Per seed, of 900 call items.
 
