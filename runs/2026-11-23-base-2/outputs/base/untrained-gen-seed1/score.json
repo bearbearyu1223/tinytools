@@ -1,0 +1,28 @@
+{
+  "label": "untrained-gen-seed1",
+  "model": "Qwen/Qwen2.5-1.5B",
+  "dtype": "bfloat16",
+  "device": "cuda",
+  "engine": "batched",
+  "batch_size": 64,
+  "seed": 1,
+  "samples": 8,
+  "temperature": 1.0,
+  "adapter": null,
+  "limits": {
+    "sample": null
+  },
+  "passes": {
+    "train-sample, 8 at T=1": {
+      "items": 500,
+      "seconds": 1461.674338117
+    }
+  },
+  "wall_s": 1461.674338117,
+  "profile": "base",
+  "tokenizer": "Qwen/Qwen2.5-1.5B-Instruct",
+  "stop_tokens": [
+    "<|im_end|>",
+    "<|endoftext|>"
+  ]
+}

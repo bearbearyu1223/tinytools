@@ -1,0 +1,22 @@
+<|im_start|>system
+You are Qwen, created by Alibaba Cloud. You are a helpful assistant.
+The current time is 2026-03-11 09:30, Wednesday.
+
+# Tools
+
+You may call one or more functions to assist with the user query.
+
+You are provided with function signatures within <tools></tools> XML tags:
+<tools>
+{"type": "function", "function": {"name": "get_calendar_event", "description": "Look up events on the user's calendar by date, by words in the title, or both. Give at least one.", "parameters": {"type": "object", "properties": {"date": {"type": "string", "description": "The day, as YYYY-MM-DD."}, "title": {"type": "string", "description": "Words that appear in the event's title."}}, "required": []}}}
+{"type": "function", "function": {"name": "calculator", "description": "Evaluate an arithmetic expression and return the number. Use Python syntax: numbers, + - * / ** % and parentheses, e.g. \"(3 + 4) * 2\".", "parameters": {"type": "object", "properties": {"expression": {"type": "string", "description": "The arithmetic expression."}}, "required": ["expression"]}}}
+{"type": "function", "function": {"name": "create_calendar_event", "description": "Add an event to the user's calendar.", "parameters": {"type": "object", "properties": {"title": {"type": "string", "description": "The event's title."}, "date": {"type": "string", "description": "The day, as YYYY-MM-DD."}, "start_time": {"type": "string", "description": "Start time, 24-hour HH:MM."}, "duration_minutes": {"type": "integer", "description": "Length in minutes. Default 60."}, "attendees": {"type": "array", "items": {"type": "string"}, "description": "Names of the people invited."}}, "required": ["title", "date", "start_time"]}}}
+</tools>
+
+For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
+<tool_call>
+{"name": <function-name>, "arguments": <args-json-object>}
+</tool_call><|im_end|>
+<|im_start|>user
+Add "Coffee chat" to my calendar on the 4th of next month at 2:30pm for three hours.<|im_end|>
+<|im_start|>assistant

@@ -1,0 +1,59 @@
+{
+  "seeds": [
+    1,
+    2,
+    3
+  ],
+  "determinism": "deterministic algorithms on, CUBLAS_WORKSPACE_CONFIG=:4096:8",
+  "dtype": "bfloat16",
+  "model": "Qwen/Qwen2.5-1.5B",
+  "training": {
+    "model": "Qwen/Qwen2.5-1.5B",
+    "rank": 16,
+    "alpha": 32.0,
+    "dropout": 0.0,
+    "targets": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj",
+      "gate_proj",
+      "up_proj",
+      "down_proj"
+    ],
+    "epochs": 2,
+    "lr": 0.0002,
+    "betas": [
+      0.9,
+      0.999
+    ],
+    "eps": 1e-08,
+    "weight_decay": 0.0,
+    "warmup_ratio": 0.03,
+    "batch_rows": 16,
+    "max_length": 3072,
+    "token_budget": 8192,
+    "grad_checkpointing": false,
+    "rows": null
+  },
+  "gradient_checkpointing": false,
+  "cuda_alloc_conf": "expandable_segments:True",
+  "generation": {
+    "seed": 0,
+    "samples": 8,
+    "temperature": 1.0,
+    "batch_size": 64
+  },
+  "profile": "base",
+  "tokenizer": "Qwen/Qwen2.5-1.5B-Instruct",
+  "embed_rows": [
+    "<|im_start|>",
+    "<|im_end|>",
+    "<tool_call>",
+    "</tool_call>"
+  ],
+  "stop_tokens": [
+    "<|im_end|>",
+    "<|endoftext|>"
+  ]
+}

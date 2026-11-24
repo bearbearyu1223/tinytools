@@ -1,0 +1,142 @@
+==========================================================================
+tinytools score (train-sample, samples8-t1)
+==========================================================================
+device        : cuda (NVIDIA A100-SXM4-40GB)
+torch         : 2.13.0+cu126
+platform      : Linux 6.8.0-60-generic (x86_64)
+device memory : 42.4 GB
+
+--------------------------------------------------------------------------
+Setup
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-1.5B
+  tasks                              train-sample split, seed 0
+    sha256 (first 16)                fd6c706bd0e1bfe7
+  tasks scored                       all
+  decoding                           8 samples, temperature 1
+  top_p / top_k / repetition penalty 1.0 / off / 1.0
+  max new tokens                     512
+  dtype                              bfloat16
+  determinism                        deterministic algorithms on,
+                                     CUBLAS_WORKSPACE_CONFIG=:4096:8
+  seed                               0 (+ task id and sample number)
+  Each reply draws from its own generator, seeded with the seed,
+  its task id and sample number: its draws don't depend on its batch.
+  engine                             batched, sorted by length
+    batch size                       64 sequences (8 items x 8)
+  Left padding with the attention mask; a reply ends at the model's
+  eos or <|im_end|>. Seconds per item: the batch's seconds x the
+  item's share of its rows.
+  right means                        execution match (exact beside it)
+  checked by                         rescore of the saved replies
+  chat template and tokenizer        Qwen/Qwen2.5-1.5B-Instruct
+  (--profile base: the template the replies were scored with)
+
+--------------------------------------------------------------------------
+Tasks that need a call: every reply (all samples)
+--------------------------------------------------------------------------
+  kind            n  no call  unparse  wrong fn  wrong n  bad args  right
+  ------------------------------------------------------------------------
+    -
+  choose+fill  2400     2400        0         0        0         0      0
+  tricky args   800      800        0         0        0         0      0
+  total        3200     3200        0         0        0         0      0
+  wrong fn: another tool; wrong n: the right tool, more than one
+  call; bad args: the right tool, arguments that fail execution
+  match; right: execution match.
+
+  kind         hit token cap  counted above as
+  ----------------------------------------------
+  choose+fill           1489      no call 1489
+  tricky args            470       no call 470
+  total                 1959      no call 1959
+  hit token cap: the model's reply ran to max new tokens (Setup)
+  and was cut off there; it is counted in the table above.
+
+--------------------------------------------------------------------------
+Tasks where no tool fits: every reply (all samples)
+--------------------------------------------------------------------------
+  kind            n  declined  called anyway
+  --------------------------------------------
+  no tool fits  800       800              0
+  declined: no <tool_call> tag (right); called anyway: any tag.
+
+  kind                outcome  replies  of which hit token cap
+  --------------------------------------------------------------
+  no tool fits       declined      800                     481
+  no tool fits  called anyway        0                       0
+  hit token cap: the model's reply ran to max new tokens (Setup)
+  and was cut off there. Cut off before any <tool_call> tag, it
+  counts as declined.
+
+--------------------------------------------------------------------------
+Right by execution and by exact match (all samples)
+--------------------------------------------------------------------------
+  kind           right by execution  right by exact match
+  ---------------------------------------------------------
+  choose+fill      0 of 2400 (0.0%)      0 of 2400 (0.0%)
+  tricky args       0 of 800 (0.0%)       0 of 800 (0.0%)
+  no tool fits  800 of 800 (100.0%)   800 of 800 (100.0%)
+  total         800 of 4000 (20.0%)   800 of 4000 (20.0%)
+  The same replies, two checks. On no-tool-fits tasks both mean
+  declined.
+
+--------------------------------------------------------------------------
+Controls, scored by the same checks
+--------------------------------------------------------------------------
+  reference answers right (both)     500 of 500 (100.0%)
+  never calling right                100 of 500 (20.0%)
+  reference answers: the harness can give full marks. never calling:
+  what declining every task scores (right on no-tool-fits only).
+
+--------------------------------------------------------------------------
+Execution match but not exact match
+--------------------------------------------------------------------------
+  replies                            0
+
+--------------------------------------------------------------------------
+Exact match but not execution match (a check: should be 0)
+--------------------------------------------------------------------------
+  replies                            0
+
+--------------------------------------------------------------------------
+Groups of 8: how many samples are right per task
+--------------------------------------------------------------------------
+  kind            0  1  2  3  4  5  6  7    8
+  ---------------------------------------------
+  choose+fill   300  0  0  0  0  0  0  0    0
+  tricky args   100  0  0  0  0  0  0  0    0
+  no tool fits    0  0  0  0  0  0  0  0  100
+  total         400  0  0  0  0  0  0  0  100
+
+--------------------------------------------------------------------------
+Groups with signal (some right, some wrong)
+--------------------------------------------------------------------------
+  kind          tasks  all wrong  mixed  all right  share  per 1k
+  -----------------------------------------------------------------
+  choose+fill     300        300      0          0   0.0%     0.0
+  tricky args     100        100      0          0   0.0%     0.0
+  no tool fits    100          0      0        100   0.0%     0.0
+  total           500        400      0        100   0.0%     0.0
+  share: mixed groups / tasks.
+  per 1k: mixed groups per 1,000 answers = (1000 / 8) x share.
+  Both rounded half up.
+
+--------------------------------------------------------------------------
+Greedy right vs pass@8
+--------------------------------------------------------------------------
+  kind          tasks         greedy right               pass@8
+  ---------------------------------------------------------------
+  choose+fill     300      0 of 300 (0.0%)      0 of 300 (0.0%)
+  tricky args     100      0 of 100 (0.0%)      0 of 100 (0.0%)
+  no tool fits    100  100 of 100 (100.0%)  100 of 100 (100.0%)
+  total           500   100 of 500 (20.0%)   100 of 500 (20.0%)
+  pass@8: tasks with at least one right answer in 8 samples.
+
+--------------------------------------------------------------------------
+Wall clock (varies run to run)
+--------------------------------------------------------------------------
+  pass         tasks  s/task  new tokens/task  hit token cap
+  ------------------------------------------------------------
+  greedy         500    0.36              509            497
+  samples8-t1    500    2.89             3109           2440

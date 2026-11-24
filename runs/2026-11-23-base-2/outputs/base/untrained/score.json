@@ -1,0 +1,39 @@
+{
+  "label": "untrained",
+  "model": "Qwen/Qwen2.5-1.5B",
+  "dtype": "bfloat16",
+  "device": "cuda",
+  "engine": "batched",
+  "batch_size": 64,
+  "seed": 0,
+  "samples": 8,
+  "temperature": 1.0,
+  "max_new_tokens": 512,
+  "limits": {
+    "ours": null,
+    "bfcl": null,
+    "sample": null
+  },
+  "passes": {
+    "ours test, greedy": {
+      "items": 1000,
+      "seconds": 364.940048551
+    },
+    "BFCL eval, greedy": {
+      "items": 1116,
+      "seconds": 379.03530990499985
+    },
+    "train-sample, greedy + 8 at T=1": {
+      "items": 500,
+      "seconds": 1636.3858972939997
+    }
+  },
+  "wall_s": 2380.361546967,
+  "adapter": null,
+  "profile": "base",
+  "tokenizer": "Qwen/Qwen2.5-1.5B-Instruct",
+  "stop_tokens": [
+    "<|im_end|>",
+    "<|endoftext|>"
+  ]
+}

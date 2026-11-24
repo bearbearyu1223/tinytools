@@ -1,0 +1,202 @@
+==========================================================================
+tinytools sft-check --profile base
+==========================================================================
+device        : cuda (NVIDIA A100-SXM4-40GB)
+torch         : 2.13.0+cu126
+platform      : Linux 6.8.0-60-generic (x86_64)
+device memory : 42.4 GB
+
+--------------------------------------------------------------------------
+The chat template: Qwen/Qwen2.5-1.5B-Instruct vs sft-data's rendering
+--------------------------------------------------------------------------
+  sft-data rendered with             Qwen/Qwen2.5-0.5B-Instruct
+  Each training row re-rendered with this model's tokenizer and chat
+  template: text, scored spans, tokens and scored tokens compared.
+  file                          rows  identical  differ
+  -------------------------------------------------------
+  data/sft/real.jsonl           8504       8504       0
+  data/sft/control-seed1.jsonl  8504       8504       0
+  data/sft/control-seed2.jsonl  8504       8504       0
+  data/sft/control-seed3.jsonl  8504       8504       0
+  byte-identical                     yes
+
+--------------------------------------------------------------------------
+The SFT sets: sha256 against the Mac's
+--------------------------------------------------------------------------
+  file                          sha256 (first 16)  as pinned
+  ------------------------------------------------------------
+  data/sft/real.jsonl            2cf7f25a4545d4d0        yes
+  data/sft/control-seed1.jsonl   1a8b98c21361edc3        yes
+  data/sft/control-seed2.jsonl   08d89acedda694f5        yes
+  data/sft/control-seed3.jsonl   f5968d457419f1a8        yes
+  all four as pinned (sft.py)        yes
+
+--------------------------------------------------------------------------
+The base arm's prompts: the Instruct chat template
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-1.5B
+  tokenizer and chat template        Qwen/Qwen2.5-1.5B-Instruct
+    splits text as the model's own   yes
+    (vocabulary, merges, normalizer, added tokens: the same ids for
+    every text; 151,665 tokens; the eos name differs:
+    <|endoftext|> vs <|im_end|>; where replies end is set below)
+  Each prompt rendered as this arm renders it, against the Instruct
+  arm's (training rows: sft-data's text); beside it, the base model's
+  own chat template, whose default system line differs:
+  prompts                        n  as the Instruct arm's  own template
+  -----------------------------------------------------------------------
+  training rows (real.jsonl)  8504                   8504          4198
+  our test tasks              1000                   1000          1000
+  our dev tasks                200                    200           200
+  our train-sample tasks       500                    500           500
+  BFCL eval items             1116                   1116             0
+  all as the Instruct arm's          yes
+
+--------------------------------------------------------------------------
+Row lengths (tokens), the real arm
+--------------------------------------------------------------------------
+  rows                               8504
+  longest                            2975
+  mean                               739
+  longer than 1,024                  1369
+  longer than 3,072 (cut: none)      0
+  tokens                             6286011
+    scored                           607322 (9.66%)
+    masked                           5678689
+  assistant turns                    8571
+    ending in a scored <|im_end|>    8571
+
+--------------------------------------------------------------------------
+Memory: one training step, the largest micro-batches
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-1.5B
+  micro-batch 1                      8 rows x 1,024 tokens = 8,192 slots
+    scored tokens                    531
+  micro-batch 2                      8 rows x 1,024 tokens = 8,192 slots
+    scored tokens                    700
+  micro-batch 3                      3 rows x 2,538 tokens = 7,614 slots
+    scored tokens                    1,527 (the most of any micro-batch)
+  token budget                       8,192
+  the step                           the 3 micro-batches, then AdamW
+  Probed: the two with the most token slots and the one with the
+  most scored tokens (the delta adds a full-vocabulary term per
+  scored token). The step's peak is the largest of theirs.
+  device memory                      42.4 GB
+  limit (85% of it)                  36.0 GB
+  PYTORCH_CUDA_ALLOC_CONF            expandable_segments:True
+  checkpointing  memory (peak)  within the limit
+  ------------------------------------------------
+  off                  29.2 GB               yes
+  gradient checkpointing             not needed: off
+  fits                               yes
+  Training reads this: checkpointing is off for every run only if
+  this step's peak without it is at most 85% of the device.
+
+--------------------------------------------------------------------------
+The system prompt's shape: training rows vs our tasks and BFCL
+--------------------------------------------------------------------------
+  The system turn's lines before its tools section, as the model
+  reads them.
+  training row with a date line:
+      You are Qwen, created by Alibaba Cloud. You are a helpful assistant.
+      Today is 2022-03-20, Sunday.
+  training row without one:
+      You are Qwen, created by Alibaba Cloud. You are a helpful assistant.
+  our test task:
+      You are Qwen, created by Alibaba Cloud. You are a helpful assistant.
+      The current time is 2026-03-11 09:30, Wednesday.
+  BFCL eval item:
+      You are Qwen, created by Alibaba Cloud. You are a helpful assistant.
+  training rows with a date line     4198 of 8504 (49.4%)
+  Our tasks state the frozen clock as ToolACE's rows state theirs;
+  BFCL's prompts have Qwen's default sentence alone.
+
+--------------------------------------------------------------------------
+Where the base arm's replies end
+--------------------------------------------------------------------------
+  a reply ends at                    <|im_end|>  <|endoftext|>
+  --------------------------------------------------------------
+  the model's own generation_config          no            yes
+  as loaded for this arm                    yes            yes
+  the engine (what scoring reads)           yes            yes
+  token ids                          151645 and 151643
+  the engine stops at both           yes
+  The base model's config stops only at <|endoftext|>; the engine adds
+  <|im_end|>, and the profile sets both on every model it loads, so a
+  reply ends at the end of its turn whatever the config says.
+
+--------------------------------------------------------------------------
+The four embedding rows: why the base arm trains them
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-1.5B
+  embeddings tied (input = output)   yes
+  Each row's norm and its cosine with <|im_start|>, in the base
+  model (bfloat16, as loaded) and in Qwen2.5-1.5B-Instruct:
+  token             id   norm  cosine  Instruct norm  cosine
+  ------------------------------------------------------------
+  <|im_start|>  151644  0.414  1.0000          0.426  1.0000
+  <|im_end|>    151645  0.414  1.0000          0.422  0.9482
+  <tool_call>   151657  0.414  1.0000          0.431  0.9417
+  </tool_call>  151658  0.414  1.0000          0.429  0.9344
+  median row norm, base              1.032 (all 151,936 rows)
+  pairwise cosine, base              1.0000 to 1.0000
+    largest |difference|, base       1.5e-05
+  pairwise cosine, Instruct          0.9201 to 0.9482
+  identical in the base model        yes
+  (identical: every pairwise cosine at least 0.9999)
+  rows sharing <|im_start|>'s embedding: 2,234
+    (21 added tokens + 1,942 vocabulary tokens + 271 padding rows; ids
+    151644-151935 and 1,942 more from 124 to 151638)
+  (every row of the embedding, cosine at least 0.9999; the 4 above among
+  them)
+  Only the 4 the format uses are trained; the others stay frozen.
+  Tied and identical: from any hidden state, ending the turn and
+  opening a call score the same, and LoRA can't separate them. The
+  base arm trains a delta on these rows: 4 x 1,536 = 6,144 float32
+  parameters, beside LoRA, in the same optimizer.
+
+--------------------------------------------------------------------------
+Merging an untrained adapter (B = 0): replies vs the base model
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-1.5B
+  tasks                              200 of our dev tasks, greedy
+  batch size                         64
+  determinism                        deterministic algorithms on,
+                                     CUBLAS_WORKSPACE_CONFIG=:4096:8
+  modules merged                     196
+    weights equal to the base's      196 of 196
+  embedding rows merged (delta = 0)  4
+    rows equal to the base's         4 of 4
+    output head still the embedding  yes
+  replies byte-identical             200 of 200
+  The adapter: A drawn as training draws it (seed 1), B = 0. Merging
+  computes W + (alpha/r) B A in float32 and casts it to the weight's
+  dtype once, the path every trained adapter is scored through.
+  The rows: E + delta, the same way, into the tied embedding.
+
+--------------------------------------------------------------------------
+Merging an adapter with random B: logits vs the LoRA model
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-1.5B
+  prompts                            6 dev tasks, 2 per kind
+  compared                           the logits at every position
+  adapter                            A: seed 1; B = 0.01 x N(0, 1), seed 2
+    embedding rows                   delta = 0.01 x N(0, 1), seed 3
+  dtype                              float32, all four models
+  modules merged                     196
+  vs the LoRA model           relative gap  max |diff|   argmax same
+  --------------------------------------------------------------------
+  merged                          1.34e-05    4.39e-04  3341 of 3341
+  merged, 1.25 x the scaling      1.17e-01    1.61e+00  3310 of 3341
+  merged, rows left out           9.18e-01    2.05e+01  3120 of 3341
+  base (nothing merged)           1.00e+00    2.03e+01  3100 of 3341
+  tolerance (relative gap)           0.01
+  passes                             yes
+  relative gap: |merged - LoRA| / |LoRA - base| over every logit: the
+  error as a share of the adapter's effect (base: a merge that did
+  nothing, 1). Passes: the merge within the tolerance and the
+  mis-scaled merge outside it. In float32, so rounding is the only
+  gap; the cast to the weights' dtype is what the B = 0 check runs.
+  With the embedding rows: the merge without them must fail too.
+
+  all checks pass                    yes

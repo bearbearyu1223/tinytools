@@ -1,0 +1,53 @@
+{
+  "label": "control-seed3",
+  "model": "Qwen/Qwen2.5-1.5B",
+  "dtype": "bfloat16",
+  "device": "cuda",
+  "engine": "batched",
+  "batch_size": 64,
+  "seed": 0,
+  "samples": 8,
+  "temperature": 1.0,
+  "max_new_tokens": 512,
+  "limits": {
+    "ours": null,
+    "bfcl": null,
+    "sample": null
+  },
+  "passes": {
+    "ours test, greedy": {
+      "items": 1000,
+      "seconds": 44.58421494600043
+    },
+    "BFCL eval, greedy": {
+      "items": 1116,
+      "seconds": 106.10737843899915
+    },
+    "train-sample, greedy + 8 at T=1": {
+      "items": 500,
+      "seconds": 305.79811524399884
+    }
+  },
+  "wall_s": 456.49004121600046,
+  "adapter": "outputs/base/control-seed3/adapter.safetensors",
+  "modules_merged": 196,
+  "adapter_sha256": "84ceb2072fa7eaf04815401c54138c4e0a202152cec9dd18220189affc6cfcb4",
+  "adapter_meta": {
+    "tokenizer": "Qwen/Qwen2.5-1.5B-Instruct",
+    "base_model": "Qwen/Qwen2.5-1.5B",
+    "arm": "control",
+    "targets": "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj",
+    "data_sha256": "f5968d457419f1a89afa7582dc54acb1cb204b468c05fc2f878d09db4f2dea68",
+    "embed_rows_tokens": "<|im_start|> <|im_end|> <tool_call> </tool_call>",
+    "alpha": "32.0",
+    "rank": "16",
+    "seed": "3",
+    "embed_rows_ids": "151644,151645,151657,151658"
+  },
+  "profile": "base",
+  "tokenizer": "Qwen/Qwen2.5-1.5B-Instruct",
+  "stop_tokens": [
+    "<|im_end|>",
+    "<|endoftext|>"
+  ]
+}
