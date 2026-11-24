@@ -22,6 +22,8 @@ Commands (``tinytools <command> --help`` for each one's flags):
     sft-pair        one seed's pair: train real, score, train control, score
     sft-report      r4c, r4d, r5a-d, r6a from the saved runs and replies (no model);
                     --reading tagfree: on the tag-free reading (plan 3f)
+    sft-followup    section 5's follow-ups: ToolACE's no-call wording, BFCL no-call
+                    replies and the parameters they ask for, right pooled (no model)
 
 Every command prints a report on stdout (progress goes to stderr) and saves the
 same report under outputs/, so ``tinytools bfcl-score > x.txt`` captures only
@@ -1489,6 +1491,12 @@ def cmd_sft_report(args) -> None:
     sys.exit(sftrun.run_report(ROOT, args.quick, args.profile, args.reading, source))
 
 
+def cmd_sft_followup(args) -> None:
+    from . import followup
+
+    sys.exit(followup.run(ROOT, ROOT / args.source))
+
+
 # -- entry point -------------------------------------------------------------------
 
 BATCH_HELP = ("sequences per forward pass (an item's samples stay in one batch); default "
@@ -1693,6 +1701,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="the arm tree to read (e.g. runs/2026-11-23-main/outputs/main; "
                         "read-only); default outputs/<profile>[-quick]/")
     s.set_defaults(fn=cmd_sft_report)
+
+    s = sub.add_parser("sft-followup", help="section 5's follow-ups: ToolACE's no-call wording, "
+                       "BFCL no-call replies, pooled right (no model)")
+    s.add_argument("--from", dest="source", default="runs/2026-11-23-main/outputs/main",
+                   help="the arm tree to read (read-only; default: the main run's)")
+    s.set_defaults(fn=cmd_sft_followup)
     return p
 
 

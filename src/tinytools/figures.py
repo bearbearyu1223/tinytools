@@ -1,6 +1,6 @@
 """Figures for post 9 (teaching a small model to call tools).
 
-Five figures, in the post's order:
+Seven figures, in the post's order:
 
 * ``tool-call-round-trip`` (section 1, :func:`figure_round_trip`): one call's
   round trip. A program renders the tool list and the request into the
@@ -20,6 +20,12 @@ Five figures, in the post's order:
 * ``what-sft-trains`` (section 4, :func:`figure_what_sft_trains`): the
   ``sft-data`` example row, its turns as blocks sized by token count, scored
   vs masked, above its random-call control twin.
+* ``sft-effects`` (section 5, :func:`figure_effects`): r5d's four effects, each
+  set a row of three paired differences (SFT - untrained, control - untrained,
+  SFT - control) with their intervals. From ``outputs/sft.txt``.
+* ``group-movements`` (section 6, :func:`figure_movements`): r6a's movements on
+  the tasks that need a call, the noise floor beside SFT and the control, and
+  each arm's difference from the floor. From ``outputs/sft.txt``.
 
 None of them runs a model. Every number and every name they draw is parsed
 from a capture under ``outputs/``, the same text the post's receipts are pasted
@@ -55,7 +61,7 @@ from .report import WIDTH
 
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUTS = ROOT / "outputs"
-MODEL = "Qwen2.5-0.5B-Instruct"
+MODEL = "Qwen2.5-1.5B-Instruct"  # the post's model (the main run, 2026-11-23)
 RULE = "-" * WIDTH
 KV_WIDTH = 34  # Report.kv's label width
 
@@ -828,7 +834,8 @@ def figure_round_trip(theme: Theme, rt: RoundTrip, out: Path | None = None) -> P
         for i, (k, v) in enumerate(args.items())])
     pchars = int((px1 - px0 - 0.36) / cw)
     wrong = differing_arguments(rt.reference[1], args) if rt.reference[0] == name else []
-    c3_h = 0.55 + mono_height(parsed, pchars, size) + (0.5 if wrong else 0.2)
+    notes = call_note(rt.reference[1], args, wrong, rt.exact, rt.execution) if wrong else []
+    c3_h = 0.55 + mono_height(parsed, pchars, size) + (0.3 + 0.22 * len(notes) if notes else 0.2)
     c3_top = c2_top - c2_h + 0.45 - 0.05
     c3_top = min(c3_top, c1_bottom - 0.45)
     card(px0, px1, c3_top, c3_h, "A program parses the text into a call", sec)
@@ -842,10 +849,8 @@ def figure_round_trip(theme: Theme, rt: RoundTrip, out: Path | None = None) -> P
                     spans.append((off + 11, off + len(line), band))
             off += len(line) + 1
     mono(ax, px0 + 0.18, c3_top - 0.55, parsed, width=pchars, size=size, color=ink, spans=spans)
-    if wrong:
-        ax.text(px0 + 0.18, c3_top - c3_h + 0.25,
-                f"{join_names(wrong)}: not what the request asked for. "
-                "The program parses and runs the call as written.",
+    for j, line in enumerate(notes):
+        ax.text(px0 + 0.18, c3_top - c3_h + 0.25 + 0.22 * (len(notes) - 1 - j), line,
                 ha="left", va="center", fontsize=10, color=sec, zorder=5)
     y_a2 = c3_top - 0.27
     if not c2_top - c2_h + 0.1 < y_a2 < c2_top - 0.1:
@@ -880,6 +885,28 @@ def figure_round_trip(theme: Theme, rt: RoundTrip, out: Path | None = None) -> P
     ax.set_ylim(bottom, top + 0.3)
     fig.set_size_inches(W, top + 0.3 - bottom)
     return save_both(fig, "tool-call-round-trip", theme, out)
+
+
+def call_note(ref: dict, got: dict, differ: list[str], exact: bool,
+              execution: bool) -> list[str]:
+    """Card 3's note on the arguments that differ from the reference, built from the
+    verdicts: wrong ones when execution match fails, harmless ones when it passes."""
+    if not differ:
+        raise ValueError("no differing arguments to note")
+    if exact:
+        raise CaptureError("exact match passed, yet arguments differ")
+    extra = [k for k in differ if k not in ref]
+    if execution:
+        what = []
+        if extra:
+            what.append(f"{join_names(extra)}: not in the reference call")
+        rest = [k for k in differ if k in ref]
+        if rest:
+            what.append(f"{join_names(rest)}: written differently from the reference")
+        return ["; ".join(what) + ". Exact match says no, execution match yes.",
+                "The program parses and runs the call as written, right or wrong."]
+    return [f"{join_names(differ)}: not what the request asked for. "
+            "The program parses and runs the call as written."]
 
 
 def count_tools(prompt: str) -> int:
@@ -1428,11 +1455,366 @@ def figure_toolace_funnel(theme: Theme, fn: Funnel, out: Path | None = None) -> 
 
 
 # --------------------------------------------------------------------------
+# F5: section 5's effects (sft-report, r5d)
+# --------------------------------------------------------------------------
+
+R5D_TITLE = "The effects: three paired differences each (r5d)"
+DIFF_HEADERS = ["difference", "points", "95% interval", "excludes 0"]
+DIFF_LABELS = ("SFT - untrained", "control - untrained", "SFT - control")
+# The four effects F5 draws (r5d's names), in the post's order; "right" is not one.
+F5_EFFECTS = ("calling when a tool fits", "filling", "declining when none fits", "choosing")
+
+
+@dataclass(frozen=True)
+class Diff:
+    label: str
+    points: float
+    lo: float
+    hi: float
+    excludes_zero: bool
+
+
+@dataclass(frozen=True)
+class EffectBlock:
+    name: str
+    harm_check: bool
+    primary: int | None
+    variable: str
+    on: str
+    n: int
+    shares: dict[str, float]  # arm -> percent
+    diffs: tuple[Diff, ...]
+
+
+def pts(x: float) -> str:
+    """A difference as ``effects.points`` prints it: signed, one decimal, ``0.0`` unsigned."""
+    return "0.0" if round(x, 1) == 0 else f"{x:+.1f}"
+
+
+def signed(cell: str, what: str) -> float:
+    """``+12.4`` / ``-0.5`` / ``0.0`` as printed by ``effects.points``."""
+    return float(match(r"[+-]?\d+\.\d", cell, what).group(0))
+
+
+def parse_effects(text: str) -> list[EffectBlock]:
+    """Every block of r5d, each difference checked: its point inside its interval and
+    "excludes 0" agreeing with the interval."""
+    lines = section(text, R5D_TITLE)
+    out = []
+    for i, line in enumerate(lines):
+        m = re.fullmatch(r"  (\S.*?)(?:  \[primary (\d)\])?", line)
+        if not m or i + 3 >= len(lines) or not lines[i + 1].startswith("    1 = "):
+            continue
+        title = m.group(1)
+        harm = title.endswith(" (harm check only)")
+        name = title.removesuffix(" (harm check only)")
+        where = f"r5d, {name}"
+        on = match(r"    on (.+), (\d+) tasks", lines[i + 2], f"{where}, on")
+        sh = match(r"    untrained (\d+\.\d)%   SFT (\d+\.\d)%   control (\d+\.\d)%   "
+                   r"\(seed means\)", lines[i + 3], f"{where}, shares")
+        rows = table(lines, DIFF_HEADERS, where, start=i + 4)
+        if [r[0] for r in rows] != list(DIFF_LABELS):
+            raise CaptureError(f"{where}: differences {[r[0] for r in rows]}")
+        diffs = []
+        for r in rows:
+            iv = match(r"\[([+-]?\d+\.\d), ([+-]?\d+\.\d)\]", r[2], f"{where}, {r[0]}")
+            d = Diff(r[0], signed(r[1], where), float(iv.group(1)), float(iv.group(2)),
+                     yes_no(r[3], f"{where}, {r[0]}"))
+            if not d.lo <= d.points <= d.hi:
+                raise CaptureError(f"{where}, {r[0]}: {d.points} outside [{d.lo}, {d.hi}]")
+            if d.excludes_zero != (d.lo > 0 or d.hi < 0):
+                raise CaptureError(f"{where}, {r[0]}: 'excludes 0' disagrees with the interval")
+            diffs.append(d)
+        out.append(EffectBlock(name, harm, int(m.group(2)) if m.group(2) else None,
+                               lines[i + 1][len("    1 = "):], on.group(1), int(on.group(2)),
+                               dict(zip(("untrained", "SFT", "control"),
+                                        map(float, sh.groups()), strict=True)),
+                               tuple(diffs)))
+    if not out:
+        raise CaptureError("r5d has no effect blocks")
+    return out
+
+
+def f5_blocks(blocks: list[EffectBlock]) -> list[EffectBlock]:
+    """F5's rows: the four effects, in :data:`F5_EFFECTS` order, each set as r5d prints."""
+    got = [b for e in F5_EFFECTS for b in blocks if b.name == e]
+    missing = [e for e in F5_EFFECTS if not any(b.name == e for b in got)]
+    if missing:
+        raise CaptureError(f"r5d lacks {missing}")
+    return got
+
+
+def set_label(on: str) -> str:
+    """r5d's ``on`` text, shortened for a row label."""
+    return {"ours, tasks that need a call": "ours, a call is needed",
+            "BFCL call items, pooled": "BFCL call items",
+            "ours, no tool fits": "ours, no tool fits",
+            "BFCL irrelevance": "BFCL irrelevance"}.get(on, on)
+
+
+def figure_effects(theme: Theme, blocks: list[EffectBlock], out: Path | None = None) -> Path:
+    """Each effect and set a row of three paired differences with their intervals."""
+    ink, sec, muted = theme.ink, theme.secondary, theme.muted
+    blue, green = theme.series[0], theme.series[2]
+    rows = f5_blocks(blocks)
+    W = 12.8
+    fig, ax = canvas(W, 10.0)
+    x0, x1 = 4.2, 10.0          # the points axis
+    lo_lim, hi_lim = -70, 70
+    for b in rows:
+        for d in b.diffs:
+            if d.lo < lo_lim or d.hi > hi_lim:
+                raise CaptureError(f"{b.name}: {d.label} [{d.lo}, {d.hi}] off the axis")
+
+    def X(v):
+        return x0 + (x1 - x0) * (v - lo_lim) / (hi_lim - lo_lim)
+
+    styles = {"SFT - untrained": (blue, "o", True), "control - untrained": (green, "s", True),
+              "SFT - control": (ink, "D", False)}
+    top = 9.5
+    ax.text(0.2, top + 0.3, "What SFT changed: each effect as three paired differences",
+            ha="left", va="center", fontsize=13.5, fontweight="bold", color=ink)
+    ax.text(0.2, top - 0.05, "Each effect is the share of tasks with one failure outcome, so "
+            "left of 0 is fewer failures. Bars: 95% intervals (paired bootstrap over tasks).",
+            ha="left", va="center", fontsize=10, color=sec)
+    # legend
+    lx = x0
+    ly = top - 0.45
+    for label, (c, mk, filled) in styles.items():
+        ax.plot([lx, lx + 0.3], [ly, ly], color=c, lw=1.6)
+        ax.plot(lx + 0.15, ly, marker=mk, ms=7, color=c, mfc=c if filled else theme.surface,
+                mew=1.4)
+        t = ax.text(lx + 0.42, ly, label.replace(" - ", " − "), ha="left", va="center",
+                    fontsize=10.5, color=sec)
+        lx += 0.42 + text_width(fig, t) + 0.45
+    sub = 0.24
+    y = ly - 0.45
+    y_axis_top = y + 0.15
+    prev = None
+    for b in rows:
+        if b.name != prev:
+            y -= 0.12 if prev else 0
+            title = b.name + (" (a harm check)" if b.harm_check else "")
+            ax.text(0.2, y, title, ha="left", va="center", fontsize=11.2, fontweight="bold",
+                    color=ink)
+            ax.text(0.2, y - 0.22, f"1 = {b.variable}", ha="left", va="center", fontsize=9.6,
+                    color=muted)
+            prev = b.name
+            y -= 0.5
+        ax.text(x0 - 1.35, y, f"{set_label(b.on)} ({b.n:,})", ha="right", va="center",
+                fontsize=10.3, color=ink)
+        if b.primary:
+            ax.text(x0 - 1.35, y - 0.2, f"primary {b.primary}", ha="right", va="center",
+                    fontsize=9.2, color=muted)
+        shares = "   ".join(f"{a} {v:.1f}%" for a, v in b.shares.items())
+        for j, d in enumerate(b.diffs):
+            yy = y + sub - j * sub
+            c, mk, filled = styles[d.label]
+            ax.plot([X(d.lo), X(d.hi)], [yy, yy], color=c, lw=1.6, zorder=3,
+                    solid_capstyle="butt")
+            ax.plot(X(d.points), yy, marker=mk, ms=6.5, color=c,
+                    mfc=c if filled else theme.surface, mew=1.3, zorder=4)
+            ax.text(x1 + 0.12, yy, f"{pts(d.points)}  [{pts(d.lo)}, {pts(d.hi)}]",
+                    ha="left", va="center", fontsize=9.4, color=c if filled else sec,
+                    family=MONO)
+        ax.text(x0 - 0.1, y + sub * 1.9, shares, ha="left", va="bottom", fontsize=9.2,
+                color=muted)
+        ax.plot([0.2, W - 0.2], [y - sub * 1.6, y - sub * 1.6], color=theme.grid, lw=0.8,
+                zorder=1)
+        y -= 1.05
+    y_axis = y + 1.05 - sub * 1.6
+    # zero line and the axis
+    ax.plot([X(0), X(0)], [y_axis, y_axis_top], color=theme.axis, lw=1.0, zorder=2)
+    for v in range(lo_lim + 10, hi_lim, 20):
+        ax.plot([X(v), X(v)], [y_axis, y_axis - 0.06], color=theme.axis, lw=0.8)
+        ax.text(X(v), y_axis - 0.2, f"{v:+d}" if v else "0", ha="center", va="center",
+                fontsize=9.5, color=muted)
+    ax.plot([X(lo_lim), X(hi_lim)], [y_axis, y_axis], color=theme.axis, lw=0.8)
+    ax.text(X(0), y_axis - 0.46, "difference, percentage points (left of 0: fewer failures; "
+            "right: more)", ha="center", va="center", fontsize=10, color=sec)
+    ax.text(x1 + 0.12, y_axis_top + 0.05, "points  [95% interval]", ha="left", va="bottom",
+            fontsize=9.4, color=muted)
+    bottom = y_axis - 0.7
+    ax.set_ylim(bottom, top + 0.6)
+    fig.set_size_inches(W, top + 0.6 - bottom)
+    return save_both(fig, "sft-effects", theme, out)
+
+
+# --------------------------------------------------------------------------
+# F6: group movements against the noise floor (sft-report, r6a)
+# --------------------------------------------------------------------------
+
+R6A_FLOOR_TITLE = "r6a: untrained -> untrained again, the noise floor"
+R6A_ARM_TITLE = "r6a: untrained -> {arm}, task by task"
+MOVEMENTS = ("mixed -> all right", "all wrong -> mixed", "mixed -> all wrong",
+             "all wrong -> all wrong")
+
+
+@dataclass(frozen=True)
+class Movement:
+    name: str
+    floor: float           # percent
+    floor_lo: float
+    floor_hi: float
+    sft: float
+    sft_beyond: Diff
+    control: float
+    control_beyond: Diff
+
+
+@dataclass(frozen=True)
+class Movements:
+    n: int
+    rows: tuple[Movement, ...]
+
+
+def _pct(cell: str, what: str) -> float:
+    return float(match(r"(\d+\.\d)%", cell, what).group(1))
+
+
+def parse_movements(text: str) -> Movements:
+    """r6a's movement tables on the tasks that need a call: the floor's, SFT's and the
+    control's, each arm's floor column checked against the floor's own table."""
+    lines = section(text, R6A_FLOOR_TITLE)
+    hits = [r for r in (re.split(r"\s{2,}", x.strip()) for x in lines)
+            if r and re.fullmatch(r"movement, need a call", r[0])]
+    if len(hits) != 1:
+        raise CaptureError("r6a floor: no 'movement, need a call' table")
+    head = hits[0]
+    n = to_int(match(r"share of (\d+)", head[1], "r6a floor header").group(1), "floor n")
+    floor_rows = table(lines, head, "r6a floor")
+    floor = {}
+    for r in floor_rows:
+        iv = match(r"\[(\d+\.\d), (\d+\.\d)\]", r[2], f"r6a floor, {r[0]}")
+        floor[r[0]] = (_pct(r[1], r[0]), float(iv.group(1)), float(iv.group(2)))
+    arms = {}
+    for arm in ("SFT", "control"):
+        where = f"r6a {arm}"
+        body = section(text, R6A_ARM_TITLE.format(arm=arm))
+        head = [f"movement, need a call ({n})", arm, "floor", "beyond", "95% interval"]
+        got = {}
+        for r in table(body, head, where):
+            iv = match(r"\[([+-]?\d+\.\d), ([+-]?\d+\.\d)\]", r[4], f"{where}, {r[0]}")
+            share, fl = _pct(r[1], f"{where}, {r[0]}"), _pct(r[2], f"{where}, {r[0]}")
+            beyond = signed(r[3], f"{where}, {r[0]}")
+            if r[0] not in floor or fl != floor[r[0]][0]:
+                raise CaptureError(f"{where}, {r[0]}: floor {fl} is not the floor table's")
+            if abs(share - fl - beyond) > 0.15:
+                raise CaptureError(f"{where}, {r[0]}: {share} - {fl} != {beyond}")
+            lo, hi = float(iv.group(1)), float(iv.group(2))
+            if not lo <= beyond <= hi:
+                raise CaptureError(f"{where}, {r[0]}: {beyond} outside its interval")
+            got[r[0]] = (share, Diff(f"{arm} - floor", beyond, lo, hi, lo > 0 or hi < 0))
+        arms[arm] = got
+    if not (list(floor) == list(arms["SFT"]) == list(arms["control"]) == list(MOVEMENTS)):
+        raise CaptureError(f"r6a movements {list(floor)}, expected {list(MOVEMENTS)}")
+    return Movements(n, tuple(
+        Movement(m, *floor[m], arms["SFT"][m][0], arms["SFT"][m][1], arms["control"][m][0],
+                 arms["control"][m][1]) for m in MOVEMENTS))
+
+
+def largest_beyond(mv: Movements, arm: str = "sft") -> Movement:
+    """The movement with the largest gain beyond the floor whose interval excludes 0."""
+    key = f"{arm}_beyond"
+    ok = [m for m in mv.rows if getattr(m, key).excludes_zero]
+    if not ok:
+        raise CaptureError(f"no {arm} movement is beyond the floor")
+    return max(ok, key=lambda m: getattr(m, key).points)
+
+
+def figure_movements(theme: Theme, mv: Movements, out: Path | None = None) -> Path:
+    """Per movement, three bars on one share scale: the floor (with its interval), SFT
+    and the control; beside them each arm's difference from the floor."""
+    ink, sec, muted = theme.ink, theme.secondary, theme.muted
+    blue, green, grey = theme.series[0], theme.series[2], theme.muted
+    W = 12.8
+    fig, ax = canvas(W, 8.0)
+    x0, x1 = 3.0, 7.9
+    top_share = 50.0
+    if max(max(m.sft, m.control, m.floor_hi) for m in mv.rows) > top_share:
+        raise CaptureError("a movement over 50% of tasks: widen F6's axis")
+
+    def X(v):
+        return x0 + (x1 - x0) * v / top_share
+
+    top = 7.4
+    best = largest_beyond(mv)
+    ax.text(0.2, top + 0.35, f"Where the {mv.n} tasks that need a call move, from the untrained "
+            "model's group to the trained model's", ha="left", va="center", fontsize=13.5,
+            fontweight="bold", color=ink)
+    ax.text(0.2, top, "Groups of 8 answers at T = 1: all wrong, mixed, all right. "
+            "The noise floor is the untrained model sampled again, no training.",
+            ha="left", va="center", fontsize=10, color=sec)
+    bar_h, gap = 0.26, 0.05
+    arms = (("noise floor (sampled again)", grey), ("SFT, mean of 3 seeds", blue),
+            ("control, mean of 3 seeds", green))
+    lx, ly = x0, top - 0.45
+    for label, c in arms:
+        ax.add_patch(Rectangle((lx, ly - 0.09), 0.3, 0.18, facecolor=c, edgecolor="none"))
+        t = ax.text(lx + 0.4, ly, label, ha="left", va="center", fontsize=10.5, color=sec)
+        lx += 0.4 + text_width(fig, t) + 0.45
+    cx_s, cx_c = 8.55, 10.75   # beyond-the-floor columns
+    y = ly - 0.55
+    ax.text(cx_s, y, "SFT − floor", ha="left", va="center", fontsize=10.3,
+            fontweight="bold", color=blue)
+    ax.text(cx_c, y, "control − floor", ha="left", va="center", fontsize=10.3,
+            fontweight="bold", color=green)
+    ax.text(cx_s, y - 0.2, "points [95% interval]", ha="left", va="center", fontsize=9,
+            color=muted)
+    ax.text(cx_c, y - 0.2, "points [95% interval]", ha="left", va="center", fontsize=9,
+            color=muted)
+    y -= 0.55
+    reading = {"mixed -> all right": "SFT taught it; less left for a reward",
+               "all wrong -> mixed": "new signal for a reward",
+               "mixed -> all wrong": "damage",
+               "all wrong -> all wrong": "neither model gets it in 8 tries"}
+    y_top_axis = y + 0.3
+    for m in mv.rows:
+        label = m.name.replace(" -> ", " to ")
+        ax.text(x0 - 0.15, y + 0.12, label, ha="right", va="center", fontsize=11,
+                fontweight="bold" if m is best else "normal", color=ink)
+        ax.text(x0 - 0.15, y - 0.13, reading[m.name], ha="right", va="center", fontsize=9.2,
+                color=muted)
+        for k, ((_, c), v) in enumerate(zip(arms, (m.floor, m.sft, m.control), strict=True)):
+            yy = y + (bar_h + gap) - k * (bar_h + gap)
+            ax.add_patch(Rectangle((x0, yy - bar_h / 2), max(X(v) - x0, 0.012), bar_h,
+                                   facecolor=c, edgecolor="none", zorder=3))
+            if k == 0:  # the floor's interval
+                ax.plot([X(m.floor_lo), X(m.floor_hi)], [yy, yy], color=ink, lw=1.1, zorder=4)
+                for e in (m.floor_lo, m.floor_hi):
+                    ax.plot([X(e), X(e)], [yy - 0.07, yy + 0.07], color=ink, lw=1.1, zorder=4)
+            ax.text(max(X(v), X(m.floor_hi) if k == 0 else X(v)) + 0.08, yy, f"{v:.1f}%",
+                    ha="left", va="center", fontsize=9.4, color=sec, zorder=5)
+        for cx, d, c in ((cx_s, m.sft_beyond, blue), (cx_c, m.control_beyond, green)):
+            ax.text(cx, y, f"{pts(d.points)}  [{pts(d.lo)}, {pts(d.hi)}]", ha="left",
+                    va="center", fontsize=9.6, family=MONO, color=ink if d.excludes_zero
+                    else muted, fontweight="bold" if (m is best and c == blue) else "normal")
+        ax.plot([0.2, W - 0.2], [y - 0.62, y - 0.62], color=theme.grid, lw=0.8, zorder=1)
+        y -= 1.25
+    y_axis = y + 1.25 - 0.62
+    ax.plot([x0, x1], [y_axis, y_axis], color=theme.axis, lw=0.8)
+    for v in range(0, int(top_share) + 1, 10):
+        ax.plot([X(v), X(v)], [y_axis, y_axis - 0.06], color=theme.axis, lw=0.8)
+        ax.plot([X(v), X(v)], [y_axis, y_top_axis], color=theme.grid, lw=0.6, zorder=0)
+        ax.text(X(v), y_axis - 0.2, f"{v}%", ha="center", va="center", fontsize=9.5,
+                color=muted)
+    ax.text((x0 + x1) / 2, y_axis - 0.45, f"share of the {mv.n} tasks", ha="center",
+            va="center", fontsize=10, color=sec)
+    if not all(m.sft_beyond.excludes_zero and m.control_beyond.excludes_zero for m in mv.rows):
+        ax.text(cx_s, y_axis - 0.2, "grey: interval includes 0", ha="left", va="center",
+                fontsize=9, color=muted)
+    bottom = y_axis - 0.7
+    ax.set_ylim(bottom, top + 0.7)
+    fig.set_size_inches(W, top + 0.7 - bottom)
+    return save_both(fig, "group-movements", theme, out)
+
+
+# --------------------------------------------------------------------------
 # Entry point
 # --------------------------------------------------------------------------
 
 NAMES = ("tool-call-round-trip", "two-checks", "untrained-outcomes", "toolace-funnel",
-         "what-sft-trains")
+         "what-sft-trains", "sft-effects", "group-movements")
 
 
 def default_score_capture(model: str = MODEL) -> Path:
@@ -1500,6 +1882,16 @@ def make_figures(only: str | None = None, *, score: Path | None = None,
                                                    (OUTPUTS / "sft-data.txt").read_text()))
     if "what-sft-trains" in want:
         render(figure_what_sft_trains, parse_sft_example((OUTPUTS / "sft-data.txt").read_text()))
+    if "sft-effects" in want or "group-movements" in want:
+        report = OUTPUTS / "sft.txt"
+        r_text = report.read_text()
+        if not has_section(r_text, R5D_TITLE):
+            _say("sft-effects, group-movements: skipped, outputs/sft.txt has no r5d")
+        else:
+            if "sft-effects" in want:
+                render(figure_effects, parse_effects(r_text))
+            if "group-movements" in want:
+                render(figure_movements, parse_movements(r_text))
     for p in written:
         _say(f"wrote {p.relative_to(ROOT) if p.is_relative_to(ROOT) else p}")
     return written

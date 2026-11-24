@@ -348,3 +348,65 @@ def test_funnel_checks_its_subtractions(capsys):
         F.parse_funnel(*_two(capsys, not_json_rows=[[F.NOT_JSON_LABEL, 499], ["other", 1]]))
     with pytest.raises(F.CaptureError, match="printed subtotal != offered"):
         F.parse_funnel(*_two(capsys, offered=8517))
+
+
+# -- F1's note, F5 (r5d) and F6 (r6a), on the main run's committed sft.txt -----------
+
+SFT_TXT = F.OUTPUTS / "sft.txt"
+
+
+def test_call_note_by_verdict():
+    ref = {"date": "2026-04-04", "title": "x"}
+    right = F.call_note(ref, {**ref, "attendees": []}, ["attendees"], False, True)
+    assert right[0].startswith("attendees: not in the reference call")
+    assert "execution match yes" in right[0]
+    wrong = F.call_note(ref, {**ref, "date": "2026-03-14"}, ["date"], False, False)
+    assert wrong == ["date: not what the request asked for. The program parses and runs "
+                     "the call as written."]
+    with pytest.raises(F.CaptureError):
+        F.call_note(ref, ref, ["date"], True, True)
+
+
+def test_pts_prints_like_effects_points():
+    assert [F.pts(x) for x in (0.04, -0.04, 0.0, 1.25, -12.4)] == [
+        "0.0", "0.0", "0.0", "+1.2", "-12.4"]
+
+
+def test_effects_from_sft_txt():
+    blocks = F.parse_effects(SFT_TXT.read_text())
+    rows = F.f5_blocks(blocks)
+    assert [(b.name, b.on) for b in rows][:2] == [
+        ("calling when a tool fits", "ours, tasks that need a call"),
+        ("calling when a tool fits", "BFCL call items, pooled")]
+    assert len(rows) == 8 and all(b.name != "right" for b in rows)
+    p2 = rows[2]
+    assert (p2.name, p2.primary, p2.n) == ("filling", 2, 800)
+    assert p2.shares == {"untrained": 25.5, "SFT": 8.4, "control": 34.4}
+    assert p2.diffs[0] == F.Diff("SFT - untrained", -17.1, -20.1, -14.2, True)
+    assert [b.primary for b in blocks if b.primary] == [1, 2, 4, 3, 5]
+    assert rows[-1].harm_check
+
+
+def test_effects_check_their_intervals():
+    text = SFT_TXT.read_text().replace("-17.1  [-20.1, -14.2]         yes",
+                                       "-17.1  [-20.1, -14.2]          no")
+    with pytest.raises(F.CaptureError, match="excludes 0"):
+        F.parse_effects(text)
+
+
+def test_movements_from_sft_txt():
+    mv = F.parse_movements(SFT_TXT.read_text())
+    assert mv.n == 400 and [m.name for m in mv.rows] == list(F.MOVEMENTS)
+    first = mv.rows[0]
+    assert (first.floor, first.floor_lo, first.floor_hi, first.sft, first.control) == (
+        8.0, 5.5, 10.8, 29.5, 0.0)
+    assert first.sft_beyond == F.Diff("SFT - floor", 21.5, 17.2, 25.9, True)
+    assert F.largest_beyond(mv).name == "mixed -> all right"
+    assert F.largest_beyond(mv, "control").name == "mixed -> all wrong"
+
+
+def test_movements_floor_must_agree():
+    text = SFT_TXT.read_text().replace(
+        "mixed -> all right           29.5%   8.0%", "mixed -> all right           29.5%   8.1%")
+    with pytest.raises(F.CaptureError, match="floor"):
+        F.parse_movements(text)

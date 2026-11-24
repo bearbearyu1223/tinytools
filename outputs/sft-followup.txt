@@ -1,0 +1,213 @@
+==========================================================================
+tinytools sft-followup
+==========================================================================
+device        : mps (Apple arm64)
+torch         : 2.13.0
+platform      : Darwin 24.6.0 (arm64)
+device memory : 17.2 GB
+
+--------------------------------------------------------------------------
+Setup
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-1.5B-Instruct
+  replies from                       runs/2026-11-23-main/outputs/main
+  seeds                              1, 2, 3
+  real set                           data/sft/real.jsonl, 8504 rows
+    sha256 (first 16), as pinned     2cf7f25a4545d4d0, yes
+  reading                            strict (as sft-report)
+  Outcomes re-checked here with the current checkers, as sft-report
+  does, so every count below agrees with outputs/sft.txt.
+
+--------------------------------------------------------------------------
+ToolACE's no-call rows, by wording
+--------------------------------------------------------------------------
+  rows in each arm                   8504
+    with no call                     1529
+    with a call                      6975
+  text turns in the no-call rows     1531
+  text turns before a call           65 (in 60 rows)
+    all text turns                   1596, as r4a-turns
+
+  Each no-call row by its first assistant turn, first match wins:
+    1 template: the turn opens "The [given] question|query", then
+      "lacks" or "does not provide";
+    2 lacks the required: it contains that phrase (the SFT replies'
+      wording);
+    3 asks outright: please / could you / can you / would you, then
+      provide, specify, share, tell, confirm, give or let me know;
+    4 no function fits: a fixed phrase list ("none of the", "no
+      functions", "do not support", "cannot be used", ...);
+    5 other. A keyword rule: classes name the wording, not the intent.
+
+  wording               ToolACE   SFT  control  untr
+  ----------------------------------------------------
+  1 template                304   369      424     0
+  2 lacks the required      204   665      617     0
+  3 asks outright           289    36       25     1
+  4 no function fits        557    23       29     0
+  5 other                   175    36       15     0
+  total                    1529  1129     1110     1
+  ToolACE: the no-call rows (both arms train on them). SFT, control:
+  their no-call replies on BFCL's 900 call items, seeds pooled;
+  untr: the untrained model's. No call: no <tool_call> tag (strict).
+
+  rows with "lacks the required"     235 of 8504
+    in a no-call row's first turn    235
+  Any assistant turn containing the phrase, whatever its class above.
+
+--------------------------------------------------------------------------
+BFCL call items where a trained model makes no call
+--------------------------------------------------------------------------
+  Measured only on replies with the phrase lacks the required "p"
+  parameter (or "p" and "q" parameters), where the asked parameters
+  can be read off exactly. Each asked parameter, against the item's
+  function docs and BFCL's possible answer, first match wins:
+    not in the schema: no offered function has the parameter;
+    optional: the schema doesn't list it as required;
+    in the question: required, and one of BFCL's allowed values for it
+      appears in the question (strings: case-insensitive substring;
+      numbers: as a number; booleans, lists, dicts: never);
+    may be omitted: required, but BFCL's answer allows leaving it out;
+    not found: required, and its value is not in the question.
+  A reply takes the first of its parameters' classes in the order
+  of the rows below.
+  Verbatim only, so "in the question" is a lower bound: a value the
+  question words another way (a date in another format, "two" for
+  2) counts as not found.
+
+  replies                 SFT  control  untrained
+  -------------------------------------------------
+  no call                1129     1110          1
+    with the phrase       639      599          0
+      in the question     233      231          0
+      optional            284      251          0
+      may be omitted        3        3          0
+      not found           116      113          0
+      not in the schema     3        1          0
+  On BFCL's 900 call items; SFT and control: 3 seeds pooled.
+
+  arm        no call  phrase  in question  optional
+  ---------------------------------------------------
+  SFT 1          413     237           90       102
+  SFT 2          356     208           82        86
+  SFT 3          360     194           61        96
+  control 1      376     214           86        87
+  control 2      427     227           94        90
+  control 3      307     158           51        74
+  phrase: with the phrase; in question, optional: two of its
+  classes above. Per seed, of 900 call items.
+
+--------------------------------------------------------------------------
+Example: simple_python_6 (SFT seed 1: in the question)
+--------------------------------------------------------------------------
+  question:
+    What are the roots of the quadratic equation where a=2, b=5 and c=3 ?
+  solve_quadratic:
+    required: a, b, c
+    optional: none
+  BFCL's possible answer:
+    [{"solve_quadratic": {"a": [2], "b": [5], "c": [3]}}]
+  untrained                          right
+  SFT seed 1, no call:
+    The function "solve_quadratic" can find the roots of the quadratic \
+    equation, but it lacks the required "a" parameter. Please provide \
+    the coefficient of x².
+    asks for "a"                     in the question
+  control seed 1                     wrong arguments
+  SFT, all seeds                     no call, right, right
+
+--------------------------------------------------------------------------
+Example: simple_python_11 (SFT seed 1: in the question)
+--------------------------------------------------------------------------
+  question:
+    What is the area of a triangle with base of 10 units and height of 5 \
+    units?
+  calculate_triangle_area:
+    required: base, height
+    optional: none
+  BFCL's possible answer:
+    [{"calculate_triangle_area": {"base": [10], "height": [5]}}]
+  untrained                          right
+  SFT seed 1, no call:
+    The function "calculate_triangle_area" can calculate the area of the \
+    triangle, but it lacks the required "height" parameter. Please \
+    provide the height of the triangle.
+    asks for "height"                in the question
+  control seed 1                     right
+  SFT, all seeds                     no call, no call, right
+
+--------------------------------------------------------------------------
+Example: simple_python_21 (SFT seed 1: in the question)
+--------------------------------------------------------------------------
+  question:
+    Find the Greatest Common Divisor (GCD) of two numbers, say 36 and 48.
+  number_theory.gcd:
+    required: number1, number2
+    optional: none
+  BFCL's possible answer:
+    [{"number_theory.gcd": {"number1": [36], "number2": [48]}}]
+  untrained                          right
+  SFT seed 1, no call:
+    The function "number_theory.gcd" can compute the GCD of 36 and 48, \
+    but it lacks the required "number1" and "number2" parameters. Please \
+    provide both numbers.
+    asks for "number1"               in the question
+    asks for "number2"               in the question
+  control seed 1                     wrong arguments
+  SFT, all seeds                     no call, right, right
+
+--------------------------------------------------------------------------
+Example: simple_python_8 (SFT seed 1: optional)
+--------------------------------------------------------------------------
+  question:
+    What's the area of a circle with a radius of 10?
+  geometry.area_circle:
+    required: radius
+    optional: units
+  BFCL's possible answer:
+    [{"geometry.area_circle": {"radius": [10], "units": ["meters", ""]}}]
+  untrained                          right
+  SFT seed 1, no call:
+    The function "geometry.area_circle" can calculate the area of a \
+    circle, but it lacks the required "units" parameter. Please provide \
+    the units in which the radius is measured (defaults to 'meters').
+    asks for "units"                 optional
+  control seed 1                     no call
+  SFT, all seeds                     no call, no call, no call
+
+--------------------------------------------------------------------------
+Example: simple_python_10 (SFT seed 1: optional)
+--------------------------------------------------------------------------
+  question:
+    Calculate the area of a right-angled triangle given the lengths of \
+    its base and height as 6cm and 10cm.
+  calculate_area:
+    required: base, height
+    optional: unit
+  BFCL's possible answer:
+    [{"calculate_area": {"base": [6], "height": [10], "unit": ["cm", \
+    ""]}}]
+  untrained                          right
+  SFT seed 1, no call:
+    The function "calculate_area" can calculate the area of a \
+    right-angled triangle, but it lacks the required "unit" parameter. \
+    Please provide the unit of measure used (e.g., 'cm', 'm', 'in', etc.).
+    asks for "unit"                  optional
+  control seed 1                     wrong arguments
+  SFT, all seeds                     no call, right, right
+
+--------------------------------------------------------------------------
+Right on our tasks that need a call, pooled
+--------------------------------------------------------------------------
+  tasks                              800
+  arm                     right          seeds
+  ----------------------------------------------
+  untrained  480 of 800 (60.0%)              -
+  SFT         90.0% (seed mean)  712, 717, 730
+  control      0.1% (seed mean)        1, 2, 0
+  difference           points    95% interval
+  ---------------------------------------------
+  SFT - untrained       +30.0  [+26.8, +33.2]
+  control - untrained   -59.9  [-63.3, -56.5]
+  seeds: right of 800, per seed. Intervals: paired by task,
+  bootstrap, 10,000 resamples, seed 0, 95% (as r5a).
