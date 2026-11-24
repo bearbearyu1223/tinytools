@@ -535,5 +535,23 @@ result:
   right, on the tag-free reading, has a 95% interval excluding 0; otherwise it is reported in a
   paragraph. Both arms are shown side by side either way. The tag-free rescore reads saved
   replies (no model).
+  The exact rule (`src/tinytools/tagfree.py`, printed in the report's Setup): a reply with a
+  `<tool_call>` tag is read as strict; any other reply's calls are the JSON objects at its
+  start with exactly the keys `name` (a string) and `arguments` (an object), one after another
+  with only whitespace between, up to the first thing that isn't one; the rest is ignored.
+  Those calls are rewritten into tags and go through the same checkers as strict. Commands
+  (`--from` is read-only; default `outputs/<profile>/`):
+  ```
+  uv run tinytools sft-report --reading tagfree --from runs/2026-11-23-main/outputs/main \
+      > outputs/sft-tagfree.txt 2> outputs/sft-tagfree.err
+  uv run tinytools sft-report --profile base --reading tagfree \
+      --from runs/2026-11-23-base/outputs/base \
+      > outputs/sft-tagfree-base.txt 2> outputs/sft-tagfree-base.err
+  ```
+  The report also saves itself under those names (`--quick`: `sft-tagfree-quick.txt`,
+  `sft-tagfree-base-quick.txt`). It prints r5a-d and r6a on the tag-free reading, a "Strict vs
+  tag-free, right, per arm" table (every arm and the noise floor), and for the base profile the
+  rule's line ("base-arm rule (plan 3f): ... -> featured / a paragraph"). Without `--reading`,
+  `sft-report` prints the strict report it always did.
 * **The run.** `runs/2026-11-23-base/` (commit 44b5cb6), launched 2026-11-23 16:37.
 

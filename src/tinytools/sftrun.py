@@ -1243,9 +1243,9 @@ def _print_score(rep, info: dict, d: Path) -> None:
     """A short summary of one model's scoring (the numbers the report compares)."""
     from .classify import is_right
 
-    rows = [json.loads(x) for x in (d / OURS_FILE).read_text().splitlines() if x]
-    bf = [json.loads(x) for x in (d / BFCL_FILE).read_text().splitlines() if x]
-    sm = [json.loads(x) for x in (d / SAMPLE_FILE).read_text().splitlines() if x]
+    rows = [json.loads(x) for x in (d / OURS_FILE).read_text(encoding="utf-8").split("\n") if x]
+    bf = [json.loads(x) for x in (d / BFCL_FILE).read_text(encoding="utf-8").split("\n") if x]
+    sm = [json.loads(x) for x in (d / SAMPLE_FILE).read_text(encoding="utf-8").split("\n") if x]
     rep.kv("ours test, greedy, right", f"{sum(is_right(r['outcome']) for r in rows)} of {len(rows)}")
     rep.kv("BFCL eval, greedy, right", f"{sum(is_right(r['outcome']) for r in bf)} of {len(bf)}")
     g = [r for r in sm if r["pass"] == "greedy"]
@@ -1387,7 +1387,7 @@ def _print_floor(rep, info: dict, d: Path) -> None:
     from . import effects as E
     from .classify import is_right
 
-    rows = [json.loads(x) for x in (d / SAMPLE_FILE).read_text().splitlines() if x]
+    rows = [json.loads(x) for x in (d / SAMPLE_FILE).read_text(encoding="utf-8").split("\n") if x]
     right: dict = {}
     for r in rows:
         right[r["id"]] = right.get(r["id"], 0) + is_right(r["outcome"])
@@ -1552,19 +1552,24 @@ class Scores:
 
 
 def _rows(path: Path) -> list[dict]:
-    return [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x]
+    return [json.loads(x) for x in path.read_text(encoding="utf-8").split("\n") if x]
 
 
-def load_scores(d: Path, by_id: dict, bfcl_items: dict) -> Scores:
+def load_scores(d: Path, by_id: dict, bfcl_items: dict, reading: str = "strict") -> Scores:
+    """``reading``: ``strict`` or ``tagfree`` (:mod:`tinytools.tagfree`); the replies are
+    read that way, then checked by the same checkers."""
     from . import bfcl, progress
     from .checkers import check_reply
     from .classify import is_right
+    from .tagfree import read
 
-    progress.status(f"re-checking {d.name}")
+    progress.status(f"re-checking {d.name}" + ("" if reading == "strict" else f" ({reading})"))
     ours = {}
     for r in _rows(d / OURS_FILE):
-        ours[r["id"]] = check_reply(r["reply"], by_id[r["id"]]["reference"]).outcome
+        ours[r["id"]] = check_reply(read(r["reply"], reading), by_id[r["id"]]["reference"]).outcome
     rows = _rows(d / BFCL_FILE)
+    for r in rows:
+        r["reply"] = read(r["reply"], reading)
     out = {}
     for cat, items in bfcl_items.items():
         mine = [r for r in rows if r["category"] == cat]
@@ -1574,7 +1579,7 @@ def load_scores(d: Path, by_id: dict, bfcl_items: dict) -> Scores:
         out.update({r["id"]: r["outcome"] for r in mine})
     greedy, right = {}, {}
     for r in _rows(d / SAMPLE_FILE):
-        ok = is_right(check_reply(r["reply"], by_id[r["id"]]["reference"]).outcome)
+        ok = is_right(check_reply(read(r["reply"], reading), by_id[r["id"]]["reference"]).outcome)
         if r["pass"] == "greedy":
             greedy[r["id"]] = ok
         else:
@@ -1582,18 +1587,19 @@ def load_scores(d: Path, by_id: dict, bfcl_items: dict) -> Scores:
     return Scores(d.name, ours, out, greedy, right, json.loads((d / "score.json").read_text()))
 
 
-def load_floor(d: Path, by_id: dict) -> dict:
+def load_floor(d: Path, by_id: dict, reading: str = "strict") -> dict:
     """The noise floor's replies, re-checked: train-sample task id -> right of SAMPLES."""
     from . import progress
     from .checkers import check_reply
     from .classify import is_right
+    from .tagfree import read
 
-    progress.status(f"re-checking {d.name}")
+    progress.status(f"re-checking {d.name}" + ("" if reading == "strict" else f" ({reading})"))
     right: dict = {}
     for r in _rows(d / SAMPLE_FILE):
         if r["pass"] != SAMPLE_MODE:
             raise ValueError(f"{d.name}: a {r['pass']!r} reply in the noise floor")
-        ok = is_right(check_reply(r["reply"], by_id[r["id"]]["reference"]).outcome)
+        ok = is_right(check_reply(read(r["reply"], reading), by_id[r["id"]]["reference"]).outcome)
         right[r["id"]] = right.get(r["id"], 0) + ok
     return right
 
@@ -1616,52 +1622,191 @@ def complete_seeds(out: Path) -> tuple[list[int], list[str]]:
     return seeds, partial
 
 
-def run_report(root: Path, quick: bool, profile: str = "main") -> int:
+def _shown(path: Path, root: Path) -> str:
+    """``path`` relative to the repo when it is inside it, else as given."""
+    try:
+        return str(path.resolve().relative_to(root.resolve()))
+    except ValueError:
+        return str(path)
+
+
+def run_report(root: Path, quick: bool, profile: str = "main", reading: str = "strict",
+               source: Path | None = None) -> int:
+    """sft-report. ``reading``: ``strict`` (the report as it always was, ``sft*.txt``) or
+    ``tagfree`` (r5a-d and r6a on the tag-free reading, beside a strict vs tag-free table,
+    and for the base profile plan 3f's rule; ``sft-tagfree*.txt``). ``source``: the arm
+    tree to read instead of the profile's ``outputs/<profile>/`` (read-only)."""
+    from dataclasses import replace
+
     from . import bfcl, ours, tasks
     from .cli import _load_or_make_tasks, _quiet_hf
-    from .report import Report
+    from .report import WIDTH, Report
+    from .tagfree import READINGS, STRICT, TAGFREE
 
+    if reading not in READINGS:
+        raise ValueError(f"unknown reading {reading!r}; one of {READINGS}")
     _quiet_hf()
     m = mode(quick, root, profile=profile)
+    if source is not None:
+        m = replace(m, out=source)
     if not (m.out / UNTRAINED / "score.json").exists():
-        sys.exit(f"{m.out.relative_to(root)}/{UNTRAINED} is not scored; run sft-score first")
+        sys.exit(f"{_shown(m.out, root)}/{UNTRAINED} is not scored; run sft-score first")
     seeds, partial = complete_seeds(m.out)
     splits = _load_or_make_tasks(tasks.DEFAULT_SEED)
     test = ours.limit_per_kind(splits["test"], m.ours_limit)
     sample = ours.limit_per_kind(splits["train-sample"], m.sample_limit)
     by_id = {t["id"]: t for t in splits["test"] + splits["train-sample"]}
     items = {cat: bfcl.load_items(cat, m.bfcl_limit, "eval") for cat in bfcl.CATEGORIES}
-    un = load_scores(m.out / UNTRAINED, by_id, items)
-    sft = [load_scores(m.out / run_label("real", s), by_id, items) for s in seeds]
-    ctl = [load_scores(m.out / run_label("control", s), by_id, items) for s in seeds]
-    for sc in [un, *sft, *ctl]:
-        if list(sc.ours) != [t["id"] for t in test] or list(sc.sample_greedy) != [
-                t["id"] for t in sample]:
-            raise ValueError(f"{sc.label}: its tasks are not the report's")
-    floor = load_floor(m.out / FLOOR, by_id) if (m.out / FLOOR / "score.json").exists() else None
-    if floor is not None and list(floor) != [t["id"] for t in sample]:
-        raise ValueError(f"{FLOOR}: its tasks are not the report's")
+
+    def load(rd: str) -> Arms:
+        un = load_scores(m.out / UNTRAINED, by_id, items, rd)
+        sft = [load_scores(m.out / run_label("real", s), by_id, items, rd) for s in seeds]
+        ctl = [load_scores(m.out / run_label("control", s), by_id, items, rd) for s in seeds]
+        for sc in [un, *sft, *ctl]:
+            if list(sc.ours) != [t["id"] for t in test] or list(sc.sample_greedy) != [
+                    t["id"] for t in sample]:
+                raise ValueError(f"{sc.label}: its tasks are not the report's")
+        floor = (load_floor(m.out / FLOOR, by_id, rd)
+                 if (m.out / FLOOR / "score.json").exists() else None)
+        if floor is not None and list(floor) != [t["id"] for t in sample]:
+            raise ValueError(f"{FLOOR}: its tasks are not the report's")
+        return Arms(un, sft, ctl, floor)
+
+    a = load(reading)
+    un, sft, ctl, floor = a.un, a.sft, a.ctl, a.floor
     trains = {d.name: json.loads((d / "train.json").read_text())
               for d in sorted(m.out.iterdir()) if (d / "train.json").exists()}
     checks = json.loads((m.out / "checks.json").read_text()) if (
         m.out / "checks.json").exists() else {}
 
-    rep = Report("tinytools sft-report" + m.title
-                 + (" --quick (not for publication)" if quick else ""),
-                 out=root / "outputs" / f"sft{m.suffix}.txt")
+    if reading == STRICT:
+        rep = Report("tinytools sft-report" + m.title
+                     + (" --quick (not for publication)" if quick else ""),
+                     out=root / "outputs" / f"sft{m.suffix}.txt")
+    else:
+        title = f"tinytools sft-report{m.title} --reading tagfree" + (" --quick" if quick else "")
+        if quick:
+            title += ("\n" if len(title) + 22 > WIDTH else " ") + "(not for publication)"
+        rep = Report(title, out=root / "outputs" / f"sft-tagfree{m.suffix}.txt")
     rep.header()
     _report_setup(rep, m, un, seeds, partial, test, sample, items)
-    if seeds:
+    if reading == TAGFREE:
+        strict = load(STRICT)
+        _tagfree_setup(rep, _shown(m.out, root))
+        _readings(rep, strict, a, seeds, test, items, sample)
+    elif seeds:
         _r4c(rep, m, trains, seeds, checks)
         _r4d(rep, trains, seeds, m.out)
     _r5a(rep, un, sft, ctl, seeds, test, items)
     if seeds:
         _r5b(rep, un, sft, ctl, seeds, test, items)
-        _r5c(rep, un, sft, ctl, seeds, test, items)
+        _r5c(rep, un, sft, ctl, seeds, test, items, reading)
         _r5d(rep, un, sft, ctl, test, items)
+        if reading == TAGFREE and m.profile == "base":
+            _base_rule(rep, a, strict, test, items)
         _r6a(rep, un, sft, ctl, seeds, sample, floor)
     rep.close()
     return 0
+
+
+@dataclass(frozen=True)
+class Arms:
+    """Every arm's scores on one reading."""
+
+    un: Scores
+    sft: list[Scores]
+    ctl: list[Scores]
+    floor: dict | None
+
+
+def _tagfree_setup(rep, source: str) -> None:
+    from .tagfree import RULE
+
+    rep.kv("replies read from", source, wrap=True)
+    rep.kv("reading", "tag-free (plan 3f); strict beside it")
+    for line in RULE:
+        rep.note(line)
+    rep.note("Training (r4c, r4d) is the same on both readings: see sft-report.")
+
+
+def _arm_rows(a: Arms, seeds: list[int]) -> list[tuple[str, Scores]]:
+    return ([("untrained", a.un)] + [(f"SFT, seed {s}", x) for s, x in zip(seeds, a.sft, strict=True)]
+            + [(f"control, seed {s}", x) for s, x in zip(seeds, a.ctl, strict=True)])
+
+
+def _readings(rep, strict: Arms, tagfree: Arms, seeds, test, items, sample) -> None:
+    """Strict vs tag-free, right, per arm: where the two readings differ."""
+    from fractions import Fraction
+
+    from . import effects as E
+    from . import tasks
+    from .ours import share
+
+    rep.section("Strict vs tag-free, right, per arm")
+    rep.note("Right replies, count (share), on each reading. points: tag-free -")
+    rep.note("strict. changed: replies whose outcome differs between the readings")
+    rep.note("(any outcome, not only right).")
+    sets = _sets(test, items)
+    pairs = list(zip(_arm_rows(strict, seeds), _arm_rows(tagfree, seeds), strict=True))
+    for key in (E.OURS_CALL, E.OURS_NOFIT, E.BFCL_CALL, E.BFCL_IRR):
+        src, ids = sets[key]
+        if not ids:
+            continue
+        rows = []
+        for (label, st), (_, tf) in pairs:
+            a, b = int(sum(_right(st, src, ids))), int(sum(_right(tf, src, ids)))
+            changed = sum(x != y for x, y in zip(_outcomes(st, src, ids), _outcomes(tf, src, ids),
+                                                 strict=True))
+            rows.append([label, f"{a} ({share(a, len(ids))})", f"{b} ({share(b, len(ids))})",
+                         E.points(Fraction(b - a, len(ids))), changed])
+        rep.blank()
+        rep.note(f"{E.SETS[key]} ({len(ids)}), greedy:")
+        rep.table(["arm", "strict", "tag-free", "points", "changed"], rows)
+    sample_pairs = [(label, st.sample_right, tf.sample_right) for (label, st), (_, tf) in pairs]
+    if strict.floor is not None:
+        sample_pairs.insert(1, ("untrained again", strict.floor, tagfree.floor))
+    scopes = [("that need a call", [t["id"] for t in sample if t["kind"] != tasks.NO_FIT]),
+              ("of all kinds", [t["id"] for t in sample])]
+    for label_, ids in scopes:
+        if not ids:
+            continue
+        n = SAMPLES * len(ids)
+        rows = []
+        for label, st, tf in sample_pairs:
+            a, b = sum(st[i] for i in ids), sum(tf[i] for i in ids)
+            rows.append([label, f"{a} ({share(a, n)})", f"{b} ({share(b, n)})",
+                         E.points(Fraction(b - a, n))])
+        rep.blank()
+        rep.note(f"r6a's answers: train-sample tasks {label_} ({len(ids)}), {SAMPLES}")
+        rep.note(f"each at T={TEMPERATURE:g} ({n:,} answers):")
+        rep.table(["arm", "strict", "tag-free", "points"], rows)
+    if strict.floor is not None:
+        rep.note(f"untrained again: {FLOOR} (r6a's noise floor).")
+
+
+def base_rule(un: Scores, sft: list[Scores], ids: list[str]):
+    """Plan 3f's rule: SFT - untrained, ours, tasks that need a call, right (paired)."""
+    from . import effects as E
+
+    return E.paired("SFT", E.seed_mean([_right(x, "ours", ids) for x in sft]), "untrained",
+                    _right(un, "ours", ids), len(sft), 1)
+
+
+def _base_rule(rep, tagfree: Arms, strict: Arms, test, items) -> None:
+    from . import effects as E
+
+    rep.section("The base arm's rule (plan 3f)")
+    _, ids = _sets(test, items)[E.OURS_CALL]
+    p, q = base_rule(tagfree.un, tagfree.sft, ids), base_rule(strict.un, strict.sft, ids)
+    rep.note(f"base-arm rule (plan 3f): SFT - untrained, ours, tasks that need a call, "
+             f"right, tag-free: {E.points(p.diff)} points {E.interval(p.lo, p.hi)}, excludes 0: "
+             f"{'yes' if p.excludes_zero else 'no'} -> "
+             f"{'featured' if p.excludes_zero else 'a paragraph'}", wrap=True)
+    rep.note(f"(untrained {E.percent(p.share_b)}, SFT {E.percent(p.share_a)}, seed mean; "
+             f"{RESAMPLES_TEXT}, over {p.n} tasks.)", wrap=True)
+    rep.note(f"Strict, for contrast (not the rule's reading): {E.points(q.diff)} points "
+             f"{E.interval(q.lo, q.hi)} (untrained {E.percent(q.share_b)}, SFT "
+             f"{E.percent(q.share_a)}).", wrap=True)
 
 
 def _report_setup(rep, m: Mode, un: Scores, seeds, partial, test, sample, items) -> None:
@@ -1985,7 +2130,7 @@ def _r5b(rep, un, sft, ctl, seeds, test, items) -> None:
         rep.table(["arm", "right function", "chance"], rows)
 
 
-def _r5c(rep, un, sft, ctl, seeds, test, items) -> None:
+def _r5c(rep, un, sft, ctl, seeds, test, items, reading: str = "strict") -> None:
     from . import effects as E
     from .ours import pct
 
@@ -2001,8 +2146,12 @@ def _r5c(rep, un, sft, ctl, seeds, test, items) -> None:
         for s, sc in zip(seeds, runs, strict=True):
             rows.append([f"{arm}, seed {s}", *[cell(sc, src, ids) for _, src, ids in cols]])
     rep.table(["arm", "ours: declined", "BFCL irrelevance: declined"], rows)
-    rep.note("declined: no <tool_call> tag (right). The effect, with intervals:")
-    rep.note("r5d, declining.")
+    if reading == "strict":
+        rep.note("declined: no <tool_call> tag (right). The effect, with intervals:")
+        rep.note("r5d, declining.")
+    else:
+        rep.note("declined: no <tool_call> tag and no call object at the start")
+        rep.note("(right). The effect, with intervals: r5d, declining.")
 
 
 def _r5d(rep, un, sft, ctl, test, items) -> None:

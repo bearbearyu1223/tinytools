@@ -20,7 +20,8 @@ Commands (``tinytools <command> --help`` for each one's flags):
                     (--noise-floor: the untrained train-sample samples again, seed 1)
     sft-train       train one LoRA adapter (--repeat: seed 1 real again, compared)
     sft-pair        one seed's pair: train real, score, train control, score
-    sft-report      r4c, r4d, r5a-d, r6a from the saved runs and replies (no model)
+    sft-report      r4c, r4d, r5a-d, r6a from the saved runs and replies (no model);
+                    --reading tagfree: on the tag-free reading (plan 3f)
 
 Every command prints a report on stdout (progress goes to stderr) and saves the
 same report under outputs/, so ``tinytools bfcl-score > x.txt`` captures only
@@ -519,7 +520,7 @@ def cmd_bfcl_rescore(args) -> None:
                  "(bfcl-<model>-[dev-|eval-]<mode>-limit<N>-replies.jsonl)")
     if name["model"] != args.model.split("/")[-1]:
         sys.exit(f"{path.name} was scored with {name['model']}; pass --model for it")
-    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").split("\n") if line]
     if not rows:
         sys.exit(f"{path}: no replies")
     sampling, samples = name["samples"] > 1, name["samples"]
@@ -1013,7 +1014,7 @@ def cmd_rescore(args) -> None:
     from .checkers import check_reply
 
     path = args.replies.resolve()
-    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").split("\n") if line]
     if not rows:
         sys.exit(f"{path}: no replies")
     passes = list(dict.fromkeys(r["pass"] for r in rows))
@@ -1484,7 +1485,8 @@ def cmd_sft_pair(args) -> None:
 def cmd_sft_report(args) -> None:
     from . import sftrun
 
-    sys.exit(sftrun.run_report(ROOT, args.quick, args.profile))
+    source = Path(args.source) if args.source else None
+    sys.exit(sftrun.run_report(ROOT, args.quick, args.profile, args.reading, source))
 
 
 # -- entry point -------------------------------------------------------------------
@@ -1683,6 +1685,13 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("sft-report", help="r4c, r4d, r5a-d, r6a from saved runs (no model)")
     s.add_argument("--quick", action="store_true", help=quick_help)
     profile_flag(s)
+    s.add_argument("--reading", choices=("strict", "tagfree"), default="strict",
+                   help="strict (default): calls only inside <tool_call> tags, sft*.txt; "
+                        "tagfree: bare call JSON at a reply's start counts too (plan 3f), "
+                        "r5a-d and r6a beside a strict vs tag-free table, sft-tagfree*.txt")
+    s.add_argument("--from", dest="source", default=None,
+                   help="the arm tree to read (e.g. runs/2026-11-23-main/outputs/main; "
+                        "read-only); default outputs/<profile>[-quick]/")
     s.set_defaults(fn=cmd_sft_report)
     return p
 
