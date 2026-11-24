@@ -1,0 +1,81 @@
+# Post 9's one-tool rerun (plan 3g, Han 2026-11-24): Qwen2.5-1.5B-Instruct, the main run's
+# settings exactly, the real arm only, seeds 1-3, on the real set without its 514 "no call,
+# 1 tool" rows (data/sft/real-onetool.jsonl, 7,990 rows); each adapter scored as the main run
+# scored its own; then the comparison with the main run's real arm (its replies are in git,
+# runs/2026-11-23-main/outputs/main, so they reach the instance with the repo). No untrained
+# scoring (the main run's is read), no noise floor, no control, no repeat.
+#   scripts/lambda.sh estimate onetool, then scripts/lambda.sh run onetool --approve <USD>
+#
+# Prediction and rule, fixed before the run (plan 3g): right on BFCL's one-function call items
+# (simple + parallel, 540), onetool real - main real, paired by task, seed means, bootstrap
+# 10,000, 95%; "confirmed" if the interval excludes 0 upward. sft-report prints that line.
+#
+# Stages, in order (each command stops the run if it fails):
+#   0. PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True for every command
+#   1. data: toolace-convert, sft-data --variant onetool (only data/sft/real-onetool.jsonl; it
+#      prints the funnel and checks the file against real.jsonl when that is present)
+#   2. sft-check --profile onetool: main's checks on the variant (its sha256 pinned in sft.py,
+#      the 1.5B template renders it byte for byte as sft-data did, 0 rows over 3,072 tokens,
+#      every <|im_end|> scored, the memory step decides checkpointing, B = 0 merged gives the
+#      base model's replies on the 200 dev tasks, random B merged gives the LoRA logits)
+#   3. per seed 1, 2, 3: sft-pair --profile onetool = train real, score it (the pair's code with
+#      the profile's one arm). A seed that can't finish before the deadline is not started;
+#      after each the runner fetches what exists so far (adapters included)
+#   4. sft-report --profile onetool (no model): the primary line, the comparisons beside it,
+#      BFCL outcomes per category, training settings and losses beside the main run's
+#
+# Hours (the arithmetic, from the main run's measurements, runs/2026-11-23-main, 2026-11-23):
+#   setup (launch, boot, uv sync, repo copy, model downloads)       0.4 h  (plan 3e; main: 4.7
+#                                                                           min to its first
+#                                                                           command)
+#   toolace-convert (38 s) + sft-data --variant (no control sets;
+#     main's sft-data with three took 123 s)                         0.03 h
+#   sft-check (main's: ~3 min; the merge checks dominate)            0.05 h
+#   per seed: training 22.1 min x 0.955 (token slots, 7,990 rows
+#     vs 8,504: planned_padded_tokens 15.5M vs 16.2M) = 21.1 min,
+#     + scoring 6.7 min (main's real arm: 7.0, 6.4, 6.6 min)        0.46 h
+#     x 3 seeds                                                      1.39 h
+#   report (main's sft-report: ~2 min), final fetch, terminate       0.1 h
+#   total                                                            ~1.97 h (~$3.92 at
+#                                                                    $1.99/h); with gradient
+#                                                                    checkpointing (+40% on
+#                                                                    training; main didn't
+#                                                                    need it) ~2.4 h
+# The commands get the deadline ($TINYTOOLS_DEADLINE_EPOCH: max_hours less the runner's
+# 10-minute reserve) and estimate, from what has been measured so far x 1.5, whether a seed
+# can finish with 15 minutes kept for the report; one that can't is not started.
+# Worst case: max_hours x the live price, 4.0 h x $1.99 = $7.96 <= the $8 cap; with post 9's
+# ledger ($21.67 so far) the post stays within its $50.
+name = "onetool"
+post = 9
+instance_type = "gpu_1x_a100_sxm4"   # 40 GB; Milestone 0, main and base ran on it
+max_hours = 4.0                      # 4.0 x $1.99 = $7.96 <= cap_usd; ~2x the expected hours
+expected_hours = 2.0                 # 1.97 h above, rounded up
+cap_usd = 8                          # plan 3g
+commands = [
+  "export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True",
+  "uv run tinytools toolace-convert",
+  "uv run tinytools sft-data --variant onetool",
+  "uv run tinytools sft-check --profile onetool --batch-size 64",
+  "echo TINYTOOLS_FETCH_NOW",
+  'uv run tinytools sft-pair --profile onetool --seed 1 --batch-size 64 --deadline-epoch "$TINYTOOLS_DEADLINE_EPOCH"',
+  "echo TINYTOOLS_FETCH_NOW",
+  'uv run tinytools sft-pair --profile onetool --seed 2 --batch-size 64 --deadline-epoch "$TINYTOOLS_DEADLINE_EPOCH"',
+  "echo TINYTOOLS_FETCH_NOW",
+  'uv run tinytools sft-pair --profile onetool --seed 3 --batch-size 64 --deadline-epoch "$TINYTOOLS_DEADLINE_EPOCH"',
+  "echo TINYTOOLS_FETCH_NOW",
+  "uv run tinytools sft-report --profile onetool",
+]
+# Only files these commands write (fetch also skips any not written during the run).
+# Adapters (unmerged, fp32, ~74 MB each), every reply, loss logs, training and scoring
+# records, and the captures (sft-data-onetool, sft-check-onetool, sft-pair-seedN-onetool,
+# sft-onetool). Not the sft-check B = 0 adapter (outputs/onetool/b0-adapter.safetensors).
+fetch = [
+  "outputs/onetool/*.json",
+  "outputs/onetool/*/*.json",
+  "outputs/onetool/*/*.jsonl",
+  "outputs/onetool/*/adapter.safetensors",
+  "outputs/sft*-onetool.txt",
+  "outputs/toolace-convert.txt",
+]
+setup_record = "outputs/onetool/setup.json"

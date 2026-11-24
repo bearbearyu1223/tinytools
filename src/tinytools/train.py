@@ -33,7 +33,7 @@ and the shuffle order (``Random("<N>:shuffle:<epoch>")``, a permutation of row
 positions per epoch). Real N and control N share both (their rows are twins in the
 same order, checked), which is what makes them a pair.
 
-**Profiles (plan 3f).** ``main`` is the Instruct arm above. ``base`` runs the same
+**Profiles (plans 3f, 3g).** ``main`` is the Instruct arm above. ``base`` runs the same
 pipeline on Qwen2.5-1.5B (base) with two differences, both fixed before any result:
 prompts and training rows are tokenized and rendered with the Instruct model's tokenizer
 and chat template (identical vocabulary and merges, asserted by :func:`load_tokenizer`;
@@ -41,7 +41,10 @@ the base template differs only in its default system line), and four embedding r
 (``<|im_start|>``, ``<|im_end|>``, ``<tool_call>``, ``</tool_call>``) get a trainable
 float32 delta (``lora.inject_rows``) in the same AdamW group as LoRA's A and B, so the
 same lr, schedule, betas and weight decay (0, as LoRA's). Quick mode runs it on
-Qwen2.5-0.5B (base), whose four rows have the same defect.
+Qwen2.5-0.5B (base), whose four rows have the same defect. ``onetool`` (plan 3g) is
+``main`` exactly, real arm only, on ``data/sft/real-onetool.jsonl`` (the real set without
+its "no call, 1 tool" rows); seed N sets the init and shuffle as for main, but the
+shuffle permutes a different set, so its order is not main's.
 
 Everything above the ``-- running`` line is pure and tested in ``tests/test_train.py``.
 """
@@ -115,6 +118,18 @@ class Profile:
     quick_tokenizer: str | None = None
     embed_rows: tuple[str, ...] = ()
     stop_tokens: tuple[str, ...] = ()  # () : the model's own generation_config (as main ran)
+    variant: str | None = None  # the real set: sft-data's variant (sft.VARIANTS); None: real.jsonl
+    arms: tuple[str, ...] = ARMS  # the arms its runs train (onetool: the real arm only)
+
+    @property
+    def real_set(self) -> str:
+        """The real arm's file in data/sft/ (sft.variant_file names a variant's the same)."""
+        return "real.jsonl" if self.variant is None else f"real-{self.variant}.jsonl"
+
+    @property
+    def data_capture(self) -> str:
+        """sft-data's capture for this profile's sets (its rendering is checked against it)."""
+        return "sft-data.txt" if self.variant is None else f"sft-data-{self.variant}.txt"
 
     def settings(self, quick: bool) -> Settings:
         return self.quick if quick else self.full
@@ -148,6 +163,9 @@ PROFILES = {
     "base": Profile("base", replace(MAIN, model=BASE_MODEL), replace(QUICK, model=QUICK_BASE_MODEL),
                     tokenizer=MAIN.model, quick_tokenizer=QUICK.model, embed_rows=EMBED_ROWS,
                     stop_tokens=STOP_TOKENS),
+    # plan 3g: the Instruct arm's real training, settings exactly main's, on the real set
+    # without its 514 "no call, 1 tool" rows; compared with the main run's real arm.
+    "onetool": Profile("onetool", MAIN, QUICK, variant="onetool", arms=("real",)),
 }
 
 # The settings two runs must share to be compared (a pair, or a run and its repeat).

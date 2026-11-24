@@ -20,6 +20,7 @@ Commands (``tinytools <command> --help`` for each one's flags):
                     (--noise-floor: the untrained train-sample samples again, seed 1)
     sft-train       train one LoRA adapter (--repeat: seed 1 real again, compared)
     sft-pair        one seed's pair: train real, score, train control, score
+                    (--profile onetool: the real arm only, train and score)
     sft-report      r4c, r4d, r5a-d, r6a from the saved runs and replies (no model);
                     --reading tagfree: on the tag-free reading (plan 3f)
     sft-followup    section 5's follow-ups: ToolACE's no-call wording, BFCL no-call
@@ -48,7 +49,7 @@ from .report import WIDTH, Report
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUTS = ROOT / "outputs"
 DATA = ROOT / "data"
-PROFILE_NAMES = ("main", "base")  # train.PROFILES (not imported here: it pulls in lora/torch)
+PROFILE_NAMES = ("main", "base", "onetool")  # train.PROFILES (not imported here: it pulls in lora/torch)
 
 
 def _profile_tokenizer(profile: str, model: str) -> str | None:
@@ -1205,6 +1206,9 @@ def cmd_sft_data(args) -> None:
     src_sha = hashlib.sha256(raw).hexdigest()
     converted = [json.loads(line) for line in raw.decode("utf-8").splitlines()]
     tok = AutoTokenizer.from_pretrained(args.tokenizer)
+    variant = getattr(args, "variant", None)  # None when args are built by hand
+    if variant is not None:
+        return _sft_data_variant(args, variant, converted, src_sha, tok)
     on_item = progress.items(f"truncating, drawing random calls for seeds {args.seeds}, rendering",
                              len(converted))
     s = sft.build_sets(converted, seeds, tok, on_item)
@@ -1367,6 +1371,85 @@ def cmd_sft_data(args) -> None:
     rep.close()
 
 
+def _sft_data_variant(args, variant: str, converted: list[dict], src_sha: str, tok) -> None:
+    """``sft-data --variant NAME``: the real set with a variant's row types left out
+    (sft.VARIANTS), into data/sft/real-NAME.jsonl; the four sets are not touched. Rows,
+    truncation, drops and rendering are the full set's (build_sets with ``leave_out``);
+    checked against real.jsonl when it is here."""
+    from . import sft
+
+    leave = sft.VARIANTS[variant]
+    on_item = progress.items(f"truncating, rendering (variant {variant})", len(converted))
+    s = sft.build_sets(converted, (), tok, on_item, leave_out=leave)
+    name = sft.variant_file(variant)
+    data = sft.jsonl_bytes(s.real)
+    SFT_DIR.mkdir(parents=True, exist_ok=True)
+    (SFT_DIR / name).write_bytes(data)
+    sha = hashlib.sha256(data).hexdigest()
+
+    rep = Report(f"tinytools sft-data --variant {variant}",
+                 out=OUTPUTS / f"sft-data-{variant}.txt")
+    rep.header()
+    rep.section("Input")
+    rep.kv("converted ToolACE", sft.CONVERTED)
+    rep.kv("  sha256 (first 16)", src_sha[:16])
+    rep.kv("  is toolace-convert's output", src_sha == sft.CONVERTED_SHA256)
+    rep.kv("rows", len(converted))
+    rep.kv("tokenizer (chat template)", args.tokenizer)
+    rep.kv("variant", variant)
+    rep.kv("  left out", ", ".join(leave))
+    rep.note("The real arm's set with those training rows left out. Truncation,")
+    rep.note("drops and rendering are the full set's; no control set is made.")
+
+    note = sft.VARIANT_NOTE[variant]
+    label = {t: (f"{t} ({note})" if t in leave else t) for t in sft.ROW_TYPES}
+    rep.section("Which rows train")
+    rep.table(["row type", "converted", "dropped", "trains"],
+              [[label[t], s.rows_converted[t], s.rows_dropped[t] if t != sft.R_OUT else "-",
+                s.rows_trained[t]] for t in sft.ROW_TYPES]
+              + [["total", sum(s.rows_converted.values()), sum(s.rows_dropped.values()),
+                  sum(s.rows_trained.values())]])
+    full = sum(s.rows_trained.values()) + sum(s.rows_left_out.values())
+    rep.blank()
+    rep.kv("training rows, the full real set", full)
+    rep.kv(f"  left out ({', '.join(leave)})", sum(s.rows_left_out.values()))
+    rep.kv("  this variant", sum(s.rows_trained.values()))
+    if sft.R_NO_CALL_1 in leave:
+        rep.note("With the one-tool rows that call already out (the control can't")
+        rep.note("randomise one tool), no training row offers a single tool.")
+    rep.note("dropped: as in the full set, checked before rows are left out:")
+    rep.table(["reason", "rows"], [[r, len(s.dropped[r])] for r in sft.DROP_REASONS]
+              + [["total", sum(len(v) for v in s.dropped.values())]])
+
+    rep.section("Turns and tokens, this variant")
+    sh = s.shape_real
+    rep.table(["", "this variant"], [
+        ["rows", sh.rows], ["assistant turns", sh.assistant_turns],
+        ["  call turns", sh.call_turns], ["    parallel (2+ calls)", sh.parallel_turns],
+        ["  not-calls after user", sh.not_calls_after_user],
+        ["  not-calls after tool", sh.not_calls_after_tool], ["calls", sh.calls],
+        ["tool results", sh.tool_results], ["tokens", sh.tokens], ["tokens scored", sh.trained]])
+
+    rep.section("Against data/sft/real.jsonl")
+    real = SFT_DIR / "real.jsonl"
+    if real.exists():
+        raw_real = real.read_bytes()
+        real_sha = hashlib.sha256(raw_real).hexdigest()
+        cut, removed = sft.without_rows(raw_real, leave)
+        rep.kv("real.jsonl as pinned (sft.py)", real_sha == sft.SET_SHA256["real.jsonl"])
+        rep.kv("  its rows of the left-out types", removed)
+        rep.kv("this file = real.jsonl less them", cut == data)
+        rep.note("(byte for byte: every kept line of real.jsonl, in its order)")
+    else:
+        rep.note("real.jsonl is not here (sft-data --seeds makes it); not compared.")
+
+    rep.section("File (regenerated byte for byte from the input)")
+    rep.table(["file", "records", "sha256 (first 16)"],
+              [[str((SFT_DIR / name).relative_to(ROOT)), len(s.real), sha[:16]]])
+    rep.kv("as pinned (sft.py)", sha == sft.VARIANT_SHA256.get(name))
+    rep.close()
+
+
 def _r4b(rep: Report, s, tok, sft, seed: int) -> None:
     real = next(r for r in s.real if r["id"] == sft.EXAMPLE_ID)
     twin = next(r for r in s.controls[seed].records if r["id"] == sft.EXAMPLE_ID)
@@ -1488,7 +1571,11 @@ def cmd_sft_report(args) -> None:
     from . import sftrun
 
     source = Path(args.source) if args.source else None
-    sys.exit(sftrun.run_report(ROOT, args.quick, args.profile, args.reading, source))
+    main_from = getattr(args, "main_from", None)
+    if main_from is not None and args.profile != "onetool":
+        sys.exit("--main-from is the onetool report's (--profile onetool)")
+    main_from = (ROOT / main_from) if main_from is not None else None
+    sys.exit(sftrun.run_report(ROOT, args.quick, args.profile, args.reading, source, main_from))
 
 
 def cmd_sft_followup(args) -> None:
@@ -1587,6 +1674,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="comma-separated: one control set per training seed")
     s.add_argument("--tokenizer", default="Qwen/Qwen2.5-0.5B-Instruct",
                    help="whose chat template to render with")
+    s.add_argument("--variant", choices=["onetool"], default=None,
+                   help="onetool: only the real set without its 'no call, 1 tool' rows (plan "
+                        "3g), into data/sft/real-onetool.jsonl, capture sft-data-onetool.txt; "
+                        "the four sets are not touched and --seeds is not used")
     s.set_defaults(fn=cmd_sft_data)
 
     s = sub.add_parser("figures", help="render the post's figures from the captures")
@@ -1628,8 +1719,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_engine_check)
 
     quick_help = ("Qwen2.5-0.5B-Instruct (--profile base: Qwen2.5-0.5B), the first 32 SFT rows, "
-                  "a few tasks; outputs/main-quick/ (base-quick/) (a Mac check; its numbers are "
-                  "not results)")
+                  "a few tasks; outputs/main-quick/ (base-quick/, onetool-quick/) (a Mac check; "
+                  "its numbers are not results)")
     deadline_help = ("Unix time by which the work must end (the Lambda runner's "
                      "$TINYTOOLS_DEADLINE_EPOCH): work that can't finish by then is not started")
 
@@ -1638,7 +1729,9 @@ def build_parser() -> argparse.ArgumentParser:
                        help="main: Qwen2.5-1.5B-Instruct, outputs/main/ (as the main run ran); "
                             "base: Qwen2.5-1.5B with the Instruct chat template and four "
                             "embedding rows trained, outputs/base/, captures *-base.txt "
-                            "(plan 3f)")
+                            "(plan 3f); onetool: main's settings, the real arm only, on "
+                            "data/sft/real-onetool.jsonl, outputs/onetool/, captures "
+                            "*-onetool.txt (plan 3g)")
 
     def training_flags(s) -> None:
         s.add_argument("--token-budget", type=int, default=None,
@@ -1700,6 +1793,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--from", dest="source", default=None,
                    help="the arm tree to read (e.g. runs/2026-11-23-main/outputs/main; "
                         "read-only); default outputs/<profile>[-quick]/")
+    s.add_argument("--main-from", dest="main_from", default=None,
+                   help="--profile onetool: the main run's arm tree its real arm is compared "
+                        "with (read-only; default runs/2026-11-23-main/outputs/main, --quick "
+                        "outputs/main-quick)")
     s.set_defaults(fn=cmd_sft_report)
 
     s = sub.add_parser("sft-followup", help="section 5's follow-ups: ToolACE's no-call wording, "

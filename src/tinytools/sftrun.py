@@ -35,7 +35,12 @@ chat template, generation stopping at ``<|im_end|>`` or ``<|endoftext|>`` (set o
 loaded model, whatever its generation_config says), and four embedding rows trained
 beside LoRA. ``sft-check`` adds the checks the base arm needs: its prompts are the
 Instruct arm's byte for byte, the stop tokens, and the four rows' identity in the base
-model (the reason for the delta).
+model (the reason for the delta). ``onetool`` (plan 3g) is main's settings and model,
+the real arm only, on ``data/sft/real-onetool.jsonl`` (``sft-data --variant onetool``)
+into ``outputs/onetool/``, captures ``sft*-onetool.txt``: ``sft-check`` pins and checks
+that one set, ``sft-pair`` trains and scores the real arm alone (the pair's code over
+the profile's arms), there is no untrained scoring (the main run's is read), and
+``sft-report`` is the comparison with the main run's real arm (:mod:`tinytools.onetool`).
 """
 
 from __future__ import annotations
@@ -78,6 +83,8 @@ class Mode:
     tokenizer: str | None = None  # whose tokenizer and chat template (None: the model's own)
     embed_rows: tuple[str, ...] = ()  # tokens whose embedding rows train (the base arm)
     stop_tokens: tuple[str, ...] = ()  # set on the loaded model (the base arm)
+    real_set: str = "real.jsonl"  # the real arm's file in data/sft/ (onetool: its variant)
+    arms: tuple[str, ...] = T.ARMS  # the arms a seed's runs train (onetool: real only)
 
     @property
     def title(self) -> str:
@@ -91,17 +98,17 @@ def mode(quick: bool, root: Path, settings: T.Settings | None = None,
     tok = p.tokenizer_for(s.model) if p.tokenizer is not None else None
     lim = 2 if quick else None
     return Mode(quick, s, lim, lim, lim, lim, root / "outputs" / p.out_name(quick),
-                p.suffix(quick), p.name, tok, p.embed_rows, p.stop_tokens)
+                p.suffix(quick), p.name, tok, p.embed_rows, p.stop_tokens, p.real_set, p.arms)
 
 
 def run_label(arm: str, seed: int, repeat: bool = False) -> str:
     return f"{arm}-seed{seed}" + ("-repeat" if repeat else "")
 
 
-def set_path(root: Path, arm: str, seed: int) -> Path:
+def set_path(root: Path, arm: str, seed: int, real_set: str = "real.jsonl") -> Path:
     from .cli import SFT_DIR
 
-    return SFT_DIR / ("real.jsonl" if arm == "real" else f"control-seed{seed}.jsonl")
+    return SFT_DIR / (real_set if arm == "real" else f"control-seed{seed}.jsonl")
 
 
 def _free(device) -> None:
@@ -216,7 +223,8 @@ def _profile_fields(m: Mode) -> dict:
     """What a record adds for a profile other than main (main's records are unchanged)."""
     if m.profile == "main":
         return {}
-    return {"profile": m.profile, "tokenizer": m.tokenizer, "stop_tokens": list(m.stop_tokens)}
+    return {"profile": m.profile, "tokenizer": m.tokenizer, "stop_tokens": list(m.stop_tokens),
+            **({"real_set": m.real_set} if m.real_set != "real.jsonl" else {})}
 
 
 def standard_copies(m: Mode, root: Path) -> list[Path]:
@@ -333,9 +341,10 @@ def scoring_walls(walls: dict[str, float], prefer_trained: bool) -> list[float]:
 SCORE_PRIOR_S = 0.25 * 3600  # plan 3e: one model's scoring, before any is measured
 
 
-def planned_padded_tokens(root: Path, s: T.Settings, seed: int) -> int:
+def planned_padded_tokens(root: Path, s: T.Settings, seed: int,
+                          real_set: str = "real.jsonl") -> int:
     """Token slots one run computes (from the records' token counts, no tokenizer)."""
-    path = set_path(root, "real", seed)
+    path = set_path(root, "real", seed, real_set)
     lengths = [r["n_tokens"] for r in T.load_set(path, s.rows)]
     steps = T.plan_steps(len(lengths), seed, s.epochs, s.batch_rows)
     return sum(T.padded_tokens(T.micro_batches(st.rows, lengths, s.token_budget), lengths)
@@ -346,7 +355,8 @@ def needed_seconds(m: Mode, root: Path, seed: int, trainings: int, scorings: int
     runs, scores = measured(m)
     return T.estimate_seconds([r["seconds"] / r["padded_tokens"] for r in runs
                                if r.get("padded_tokens")], scores,
-                              planned_padded_tokens(root, m.settings, seed), trainings, scorings,
+                              planned_padded_tokens(root, m.settings, seed, m.real_set),
+                              trainings, scorings,
                               m.settings.grad_checkpointing, SCORE_PRIOR_S)
 
 
@@ -393,14 +403,26 @@ def system_shape(text: str) -> list[str]:
     return (head if cut < 0 else head[:cut]).split("\n")
 
 
-def set_pins(sft_dir: Path) -> dict[str, tuple[str | None, str]]:
-    """Each pinned SFT set: (its sha256 here, ``None`` if missing; the pinned sha256)."""
+def profile_pins(real_set: str) -> dict[str, str]:
+    """The sets a profile trains on, with their pinned sha256 (sft.py): the four sets for
+    main and base, the variant's file alone for a variant (onetool). Pure."""
+    from . import sft
+
+    if real_set == "real.jsonl":
+        return dict(sft.SET_SHA256)
+    return {real_set: sft.VARIANT_SHA256[real_set]}
+
+
+def set_pins(sft_dir: Path, pins: dict[str, str] | None = None
+             ) -> dict[str, tuple[str | None, str]]:
+    """Each pinned SFT set (``pins``; default the four): (its sha256 here, ``None`` if
+    missing; the pinned sha256)."""
     import hashlib
 
     from . import sft
 
     out = {}
-    for name, want in sft.SET_SHA256.items():
+    for name, want in (sft.SET_SHA256 if pins is None else pins).items():
         path = sft_dir / name
         out[name] = (hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None,
                      want)
@@ -1004,7 +1026,7 @@ def run_check(root: Path, quick: bool, model: str | None, dev_limit: int | None,
     # arm: the Instruct tokenizer it renders with)
     main_model = prof.tokenizer_for(prof.full.model)
     tok = AutoTokenizer.from_pretrained(main_model)
-    capture = root / "outputs" / "sft-data.txt"
+    capture = root / "outputs" / prof.data_capture
     made_with = "?"
     if capture.exists():
         line = next((x for x in capture.read_text().splitlines()
@@ -1014,13 +1036,15 @@ def run_check(root: Path, quick: bool, model: str | None, dev_limit: int | None,
     rep.kv("sft-data rendered with", made_with)
     rep.note("Each training row re-rendered with this model's tokenizer and chat")
     rep.note("template: text, scored spans, tokens and scored tokens compared.")
-    files = sorted(SFT_DIR.glob("*.jsonl"), key=lambda p: (p.name != "real.jsonl", p.name))
+    want_pins = profile_pins(m.real_set)  # the profile's sets only (not every file here)
+    files = sorted((SFT_DIR / n for n in want_pins if (SFT_DIR / n).exists()),
+                   key=lambda p: (p.name != m.real_set, p.name))
     rows_t = []
     template = {}
     real: list[dict] = []
     for f in files:
         recs = T.load_set(f, None)
-        if f.name == "real.jsonl":
+        if f.name == m.real_set:
             real = recs
         same, differ = template_identity(recs, tok)
         template[f.name] = {"rows": len(recs), "identical": same, "differ": differ[:20]}
@@ -1034,12 +1058,12 @@ def run_check(root: Path, quick: bool, model: str | None, dev_limit: int | None,
 
     # 1b. the sets are the Mac's bytes (T8 review S4)
     rep.section("The SFT sets: sha256 against the Mac's")
-    pins = set_pins(SFT_DIR)
+    pins = set_pins(SFT_DIR, want_pins)
     rep.table(["file", "sha256 (first 16)", "as pinned"],
               [[f"data/sft/{name}", (h or "missing")[:16], h == want]
                for name, (h, want) in pins.items()])
     pinned = all(h == want for h, want in pins.values())
-    rep.kv("all four as pinned (sft.py)", pinned)
+    rep.kv("all four as pinned (sft.py)" if len(pins) == 4 else "as pinned (sft.py)", pinned)
     checks["sha256"] = {name: {"sha256": h, "pinned": want} for name, (h, want) in pins.items()}
 
     # 1c. the base arm: every prompt and training row as the Instruct arm's, byte for byte
@@ -1225,7 +1249,8 @@ def run_check(root: Path, quick: bool, model: str | None, dev_limit: int | None,
         "generation": {"seed": SEED, "samples": SAMPLES, "temperature": TEMPERATURE,
                        "batch_size": batch},
         **({"profile": m.profile, "tokenizer": m.tokenizer, "embed_rows": list(m.embed_rows),
-            "stop_tokens": list(m.stop_tokens)} if m.profile != "main" else {})})
+            "stop_tokens": list(m.stop_tokens)} if m.profile != "main" else {}),
+        **({"real_set": m.real_set} if m.real_set != "real.jsonl" else {})})
     passed = ok and pinned and census[f"over {s.max_length}"] == 0 and closed == turns \
         and identical == len(dev) and same_w == n_mod and mem["fits"] and mg["passes"] \
         and prompts_ok and stops_ok and rows_ok and same_rows in (None, len(row_ids)) \
@@ -1316,7 +1341,11 @@ def _profile_lines(rep, m: Mode) -> None:
     if m.profile == "main":
         return
     rep.kv("profile", m.profile)
-    rep.kv("  chat template and tokenizer", m.tokenizer)
+    if m.real_set != "real.jsonl":
+        rep.kv("  training set", f"data/sft/{m.real_set}")
+        rep.kv("  arms", ", ".join(m.arms))
+    if m.tokenizer is not None:
+        rep.kv("  chat template and tokenizer", m.tokenizer)
     if m.stop_tokens:
         rep.kv("  replies end at", ", ".join(m.stop_tokens))
     if m.embed_rows:
@@ -1358,6 +1387,9 @@ def run_score(root: Path, quick: bool, adapter: Path | None, batch_size: int | N
 
     if floor and adapter is not None:
         raise ValueError("the noise floor is the untrained model's")
+    if adapter is None and T.PROFILES[profile].variant is not None:
+        sys.exit(f"--profile {profile} scores trained adapters only: its untrained model is "
+                 "the main run's, read by sft-report (plan 3g)")
     m, device, determinism, batch = _context(root, quick, batch_size, profile=profile)
     label = FLOOR if floor else UNTRAINED if adapter is None else adapter.parent.name
     rep = Report(f"tinytools sft-score ({label})" + m.title + (" --quick" if quick else ""),
@@ -1407,8 +1439,9 @@ def _print_floor(rep, info: dict, d: Path) -> None:
 def _train_one(root: Path, m: Mode, arm: str, seed: int, device, rep,
                repeat: bool = False) -> T.Result:
     label = run_label(arm, seed, repeat)
-    res = T.train(m.settings, arm, seed, set_path(root, arm, seed), m.out / label, device,
-                  real_path=None if arm == "real" else set_path(root, "real", seed),
+    res = T.train(m.settings, arm, seed, set_path(root, arm, seed, m.real_set), m.out / label,
+                  device, real_path=None if arm == "real" else set_path(root, "real", seed,
+                                                                        m.real_set),
                   label=f"{label}, {m.settings.model.split('/')[-1]}",
                   tokenizer=m.tokenizer, embed_rows=m.embed_rows)
     _free(device)
@@ -1456,6 +1489,9 @@ def run_train(root: Path, quick: bool, arm: str, seed: int, repeat: bool,
               profile: str = "main") -> int:
     from .report import Report
 
+    if arm not in T.PROFILES[profile].arms:
+        sys.exit(f"--profile {profile} trains the {' and '.join(T.PROFILES[profile].arms)} "
+                 f"arm only, not {arm}")
     m, device, determinism, batch = _context(root, quick, None, token_budget, checkpointing,
                                              profile)
     label = run_label(arm, seed, repeat)
@@ -1490,7 +1526,9 @@ def asdict_(res: T.Result) -> dict:
 
 def run_pair(root: Path, quick: bool, seed: int, deadline: float | None, batch_size: int | None,
              token_budget: int | None, checkpointing: bool, profile: str = "main") -> int:
-    """One seed's pair, whole or not at all: train real, score, train control, score."""
+    """One seed's pair, whole or not at all: train real, score, train control, score. A
+    profile with the real arm only (onetool) runs the same code for its one arm: train
+    real, score."""
     from .report import Report
 
     m, device, determinism, batch = _context(root, quick, batch_size, token_budget, checkpointing,
@@ -1498,16 +1536,21 @@ def run_pair(root: Path, quick: bool, seed: int, deadline: float | None, batch_s
     rep = Report(f"tinytools sft-pair (seed {seed})" + m.title + (" --quick" if quick else ""),
                  out=root / "outputs" / f"sft-pair-seed{seed}{m.suffix}.txt")
     _header(rep, m, device, determinism, batch, deadline)
-    need = needed_seconds(m, root, seed, 2, 2)
+    n = len(m.arms)
+    need = needed_seconds(m, root, seed, n, n)
     if not T.fits(time.time(), deadline, need, T.REPORT_ALLOW_S):
-        _not_started(rep, f"seed {seed}'s pair", need, deadline)
+        _not_started(rep, f"seed {seed}'s pair" if n == 2 else f"seed {seed}'s run", need,
+                     deadline)
         rep.close()
         return 0
     results = {}
-    for arm in T.ARMS:
+    for arm in m.arms:
         results[arm] = _train_one(root, m, arm, seed, device, rep)
         _score_one(root, m, run_label(arm, seed), m.out / run_label(arm, seed) /
                    "adapter.safetensors", device, batch, rep)
+    if "control" not in results:
+        rep.close()
+        return 0
     rep.section(f"The pair: real and control, seed {seed}")
     r, c = results["real"], results["control"]
     rep.kv("same LoRA init (A)", r.init_sha256 == c.init_sha256)
@@ -1555,9 +1598,11 @@ def _rows(path: Path) -> list[dict]:
     return [json.loads(x) for x in path.read_text(encoding="utf-8").split("\n") if x]
 
 
-def load_scores(d: Path, by_id: dict, bfcl_items: dict, reading: str = "strict") -> Scores:
+def load_scores(d: Path, by_id: dict, bfcl_items: dict, reading: str = "strict",
+                samples: bool = True) -> Scores:
     """``reading``: ``strict`` or ``tagfree`` (:mod:`tinytools.tagfree`); the replies are
-    read that way, then checked by the same checkers."""
+    read that way, then checked by the same checkers. ``samples=False``: the greedy test
+    passes only (the train-sample dicts stay empty; the onetool report)."""
     from . import bfcl, progress
     from .checkers import check_reply
     from .classify import is_right
@@ -1578,7 +1623,7 @@ def load_scores(d: Path, by_id: dict, bfcl_items: dict, reading: str = "strict")
         bfcl.rejudge(items, [[r] for r in mine])
         out.update({r["id"]: r["outcome"] for r in mine})
     greedy, right = {}, {}
-    for r in _rows(d / SAMPLE_FILE):
+    for r in _rows(d / SAMPLE_FILE) if samples else []:
         ok = is_right(check_reply(read(r["reply"], reading), by_id[r["id"]]["reference"]).outcome)
         if r["pass"] == "greedy":
             greedy[r["id"]] = ok
@@ -1631,12 +1676,19 @@ def _shown(path: Path, root: Path) -> str:
 
 
 def run_report(root: Path, quick: bool, profile: str = "main", reading: str = "strict",
-               source: Path | None = None) -> int:
+               source: Path | None = None, main_from: Path | None = None) -> int:
     """sft-report. ``reading``: ``strict`` (the report as it always was, ``sft*.txt``) or
     ``tagfree`` (r5a-d and r6a on the tag-free reading, beside a strict vs tag-free table,
     and for the base profile plan 3f's rule; ``sft-tagfree*.txt``). ``source``: the arm
-    tree to read instead of the profile's ``outputs/<profile>/`` (read-only)."""
+    tree to read instead of the profile's ``outputs/<profile>/`` (read-only). A variant
+    profile (onetool) gets its comparison with the main run's arms instead
+    (:mod:`tinytools.onetool`; ``main_from``: the main run's arm tree)."""
     from dataclasses import replace
+
+    if T.PROFILES[profile].variant is not None:
+        from . import onetool
+
+        return onetool.run_report(root, quick, reading, source, main_from, profile)
 
     from . import bfcl, ours, tasks
     from .cli import _load_or_make_tasks, _quiet_hf
@@ -1852,9 +1904,11 @@ def _r4c(rep, m: Mode, trains: dict, seeds: list[int], checks: dict) -> None:
     for k, v in trains.items():
         if any(v["settings"][f] != s[f] for f in T.PAIRED):
             raise ValueError(f"{k} was trained with other settings than {run_label('real', seeds[0])}")
-    rep.section("Training: settings, the same for both arms (r4c)")
+    pair = tuple(m.arms) == T.ARMS
+    rep.section("Training: settings, the same for both arms (r4c)" if pair else
+                "Training: settings (r4c)")
     rep.kv("model (base weights frozen)", s["model"])
-    rep.kv("rows per arm", first["rows"])
+    rep.kv("rows per arm" if pair else "rows", first["rows"])
     rep.kv("epochs", s["epochs"])
     rep.kv("optimizer steps", first["steps"])
     rep.note(f"{s['batch_rows']} rows each; the last step of an epoch takes the rest.")
@@ -1888,11 +1942,14 @@ def _r4c(rep, m: Mode, trains: dict, seeds: list[int], checks: dict) -> None:
     rep.kv("  rows cut", first["rows_cut"])
     rep.kv("  longest row", first["longest"])
     rep.kv("seed N sets", "LoRA A's init and the shuffle order")
-    rep.note("Real N and control N share both: the pair. The real set has no")
-    rep.note("randomness; control set N was drawn by sft-data with seed N.")
+    if pair:
+        rep.note("Real N and control N share both: the pair. The real set has no")
+        rep.note("randomness; control set N was drawn by sft-data with seed N.")
+    else:
+        rep.note("The real set has no randomness.")
     rep.blank()
     rows = []
-    for arm in T.ARMS:
+    for arm in m.arms:
         t = used[run_label(arm, seeds[0])]
         rows.append([f"{arm}, seed {seeds[0]}", t["tokens"], t["scored"], t["tokens"] - t["scored"],
                      t["padded_tokens"]])
@@ -1906,7 +1963,8 @@ def _r4c(rep, m: Mode, trains: dict, seeds: list[int], checks: dict) -> None:
         if tpl:
             files = tpl["files"]
             rep.kv("  template: rows identical", f"{sum(v['identical'] for v in files.values())} "
-                   f"of {sum(v['rows'] for v in files.values())} ({len(files)} files)")
+                   f"of {sum(v['rows'] for v in files.values())} ({len(files)} "
+                   f"file{'s' if len(files) != 1 else ''})")
             rep.note(f"    {tpl['model'].split('/')[-1]} vs sft-data's rendering with")
             rep.note(f"    {tpl['rendered_with'].split('/')[-1]}")
         if ln:

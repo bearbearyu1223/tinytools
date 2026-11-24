@@ -555,18 +555,21 @@ def test_the_base_experiment_fetches_the_base_arm_only():
         assert not any(Path(f).match(p) for p in e.fetch), f
 
 
-def test_the_base_experiment_stays_within_both_caps_with_the_ledger():
+def test_the_base_experiment_held_its_cap_in_the_ledger():
+    """Before launch this checked that the worst case fit what was left; the base run is
+    in the ledger now, so it checks what was recorded: the experiment's spend within its
+    cap, the post's within its $50, and the worst case of one launch within the cap."""
     e = _base()
     ledger = lr.read_ledger(ROOT / "runs" / "ledger.csv")
     types = {"gpu_1x_a100_sxm4": {"instance_type": {"price_cents_per_hour": 199},
                                   "regions_with_capacity_available": [{"name": "us-east-1"}]}}
     est = lr.make_estimate(e, types, ledger)
     assert est.worst == math.ceil(1.99 * e.max_hours * 100) / 100 <= 12.0
-    # what "base" has spent so far (attempt 1, stopped: $1.52) plus the worst case fits its cap
-    assert est.spent == pytest.approx(sum(float(r["cost_usd"]) for r in ledger
-                                          if r["experiment"] == "base")) and est.post == 9
-    assert est.spent + est.worst <= e.cap_usd
+    runs = [r for r in ledger if r["experiment"] == "base"]
+    assert runs and est.post == 9
+    assert est.spent == pytest.approx(sum(float(r["cost_usd"]) for r in runs))
+    assert est.spent <= e.cap_usd
     assert est.post_spent == pytest.approx(sum(float(r["cost_usd"]) for r in ledger
                                                if r["post"] == "9"))
-    assert est.within_cap and est.expected <= est.worst
+    assert est.post_spent <= lr.POST_CAP_USD
     assert e.expected_hours < e.max_hours

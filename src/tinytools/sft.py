@@ -95,6 +95,41 @@ R_NO_CALL_0 = "no call, empty tool list"
 R_OUT = "1 tool, with a call (left out)"
 ROW_TYPES = (R_CALL, R_NO_CALL_2, R_NO_CALL_1, R_NO_CALL_0, R_OUT)
 
+# Variants of the real set (``sft-data --variant NAME``): the real set with the training rows
+# of some types left out, everything else (truncation, drops, rendering) unchanged. Written
+# to ``data/sft/real-NAME.jsonl`` beside the four sets, which a variant never touches.
+# onetool (plan 3g, Han 2026-11-24): every one-tool training row is a no-call row (the
+# one-tool rows with a call are R_OUT), so the variant trains no one-tool row at all.
+VARIANTS = {"onetool": (R_NO_CALL_1,)}
+VARIANT_NOTE = {"onetool": "left out, plan 3g"}
+# sha256 of each variant's file as sft-data --variant made it on the Mac (outputs/
+# sft-data-onetool.txt); sft-check --profile onetool fails unless the file is these bytes.
+VARIANT_SHA256 = {
+    "real-onetool.jsonl": "e47adb4268367946724bc672a29df37cdb683bb7e3c23839f5f1fc5751a4fc75",
+}
+
+
+def variant_file(name: str) -> str:
+    """The real set's file for a variant (``real-onetool.jsonl``)."""
+    if name not in VARIANTS:
+        raise ValueError(f"unknown variant {name!r}; one of {sorted(VARIANTS)}")
+    return f"real-{name}.jsonl"
+
+
+def without_rows(jsonl: bytes, leave_out: tuple[str, ...]) -> tuple[bytes, int]:
+    """A set's bytes with the records of the ``leave_out`` row types removed, line by line
+    (the kept lines byte for byte), and how many were removed. Pure."""
+    kept, removed = [], 0
+    for line in jsonl.split(b"\n"):
+        if not line:
+            continue
+        r = json.loads(line)
+        if row_type(r["n_tools"], r["messages"]) in leave_out:
+            removed += 1
+        else:
+            kept.append(line + b"\n")
+    return b"".join(kept), removed
+
 
 # -- truncation -----------------------------------------------------------------
 
@@ -540,6 +575,7 @@ class Sets:
     rows_trained: Counter
     rows_dropped: Counter  # by ROW_TYPES: rows of a training type dropped (drop_reason)
     dropped: dict[str, list[str]]  # by DROP_REASONS: the row ids
+    rows_left_out: Counter = field(default_factory=Counter)  # by ROW_TYPES: a variant's
 
 
 STRUCTURE = ("rows", "assistant_turns", "call_turns", "parallel_turns", "calls",
@@ -556,11 +592,14 @@ def unwrap(record: dict) -> list[dict]:
 
 
 def build_sets(converted: list[dict], seeds: tuple[int, ...], tokenizer,
-               on_item: Callable[[int], None] = lambda done: None) -> Sets:
+               on_item: Callable[[int], None] = lambda done: None,
+               leave_out: tuple[str, ...] = ()) -> Sets:
     """Truncate every converted row, keep the training rows (real arm), make each seed's twins.
 
     Rows with no call go into every control unchanged (the real record, plus an empty
-    ``random_calls``); rows with a call are drawn again per seed.
+    ``random_calls``); rows with a call are drawn again per seed. ``leave_out``: training
+    row types a variant leaves out (:data:`VARIANTS`), after the drop check, so the drops
+    are the full set's; counted in ``rows_left_out``.
     """
     pool = Pool.build(converted)
     s = Sets([], {seed: ControlSet(seed) for seed in seeds}, Shape(), Shape(), Shape(),
@@ -582,6 +621,8 @@ def build_sets(converted: list[dict], seeds: tuple[int, ...], tokenizer,
         if reason is not None:
             s.rows_dropped[kind] += 1
             s.dropped[reason].append(rec["id"])
+        elif kind in leave_out:
+            s.rows_left_out[kind] += 1
         elif kind != R_OUT:
             s.rows_trained[kind] += 1
             s.cut_train.add(before, after, *cut)
