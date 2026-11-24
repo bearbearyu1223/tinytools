@@ -601,3 +601,16 @@ def test_funnel_from_the_committed_captures(tmp_path):
     for theme in F.THEMES:
         with F.styled(theme):
             F.figure_toolace_funnel(theme, fn, out=tmp_path)
+
+
+def test_fan_keeps_every_neighbour_apart_and_inside():
+    for xs in ([0.0, 0.01, 0.6], [0.0, 0.3, 0.6, 0.9], [1.0, 1.0, 1.0], [0.0, 2.0]):
+        out = F.fan(xs, 0.5)
+        assert all(b - a >= 0.5 - 1e-9 for a, b in zip(out, out[1:], strict=False)), (xs, out)
+    assert F.fan([0.0, 2.0], 0.5) == [0.0, 2.0]  # far apart: each over its marker
+    out = F.fan([0.0, 0.05], 0.5, lo=0.0)  # pushed back inside, the gap kept
+    assert out[0] == 0.0 and out[1] >= 0.5
+    out = F.fan([3.0, 3.0], 0.5, hi=3.0)
+    assert out[1] == 3.0 and out[0] <= 2.5
+    with pytest.raises(ValueError):
+        F.fan([0.0, 0.0, 0.0], 0.5, lo=0.0, hi=0.6)

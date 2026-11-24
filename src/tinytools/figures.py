@@ -1532,7 +1532,8 @@ def figure_toolace_funnel(theme: Theme, fn: Funnel, out: Path | None = None) -> 
         if above:
             gap = max(text_width(fig, t) for t, _ in above) + 0.1
             ya = y + bar_h / 2 + 0.17
-            for (t, mid), xl in zip(above, fan([m for _, m in above], gap), strict=True):
+            for (t, mid), xl in zip(above, fan([m for _, m in above], gap, x0, W - 0.2),
+                                    strict=True):
                 t.set_position((xl, ya))
                 t.set_color(sec)
                 t.set_bbox(None)
@@ -2407,20 +2408,46 @@ def r5a_right_totals(text: str, seeds: int) -> dict[str, dict[str, int]]:
 LABEL_GAP = 0.5  # inches between the centres of two value labels in a row
 
 
-def fan(xs: list[float], gap: float) -> list[float]:
-    """Label centres for markers at ``xs`` (ascending): each run of markers closer than
-    ``gap`` gets labels ``gap`` apart, centred on the run, order kept."""
-    out: list[float] = []
-    runs: list[list[float]] = []
-    for x in xs:
-        if runs and x - runs[-1][-1] < gap:
-            runs[-1].append(x)
-        else:
-            runs.append([x])
-    for run in runs:
+def fan(xs: list[float], gap: float, lo: float | None = None,
+        hi: float | None = None) -> list[float]:
+    """Label centres for markers at ``xs`` (ascending), in the markers' order, every two
+    neighbours at least ``gap`` apart, and inside ``[lo, hi]`` when given.
+
+    Labels that would come closer than ``gap`` form a run, spaced ``gap`` apart and
+    centred on the run's markers (the midpoint of its first and last); runs that then
+    come too close merge, until none do. A layout pushed past ``lo`` or ``hi`` is shifted
+    back in, pushing its neighbours along to keep the gap."""
+    if any(b < a for a, b in zip(xs, xs[1:], strict=False)):
+        raise ValueError("fan: markers out of order")
+    runs: list[list[float]] = [[x] for x in xs]
+
+    def placed(run: list[float]) -> list[float]:
         mid = (run[0] + run[-1]) / 2
-        out += [mid + gap * (i - (len(run) - 1) / 2) for i in range(len(run))]
+        return [mid + gap * (i - (len(run) - 1) / 2) for i in range(len(run))]
+
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(runs) - 1):
+            if placed(runs[i + 1])[0] - placed(runs[i])[-1] < gap - 1e-12:
+                runs[i:i + 2] = [runs[i] + runs[i + 1]]
+                merged = True
+                break
+    out = [x for run in runs for x in placed(run)]
+    if lo is not None and hi is not None and hi - lo < gap * (len(out) - 1):
+        raise ValueError(f"fan: {len(out)} labels {gap} apart don't fit in [{lo}, {hi}]")
+    if lo is not None and out and out[0] < lo:
+        out[0] = lo
+        for i in range(1, len(out)):
+            out[i] = max(out[i], out[i - 1] + gap)
+    if hi is not None and out and out[-1] > hi:
+        out[-1] = hi
+        for i in range(len(out) - 2, -1, -1):
+            out[i] = min(out[i], out[i + 1] - gap)
     return out
+
+
+LABEL_EDGE = 0.2  # inches: a value label's centre stays this far inside the share axis
 
 
 def share_value(cell: str) -> float:
@@ -2499,7 +2526,7 @@ def figure_rerun(theme: Theme, rr: Rerun, out: Path | None = None) -> Path:
             # of markers closer than a label's width fan out, with a leader to the marker
             colour = {"untrained": sec, "main real": blue, "onetool": blue}
             order = sorted(ONETOOL_ARMS, key=lambda k: (v[k], ONETOOL_ARMS.index(k)))
-            lx_ = fan([X(v[k]) for k in order], LABEL_GAP)
+            lx_ = fan([X(v[k]) for k in order], LABEL_GAP, x0 + LABEL_EDGE, x1 - LABEL_EDGE)
             for k, xl in zip(order, lx_, strict=True):
                 ax.text(xl, y + 0.27, f"{v[k]:.1f}", ha="center", va="center", fontsize=9.2,
                         family=MONO, color=colour[k], zorder=6)
