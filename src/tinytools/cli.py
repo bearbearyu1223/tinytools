@@ -11,6 +11,7 @@ Commands (``tinytools <command> --help`` for each one's flags):
     score           score a model on our tool tasks, outcome by outcome; or sample 8
     rescore         re-check a score replies file with the current checkers (no model)
     bfcl-rescore    re-judge a bfcl-score replies file with bfcl's checker (no model)
+    prompt-view     r1's prompt laid out part by part, its tokens by part, its tool
     sft-data        the SFT sets: ToolACE truncated (real), random-call per seed (control)
     figures         the post's figures, parsed from the captures, into figures/
     milestone0      six models on the dev split, the model rule's verdict, LoRA vs full timing
@@ -1168,6 +1169,143 @@ def _r1(rep: Report, tok, task: dict, raw: str, prompt_path: Path | None = None)
            f"{'yes' if c.execution else 'no'}")
 
 
+# -- prompt-view: r1's prompt, readable -----------------------------------------------
+
+
+def _prompt_view_path(task_id: str, r1_id: str) -> Path:
+    return OUTPUTS / ("r1-prompt-view.txt" if task_id == r1_id
+                      else f"prompt-view-{task_id}.txt")
+
+
+def _wrapped_note(rep: Report, text: str) -> None:
+    from .promptview import wrap
+
+    for line in wrap(text, WIDTH - 2):
+        rep.note(line)
+
+
+def cmd_prompt_view(args) -> None:
+    """A readable layout of one task's templated prompt: its parts, their tokens, its tool."""
+    _quiet_hf()
+    from . import ours, promptview, tasks
+    from .train import MODEL, load_tokenizer
+
+    splits = _load_or_make_tasks(tasks.DEFAULT_SEED)
+    test = splits["test"]
+    r1_id = ours.r1_task(test)["id"]
+    task_id = args.task or r1_id
+    task = next((t for t in test if t["id"] == task_id), None)
+    if task is None:
+        sys.exit(f"{task_id}: not a test task")
+    tok = load_tokenizer(args.model)
+    text = ours.prompt(tok, task)
+    exact: Path | None = OUTPUTS / "r1-prompt.txt"
+    if task_id == r1_id and args.model == MODEL:  # the view must be of that very text
+        if not exact.exists() or exact.read_text() != text:
+            sys.exit(f"{exact.relative_to(ROOT)} is missing or differs from the prompt "
+                     f"rendered now; rerun rescore on the main run's replies first")
+    else:
+        exact = None
+
+    segs = promptview.split_prompt(text)  # raises unless the parts join back to `text`
+    enc = tok(text, add_special_tokens=False, return_offsets_mapping=True)
+    offsets = [tuple(o) for o in enc["offset_mapping"]]
+    counts = promptview.part_tokens(text, offsets)  # raises unless the rows sum to the total
+    census = ours.prompt_census(tok, text)  # r1a's numbers: the view must agree with them
+    if ((counts.total, counts.tool_list, counts.parts["tools"] + counts.parts["format"],
+         counts.across_list_end + counts.across_parts)
+            != (census.tokens, census.tool_list_tokens, census.tools_section_tokens,
+                census.straddling)):
+        sys.exit("the part counts disagree with r1a's census")
+    found = promptview.tools_in(text)
+    names = [t["function"]["name"] for t in found]
+    if task["tool"] not in names:
+        sys.exit(f"{task['tool']} is not in the prompt's tool list")
+    la, lb = promptview.tool_list_span(text)
+
+    rep = Report(f"tinytools prompt-view ({task_id})", out=_prompt_view_path(task_id, r1_id))
+    # No hardware block: nothing here runs a model, so the capture is the same anywhere.
+    rep.print("=" * WIDTH)
+    rep.print(rep.title)
+    rep.print("=" * WIDTH)
+    where = exact.relative_to(ROOT) if exact else "the score capture's r1 block"
+    _wrapped_note(rep, f"A readable layout of the exact prompt, which is in {where}.")
+    rep.blank()
+    rep.kv("task", f"{task_id} ({task['kind']}, {task['tool']})", wrap=True)
+    rep.kv("tokenizer and chat template", args.model)
+    if exact is not None:
+        rep.kv(f"rendered now = {exact.name}", True)
+    rep.kv("parts joined back = the prompt", True)
+
+    ind = " " * 6
+    rep.section("The prompt, part by part")
+    _wrapped_note(rep, "Each part under a label. [system], [user] and [assistant] stand in "
+                       "for the turn markers (<|im_start|> and the role; <|im_end|>); "
+                       "[tools] and [format] are the template's text inside the system "
+                       "turn. Long lines are wrapped at spaces.")
+    for s in segs:
+        if s.kind != "part":
+            continue
+        rep.blank()
+        rep.note(f"[{s.name}]")
+        if s.name == "tools":
+            for line in promptview.wrap(text[s.start:la].rstrip("\n"), WIDTH - len(ind)):
+                rep.print((ind + line).rstrip())
+            lines = text[la:lb].split("\n")
+            rep.print(ind + lines[0])
+            for k, name in enumerate(names, start=1):
+                tail = " (in full below)" if name == task["tool"] else ""
+                rep.print(f"{ind}  line {k} of {len(names)}: the JSON of {name}{tail}")
+            rep.print(ind + lines[-1])
+        elif s.text == "":
+            rep.print(f"{ind}(empty: the model writes its reply from here)")
+        else:
+            for line in promptview.wrap(s.text.rstrip("\n"), WIDTH - len(ind)):
+                rep.print((ind + line).rstrip())
+
+    rep.section("The prompt's tokens, part by part")
+    rows: list[tuple[str, object]] = [("turn markers", counts.markers)]
+    for name in promptview.PARTS:
+        rows.append((f"[{name}]", counts.parts[name]))
+        if name == "tools":
+            rows += [("  the preamble before the list", counts.preamble),
+                     ("  the tool list itself", counts.tool_list),
+                     ("  a token across the list's end", counts.across_list_end),
+                     ("  the blank line after the list", counts.after_list)]
+    rows.append(("tokens across a part's edge", counts.across_parts))
+    rows.append(("prompt tokens (indented rows aside)", counts.rows_sum()))
+    rep.table(["part", "tokens"], rows)
+    rep.blank()
+    across = [text[a:b] for a, b in offsets if a < lb < b]
+    joined = (f" The token across the list's end is {across[0]!r}: the closing '>' of "
+              "</tools> joined to the blank line after it." if across else "")
+    _wrapped_note(rep, "Qwen2.5's tokenizer on the whole prompt; each token is counted in the "
+                       "part it lies in. A part runs up to the next marker or part, so the "
+                       "newlines the template puts between parts count with the part before "
+                       "them. Turn markers: <|im_start|>, the role and its newline; "
+                       "<|im_end|> and its newline. The indented rows split [tools]."
+                       + joined)
+    rep.blank()
+    _wrapped_note(rep, f"In r1's terms: the tool list is the {census.tool_list_tokens}; "
+                       f"[tools] + [format] = {census.tools_section_tokens}, the whole tools "
+                       f"section; the token across the list's end is r1's "
+                       f"{census.straddling} straddling token.")
+
+    tool = found[names.index(task["tool"])]
+    fn = tool["function"]
+    rep.section(f"The task's tool, laid out: {fn['name']}")
+    rep.kv("name", fn["name"], width=12)
+    rep.kv("description", fn.get("description", ""), width=12, wrap=True)
+    rep.blank()
+    for line in promptview.param_table(promptview.params(tool), WIDTH - 2):
+        rep.note(line)
+    rep.blank()
+    src = exact.relative_to(ROOT) if exact else "the prompt"
+    _wrapped_note(rep, "Parsed from the tool's JSON inside the prompt. The model reads it as "
+                       f"one line of JSON, exactly as in {src}.")
+    rep.close()
+
+
 # -- the SFT training sets -----------------------------------------------------------
 
 SFT_DIR = DATA / "sft"
@@ -1668,6 +1806,13 @@ def build_parser() -> argparse.ArgumentParser:
                         "r1 uses the Instruct chat template the arm ran with and writes "
                         "outputs/base/r1-prompt.txt")
     s.set_defaults(fn=cmd_rescore)
+
+    s = sub.add_parser("prompt-view", help="a readable layout of r1's prompt: parts, tokens, "
+                       "its tool (no model)")
+    s.add_argument("--task", default=None, help="a test task id (default: r1's, test-0013)")
+    s.add_argument("--model", default="Qwen/Qwen2.5-1.5B-Instruct",
+                   help="whose tokenizer and chat template (default: the post's model)")
+    s.set_defaults(fn=cmd_prompt_view)
 
     s = sub.add_parser("sft-data", help="the SFT sets: real (truncated), random-call per seed")
     s.add_argument("--seeds", default="1,2,3",

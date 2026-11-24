@@ -1,0 +1,97 @@
+==========================================================================
+tinytools prompt-view (test-0013)
+==========================================================================
+  A readable layout of the exact prompt, which is in
+  outputs/r1-prompt.txt.
+
+  task                               test-0013 (tricky arguments,
+                                     create_calendar_event)
+  tokenizer and chat template        Qwen/Qwen2.5-1.5B-Instruct
+  rendered now = r1-prompt.txt       yes
+  parts joined back = the prompt     yes
+
+--------------------------------------------------------------------------
+The prompt, part by part
+--------------------------------------------------------------------------
+  Each part under a label. [system], [user] and [assistant] stand in for
+  the turn markers (<|im_start|> and the role; <|im_end|>); [tools] and
+  [format] are the template's text inside the system turn. Long lines are
+  wrapped at spaces.
+
+  [system]
+      You are Qwen, created by Alibaba Cloud. You are a helpful assistant.
+      The current time is 2026-03-11 09:30, Wednesday.
+
+  [tools]
+      # Tools
+
+      You may call one or more functions to assist with the user query.
+
+      You are provided with function signatures within <tools></tools> XML
+      tags:
+      <tools>
+        line 1 of 3: the JSON of get_calendar_event
+        line 2 of 3: the JSON of calculator
+        line 3 of 3: the JSON of create_calendar_event (in full below)
+      </tools>
+
+  [format]
+      For each function call, return a json object with function name and
+      arguments within <tool_call></tool_call> XML tags:
+      <tool_call>
+      {"name": <function-name>, "arguments": <args-json-object>}
+      </tool_call>
+
+  [user]
+      Add "Coffee chat" to my calendar on the 4th of next month at 2:30pm
+      for three hours.
+
+  [assistant]
+      (empty: the model writes its reply from here)
+
+--------------------------------------------------------------------------
+The prompt's tokens, part by part
+--------------------------------------------------------------------------
+  part                                 tokens
+  ---------------------------------------------
+  turn markers                             13
+  [system]                                 40
+  [tools]                                 421
+    the preamble before the list           32
+    the tool list itself                  388
+    a token across the list's end           1
+    the blank line after the list           0
+  [format]                                 39
+  [user]                                   27
+  [assistant]                               0
+  tokens across a part's edge               0
+  prompt tokens (indented rows aside)     540
+
+  Qwen2.5's tokenizer on the whole prompt; each token is counted in the
+  part it lies in. A part runs up to the next marker or part, so the
+  newlines the template puts between parts count with the part before
+  them. Turn markers: <|im_start|>, the role and its newline; <|im_end|>
+  and its newline. The indented rows split [tools]. The token across the
+  list's end is '>\n\n': the closing '>' of </tools> joined to the blank
+  line after it.
+
+  In r1's terms: the tool list is the 388; [tools] + [format] = 460, the
+  whole tools section; the token across the list's end is r1's 1
+  straddling token.
+
+--------------------------------------------------------------------------
+The task's tool, laid out: create_calendar_event
+--------------------------------------------------------------------------
+  name         create_calendar_event
+  description  Add an event to the user's calendar.
+
+  parameter         type          required  description
+  ------------------------------------------------------------------------
+  title             string        yes       The event's title.
+  date              string        yes       The day, as YYYY-MM-DD.
+  start_time        string        yes       Start time, 24-hour HH:MM.
+  duration_minutes  integer       no        Length in minutes. Default 60.
+  attendees         string array  no        Names of the people invited.
+
+  Parsed from the tool's JSON inside the prompt. The model reads it as one
+  line of JSON, exactly as in outputs/r1-prompt.txt.
