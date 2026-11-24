@@ -188,7 +188,6 @@ Right, per arm and category (r5a)
   control - untrained, paired by task (control: mean of 3 seeds):
   category      untrained  control    seed range    gain      95% interval
   ------------------------------------------------------------------------
-    --
   choose+fill        0.0%     0.1%      0.0-0.2%    +0.1       [0.0, +0.2]
   tricky args        0.0%     0.0%      0.0-0.0%     0.0        [0.0, 0.0]
   no tool fits     100.0%     0.0%      0.0-0.0%  -100.0  [-100.0, -100.0]

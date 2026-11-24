@@ -137,7 +137,9 @@ class Report:
             return "  ".join(out).rstrip()
 
         self.print(line(list(headers)))
-        self.print("  " + "-" * (sum(widths) + 2 * len(widths)))
+        # The rule runs 2 columns past the rows (kept: narrower tables' captures stay byte
+        # for byte), capped so its line never passes WIDTH and folds (round-3 review).
+        self.print("  " + "-" * min(sum(widths) + 2 * len(widths), WIDTH - 2))
         for row in rendered:
             self.print(line(row))
 

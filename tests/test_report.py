@@ -66,3 +66,21 @@ def test_the_rescore_copies_print_within_the_width_with_the_real_names(capsys):
                               Path(f"score-{name}-train-sample-samples8-t1-limitall-replies.jsonl")])
     joined = "".join(x.strip() for x in capsys.readouterr().out.splitlines())
     assert "train-sample-samples8-t1-limitall-replies.jsonl" in joined
+
+
+def test_a_full_width_table_keeps_its_rule_within_the_width(tmp_path):
+    # Rows exactly WIDTH wide: the rule used to be WIDTH + 2 and fold into a stray "    --"
+    # line (round-3 review). Under the strict env a fold would raise, so this also proves none.
+    head = ["name", "a", "b"]
+    rows = [["x" * (WIDTH - 2 - 4 - 2 * 2 - 4 - 4) + "abcd", "1234", "5678"]]
+    lines = _lines(tmp_path, lambda rep: rep.table(head, rows))
+    assert max(len(x) for x in lines) == WIDTH  # the row fills the width
+    rule = lines[1]
+    assert set(rule.strip()) == {"-"} and len(rule) <= WIDTH
+    assert len(lines) == 3  # header, rule, row: nothing folded
+
+
+def test_a_narrow_table_keeps_its_two_column_overhang(tmp_path):
+    # Tables that never folded print exactly as before (captures stay byte-identical).
+    lines = _lines(tmp_path, lambda rep: rep.table(["name", "n"], [["ab", 12]]))
+    assert lines[1] == "  " + "-" * (4 + 2 + 2 * 2)

@@ -1,6 +1,6 @@
 """Figures for post 9 (teaching a small model to call tools).
 
-Seven figures, in the post's order:
+Nine figures, in the post's order:
 
 * ``tool-call-round-trip`` (section 1, :func:`figure_round_trip`): one call's
   round trip. A program renders the tool list and the request into the
@@ -26,6 +26,13 @@ Seven figures, in the post's order:
 * ``group-movements`` (section 6, :func:`figure_movements`): r6a's movements on
   the tasks that need a call, the noise floor beside SFT and the control, and
   each arm's difference from the floor. From ``outputs/sft.txt``.
+* ``base-vs-instruct`` (section 5, :func:`figure_base_vs_instruct`): each model
+  untrained to SFT on the post's eight rows, from r5b and r5d of both reports.
+* ``onetool-rerun`` (section 5, :func:`figure_rerun`): right on BFCL by category
+  for the untrained model, the main run and the rerun without the one-tool
+  no-call rows, with each arm's no-call share. From ``sft-onetool.txt`` (its
+  per-category counts), ``sft-data-onetool.txt`` (the rows left out) and
+  ``sft.txt`` (r5a's per-seed counts, checked against the main run's).
 
 None of them runs a model. Every number and every name they draw is parsed
 from a capture under ``outputs/``, the same text the post's receipts are pasted
@@ -111,6 +118,37 @@ def report_model(text: str) -> str:
 
 def has_section(text: str, title: str) -> bool:
     return any(t == title for t, _ in sections(text))
+
+
+NUMBER_WORDS = ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+                "nine", "ten")
+
+
+def number_word(k: int) -> str:
+    """``k`` as a word (zero to ten), as a sentence in a figure says it."""
+    if not 0 <= k < len(NUMBER_WORDS):
+        raise CaptureError(f"no word for {k}")
+    return NUMBER_WORDS[k]
+
+
+def seed_list(value: str, what: str) -> list[int]:
+    """A printed seed list (``1, 2, 3``) as ints."""
+    return [int(x) for x in match(r"\d+(?:, \d+)*", value, what).group(0).split(", ")]
+
+
+def seed_count(text: str) -> int:
+    """How many seeds an sft-report's arms are means of: its Setup's ``seeds with a whole
+    pair`` line."""
+    label = "seeds with a whole pair"
+    return len(seed_list(kv(section(text, "Setup"), label, "Setup"), f"Setup, {label}"))
+
+
+def same(values, what: str):
+    """The one value every panel shares; a CaptureError if they differ."""
+    got = set(values)
+    if len(got) != 1:
+        raise CaptureError(f"the panels differ in {what}: {sorted(got)}")
+    return got.pop()
 
 
 def kv(lines: list[str], label: str, where: str) -> str:
@@ -265,6 +303,7 @@ class RoundTrip:
     tool: str
     prompt: str
     prompt_tokens: int
+    prompt_exact: str  # r1-prompt.txt as written (``prompt`` is it without the final newline)
     tool_list_tokens: int
     reply: str
     call: tuple[str, dict]
@@ -316,6 +355,7 @@ def parse_round_trip(text: str, prompt_file: str) -> RoundTrip:
         raise CaptureError("the fed-back turn has no <tool_response>")
     return RoundTrip(task_id=m.group(1), kind=m.group(2), tool=m.group(3),
                      prompt=prompt_file.rstrip("\n"), prompt_tokens=tokens,
+                     prompt_exact=prompt_file,
                      tool_list_tokens=tool_list, reply=reply, call=call, call_text=call_text,
                      fed_back=fed, reference=call_of(ref, "reference call"),
                      outcome=kv(lines, "outcome", where), exact=ex.group(1) == "yes",
@@ -323,15 +363,24 @@ def parse_round_trip(text: str, prompt_file: str) -> RoundTrip:
 
 
 def prompt_excerpt(prompt: str, width: int) -> tuple[str, tuple[int, int], tuple[int, int]]:
+    """The prompt shortened to fit a card ``width`` characters wide (see
+    :func:`_excerpt`)."""
+    return _excerpt(prompt, width)[:3]
+
+
+def _excerpt(prompt: str, width: int):
     """The prompt shortened to fit a card ``width`` characters wide.
 
     Each tool's JSON line becomes ``{"type": "function", "function": {"name":
     "<name>", ...}}`` (its name parsed from the line); blank lines go; other
     long lines end in ``...``, except the user's request, which is kept whole
     (the caller wraps it). Returns the excerpt and the character spans of the
-    tool list (``<tools>`` to ``</tools>``) and of the request.
+    tool list (``<tools>`` to ``</tools>``) and of the request, and per kept line
+    ``(start, end)`` in the prompt and ``(start, end)`` in the excerpt.
     """
     lines = prompt.split("\n")
+    kept: list[tuple[tuple[int, int], tuple[int, int]]] = []
+    orig = 0
     try:
         a, b = lines.index("<tools>"), lines.index("</tools>")
         u = lines.index("<|im_start|>user")
@@ -343,6 +392,7 @@ def prompt_excerpt(prompt: str, width: int) -> tuple[str, tuple[int, int], tuple
     tools_start = tools_end = req_start = req_end = -1
     pos = 0
     for k, line in enumerate(lines):
+        o_start, orig = orig, orig + len(line) + 1
         if k == a:
             tools_start = pos
         if a < k < b:
@@ -360,10 +410,57 @@ def prompt_excerpt(prompt: str, width: int) -> tuple[str, tuple[int, int], tuple
         elif len(line) > width:
             line = line[:width - 3].rstrip() + "..."
         out.append(line)
+        kept.append(((o_start, o_start + len(lines[k])), (pos, pos + len(line))))
         pos += len(line) + 1
         if k == b:
             tools_end = pos - 1
-    return "\n".join(out), (tools_start, tools_end), (req_start, req_end)
+    return "\n".join(out), (tools_start, tools_end), (req_start, req_end), kept
+
+
+def part_spans(prompt: str, exact: str, width: int) -> list[tuple[str, tuple[int, int]]]:
+    """Each part of the prompt (``promptview.split_prompt``'s names, the readable view's)
+    as a character span of :func:`_excerpt`'s text: from the first to the last kept line
+    holding one of its characters. A part with no characters on a kept line (the empty
+    assistant turn) is left out. ``exact``: the prompt as the template wrote it, which
+    ``split_prompt`` cuts (``prompt`` is it, final newline stripped)."""
+    from .promptview import split_prompt
+
+    if exact.rstrip("\n") != prompt:
+        raise CaptureError("the exact prompt is not the excerpt's prompt")
+    kept = _excerpt(prompt, width)[3]
+    out = []
+    for seg in split_prompt(exact):
+        if seg.kind != "part":
+            continue
+        hit = [ex for (o0, o1), ex in kept if o1 > o0 and o0 < seg.end and o1 > seg.start
+               and prompt[max(o0, seg.start):min(o1, seg.end)].strip()]
+        if hit:
+            out.append((seg.name, (hit[0][0], hit[-1][1])))
+    return out
+
+
+PROMPT_VIEW_PARTS = "The prompt, part by part"
+PROMPT_VIEW_TOKENS = "The prompt's tokens, part by part"
+
+
+def check_prompt_view(view: str, rt: RoundTrip) -> None:
+    """``outputs/r1-prompt-view.txt`` against the figure: its part labels are
+    ``split_prompt``'s, in order, and its token table gives r1's prompt and tool-list
+    counts (the bar's two numbers)."""
+    from .promptview import PARTS, split_prompt
+
+    labels = [m.group(1) for x in section(view, PROMPT_VIEW_PARTS)
+              if (m := re.fullmatch(r"  \[(\w+)\]", x))]
+    names = [s.name for s in split_prompt(rt.prompt_exact) if s.kind == "part"]
+    if labels != names or tuple(names) != PARTS:
+        raise CaptureError(f"the prompt view's parts {labels}, the prompt's {names}")
+    rows = {r[0]: r[1] for r in table(section(view, PROMPT_VIEW_TOKENS), ["part", "tokens"],
+                                      "the prompt view's tokens")}
+    got = (to_int(rows.get("prompt tokens (indented rows aside)", ""), "view, prompt tokens"),
+           to_int(rows.get("the tool list itself", ""), "view, tool list tokens"))
+    if got != (rt.prompt_tokens, rt.tool_list_tokens):
+        raise CaptureError(f"the prompt view counts {got}, r1 "
+                           f"{(rt.prompt_tokens, rt.tool_list_tokens)}")
 
 
 # --------------------------------------------------------------------------
@@ -761,7 +858,7 @@ def figure_round_trip(theme: Theme, rt: RoundTrip, out: Path | None = None) -> P
 
     # -- 1: the prompt -----------------------------------------------------------
     inner = px1 - px0 - 0.36
-    label_w = 1.25
+    label_w = 1.6   # the gutter for two levels of brackets: parts, and the tool list
     chars = int((inner - label_w) / cw)
     excerpt, tools_span, req_span = prompt_excerpt(rt.prompt, chars)
     body_h = mono_height(excerpt, chars, size)
@@ -775,24 +872,43 @@ def figure_round_trip(theme: Theme, rt: RoundTrip, out: Path | None = None) -> P
          spans=[(tools_span[0], tools_span[1], TOOL_LIST_FILL),
                 (req_span[0], req_span[1], band)],
          bold_spans=False)
-    # side labels for the two highlighted spans, at their lines' middle
+    # the right gutter: each part of the prompt under a bracket with its name (the
+    # readable view's), and the tool list's own bracket nested inside [tools], nearer the
+    # text; turn-marker lines have none. Strokes and labels in the theme's text grey.
     lines = wrap_offsets(excerpt, chars)
 
-    def span_mid(span):
+    def rows_of(span):
         rows = [i for i, (off, line) in enumerate(lines)
                 if off < span[1] and off + len(line) > span[0]]
-        return y_text - (rows[0] + rows[-1] + 1) / 2 * lh, rows
+        return rows[0], rows[-1]
 
-    lx = px0 + 0.18 + chars * cw + 0.15
-    for span, words in ((tools_span, ["the tool list"]),
-                        (req_span, ["the request"])):
-        y, rows = span_mid(span)
-        y0 = y_text - rows[0] * lh - 0.03
-        y1 = y_text - (rows[-1] + 1) * lh + 0.03
-        ax.plot([lx, lx + 0.06, lx + 0.06, lx], [y0, y0, y1, y1], color=sec, lw=1.0, zorder=4)
+    def bracket(x, r0, r1):
+        y0 = y_text - r0 * lh - 0.03
+        y1 = y_text - (r1 + 1) * lh + 0.03
+        ax.plot([x, x + 0.06, x + 0.06, x], [y0, y0, y1, y1], color=sec, lw=1.0, zorder=4)
+
+    def label(x, y, words):
         for j, w in enumerate(words):
-            ax.text(lx + 0.14, y + (len(words) - 1) * 0.1 - j * 0.2, w, ha="left",
-                    va="center", fontsize=10, color=sec, zorder=5)
+            ax.text(x, y + (len(words) - 1) * 0.1 - j * 0.2, w, ha="left", va="center",
+                    fontsize=10, color=sec, zorder=5)
+
+    lx_in = px0 + 0.18 + chars * cw + 0.1     # the tool list's bracket
+    lx_out = lx_in + 0.14                     # the parts' brackets
+    lx_lab = lx_out + 0.16                    # every label
+    t0, t1 = rows_of(tools_span)
+    bracket(lx_in, t0, t1)
+    label(lx_lab, y_text - (t0 + t1 + 1) / 2 * lh, ["the tool list"])
+    for name, span in part_spans(rt.prompt, rt.prompt_exact, chars):
+        r0, r1 = rows_of(span)
+        bracket(lx_out, r0, r1)
+        if name == "tools":  # its name over the rows above the nested tool list
+            if t0 <= r0 or t1 > r1:
+                raise CaptureError("layout: the tool list is not inside [tools]")
+            label(lx_lab, y_text - (r0 + t0) / 2 * lh, [f"[{name}]"])
+        elif name == "user":
+            label(lx_lab, y_text - (r0 + r1 + 1) / 2 * lh, [f"[{name}]", "the request"])
+        else:
+            label(lx_lab, y_text - (r0 + r1 + 1) / 2 * lh, [f"[{name}]"])
 
     # token bars, one scale and one left edge: the whole prompt an outline, the tool list
     # a solid fill inside it (the same encoding in both themes)
@@ -1550,6 +1666,16 @@ def f5_blocks(blocks: list[EffectBlock]) -> list[EffectBlock]:
     return got
 
 
+def primary_summary(blocks: list[EffectBlock]) -> tuple[int, EffectBlock]:
+    """How many distinct primaries r5d names, and its block named ``right`` (a primary,
+    not one of F5's failure shares)."""
+    primaries = {b.primary for b in blocks if b.primary}
+    right = [b for b in blocks if b.name == "right"]
+    if len(right) != 1 or right[0].primary is None:
+        raise CaptureError(f"r5d: expected one primary block named 'right', found {len(right)}")
+    return len(primaries), right[0]
+
+
 def set_label(on: str) -> str:
     """r5d's ``on`` text, shortened for a row label."""
     return {"ours, tasks that need a call": "ours, a call is needed",
@@ -1585,9 +1711,11 @@ def figure_effects(theme: Theme, blocks: list[EffectBlock], model: str,
     ax.text(0.2, top - 0.05, "Each effect is the share of tasks with one failure outcome, so "
             "left of 0 is fewer failures. Bars: 95% intervals (paired bootstrap over tasks).",
             ha="left", va="center", fontsize=10, color=sec)
-    ax.text(0.2, top - 0.3, "primary N: one of the five comparisons fixed before the run "
-            "(4, BFCL right, is not a failure share and isn't shown).",
-            ha="left", va="center", fontsize=10, color=sec)
+    n_primary, right = primary_summary(blocks)
+    right_set = right.on.split(",")[0].split()[0]  # "BFCL call items, pooled" -> "BFCL"
+    ax.text(0.2, top - 0.3, f"primary N: one of the {number_word(n_primary)} comparisons fixed "
+            f"before the run ({right.primary}, {right_set} {right.name}, is not a failure share "
+            "and isn't shown).", ha="left", va="center", fontsize=10, color=sec)
     # legend
     lx = x0
     ly = top - 0.7
@@ -1677,6 +1805,26 @@ class Movement:
 class Movements:
     n: int
     rows: tuple[Movement, ...]
+    seeds: int          # SFT and the control: means of this many seeds (Setup)
+    samples: int        # answers per task (r6a's samples line)
+    temperature: str    # as printed, e.g. "1"
+
+
+R6A_SETUP_TITLE = r"Groups of (\d+) on .* \(r6a\)"
+
+
+def r6a_sampling(text: str) -> tuple[int, str]:
+    """r6a's ``samples`` line (``8 per task at T=1, seed 0``): the group size and the
+    temperature as printed; the section title's group size must agree."""
+    hits = section_matching(text, R6A_SETUP_TITLE)
+    if len(hits) != 1:
+        raise CaptureError(f"expected one r6a setup section, found {len(hits)}")
+    m, body = hits[0]
+    s = match(r"(\d+) per task at T=(\d+(?:\.\d+)?), seed \d+", kv(body, "samples", "r6a"),
+              "r6a, samples")
+    if s.group(1) != m.group(1):
+        raise CaptureError(f"r6a: groups of {m.group(1)} but {s.group(1)} samples per task")
+    return int(s.group(1)), s.group(2)
 
 
 def _pct(cell: str, what: str) -> float:
@@ -1721,7 +1869,7 @@ def parse_movements(text: str) -> Movements:
         raise CaptureError(f"r6a movements {list(floor)}, expected {list(MOVEMENTS)}")
     return Movements(n, tuple(
         Movement(m, *floor[m], arms["SFT"][m][0], arms["SFT"][m][1], arms["control"][m][0],
-                 arms["control"][m][1]) for m in MOVEMENTS))
+                 arms["control"][m][1]) for m in MOVEMENTS), seed_count(text), *r6a_sampling(text))
 
 
 def largest_beyond(mv: Movements, arm: str = "sft") -> Movement:
@@ -1757,6 +1905,9 @@ def figure_movements(theme: Theme, panels: list[tuple[str, Movements]],
     if len(ns) != 1:
         raise CaptureError(f"the panels count different tasks: {sorted(ns)}")
     n = ns.pop()
+    seeds = same((mv.seeds for _, mv in panels), "seed count")
+    samples = same((mv.samples for _, mv in panels), "samples per task")
+    temperature = same((mv.temperature for _, mv in panels), "temperature")
     W = 12.8
     fig, ax = canvas(W, 14.0)
     x0, x1 = 3.0, 7.9
@@ -1771,12 +1922,13 @@ def figure_movements(theme: Theme, panels: list[tuple[str, Movements]],
     ax.text(0.2, top + 0.35, f"Where the {n} tasks that need a call move, from the untrained "
             "model's group to the trained model's", ha="left", va="center", fontsize=13.5,
             fontweight="bold", color=ink)
-    ax.text(0.2, top, "Groups of 8 answers at T = 1: all wrong, mixed, all right. "
+    ax.text(0.2, top, f"Groups of {samples} answers at T = {temperature}: all wrong, mixed, "
+            "all right. "
             "The noise floor is the untrained model sampled again, no training.",
             ha="left", va="center", fontsize=10, color=sec)
     bar_h, gap = 0.22, 0.04
-    arms = (("noise floor (sampled again)", grey), ("SFT, mean of 3 seeds", blue),
-            ("control, mean of 3 seeds", green))
+    arms = (("noise floor (sampled again)", grey), (f"SFT, mean of {seeds} seeds", blue),
+            (f"control, mean of {seeds} seeds", green))
     lx, ly = x0, top - 0.45
     for label, c in arms:
         ax.add_patch(Rectangle((lx, ly - 0.09), 0.3, 0.18, facecolor=c, edgecolor="none"))
@@ -1956,15 +2108,19 @@ def model_shifts(text: str) -> list[Shift]:
 
 
 def figure_base_vs_instruct(theme: Theme, panels: list[tuple[str, list[Shift]]],
-                            out: Path | None = None) -> Path:
+                            seeds: list[int], out: Path | None = None) -> Path:
     """Two dumbbell panels sharing one row order: per row, a hollow circle untrained, a
-    filled circle after SFT (mean of 3 seeds), an arrow between, both values printed."""
+    filled circle after SFT (the mean of its seeds), an arrow between, both values printed.
+    ``seeds``: each panel's seed count (:func:`seed_count`); they must agree."""
     ink, sec, muted = theme.ink, theme.secondary, theme.muted
     blue = theme.series[0]
     if len(panels) != 2 or [(s.group, s.label) for s in panels[0][1]] != [
             (s.group, s.label) for s in panels[1][1]]:
         raise CaptureError("base-vs-instruct needs two panels with the same rows")
     rows = panels[0][1]
+    if len(seeds) != len(panels):
+        raise CaptureError("base-vs-instruct: one seed count per panel")
+    n_seeds = same(seeds, "seed count")
     W = 12.8
     fig, ax = canvas(W, 9.0)
     label_x = 2.85                 # row labels end here
@@ -1979,7 +2135,7 @@ def figure_base_vs_instruct(theme: Theme, panels: list[tuple[str, list[Shift]]],
     ax.text(0.2, top + 0.3, "Where SFT takes each model, untrained to trained", ha="left",
             va="center", fontsize=13.5, fontweight="bold", color=ink)
     ax.text(0.2, top - 0.05, "Share of tasks with each outcome. Hollow circle: untrained; "
-            "filled: after SFT, mean of 3 seeds; the arrow is SFT's change.",
+            f"filled: after SFT, mean of {n_seeds} seeds; the arrow is SFT's change.",
             ha="left", va="center", fontsize=10, color=sec)
     y = top - 0.6
     for k, (title, _) in enumerate(panels):
@@ -2044,11 +2200,277 @@ def figure_base_vs_instruct(theme: Theme, panels: list[tuple[str, list[Shift]]],
 
 
 # --------------------------------------------------------------------------
+# F8: the one-tool rerun, right on BFCL by category (sft-report --profile onetool)
+# --------------------------------------------------------------------------
+
+ONETOOL_CAT_TITLE = "BFCL call items: outcomes per category"
+ONETOOL_CAT_HEADERS = ["category", "arm", "n", "right", "no call", "bad args", "wrong fn",
+                       "wrong n"]
+ONETOOL_ARMS = ("untrained", "main real", "onetool")
+# (group header, the categories under it); the capture's note says which offer one function
+ONETOOL_GROUPS = (("one function offered", ("simple", "parallel")),
+                  ("several functions offered", ("multiple", "par_multi")))
+CATEGORY_LABELS = dict(BFCL_CALL_ROWS)
+
+
+def aligned_cells(line: str, header: str, n_cols: int) -> list[str]:
+    """A ``Report.table`` row's cells by column, blanks kept: the first column is
+    left-aligned at column 2, the rest right-aligned to their header's end."""
+    ends = [m.end() for m in re.finditer(r"\S+(?: \S+)*", header)]
+    if len(ends) != n_cols:
+        raise CaptureError(f"header {header!r}: {len(ends)} columns, not {n_cols}")
+    cells = [""] * n_cols
+    for m in re.finditer(r"\S+(?: \S+)*", line):
+        if m.start() == 2:
+            cells[0] = m.group(0)
+        elif m.end() in ends[1:]:
+            cells[ends.index(m.end())] = m.group(0)
+        else:
+            raise CaptureError(f"{line!r}: {m.group(0)!r} is under no column")
+    return cells
+
+
+def exact_total(cell: str, k: int, what: str) -> int:
+    """The seed total behind a printed mean of ``k`` seeds (one decimal): the one
+    integer whose mean prints as ``cell``."""
+    mean = float(match(r"\d+\.\d", cell, what).group(0))
+    total = round(mean * k)
+    if f"{total / k:.1f}" != cell:
+        raise CaptureError(f"{what}: no total over {k} seeds has the mean {cell}")
+    return total
+
+
+@dataclass(frozen=True)
+class RerunRow:
+    category: str      # as the capture prints it
+    n: int
+    right: dict[str, str]    # arm -> share, as effects.percent prints it ("90.6%")
+    no_call: dict[str, str]
+    counts: dict[str, tuple[str, str]]  # arm -> (right, no call) as printed
+
+
+@dataclass(frozen=True)
+class Rerun:
+    model: str
+    seeds: int
+    left_out: int      # one-tool no-call rows left out of the training set
+    rows: tuple[RerunRow, ...]
+
+
+def parse_rerun(onetool: str, data: str, main: str | None = None) -> Rerun:
+    """The onetool report's per-category counts as shares of n. Untrained counts are
+    single runs; main real and onetool are means of their seeds, turned back into
+    exact seed totals so a share rounds as the reports round (``effects.percent``).
+    ``data``: the onetool sft-data capture (the left-out row count, checked against its
+    count of real.jsonl's rows of those types). ``main``: the main run's sft-report, if
+    given; its r5a per-seed right counts must give the same totals."""
+    from fractions import Fraction
+
+    from .effects import percent
+
+    setup = section(onetool, "Setup")
+    ks = {len(seed_list(kv(setup, label, "Setup"), label))
+          for label in ("onetool real, seeds", "  real, seeds")}
+    seeds = same(ks, "seed count (onetool real, main real)")
+    lines = section(onetool, ONETOOL_CAT_TITLE)
+    head = [i for i, x in enumerate(lines)
+            if re.split(r"\s{2,}", x.strip()) == ONETOOL_CAT_HEADERS]
+    if len(head) != 1 or not re.fullmatch(r"  -+", lines[head[0] + 1]):
+        raise CaptureError(f"{ONETOOL_CAT_TITLE}: no table headed {ONETOOL_CAT_HEADERS}")
+    cols = {h: i for i, h in enumerate(ONETOOL_CAT_HEADERS)}
+    by_cat: dict[str, dict] = {}
+    cat = None
+    for line in lines[head[0] + 2:]:
+        if not line.strip() or not re.fullmatch(r"  .*\d", line):
+            break
+        c = aligned_cells(line, lines[head[0]], len(ONETOOL_CAT_HEADERS))
+        if c[0]:
+            cat = c[0]
+            if cat in by_cat or c[1] != "untrained":
+                raise CaptureError(f"{ONETOOL_CAT_TITLE}: {cat!r} starts on {c[1]!r}")
+            by_cat[cat] = {"n": to_int(c[cols["n"]], f"{cat}, n"), "arms": {}}
+        elif cat is None or c[cols["n"]]:
+            raise CaptureError(f"{ONETOOL_CAT_TITLE}: unexpected row {line!r}")
+        by_cat[cat]["arms"][c[1]] = c
+    want = [c for _, cats in ONETOOL_GROUPS for c in cats]
+    if sorted(by_cat) != sorted(want):
+        raise CaptureError(f"{ONETOOL_CAT_TITLE}: categories {list(by_cat)}, expected {want}")
+    left = kv(section(data, "Which rows train"), "  left out (no call, 1 tool)",
+              "Which rows train")
+    check = kv(section(data, "Against data/sft/real.jsonl"), "  its rows of the left-out types",
+               "Against data/sft/real.jsonl")
+    if left != check:
+        raise CaptureError(f"sft-data: {left} rows left out, but real.jsonl has {check}")
+    main_right = r5a_right_totals(main, seeds) if main is not None else None
+    rows = []
+    for cat in want:
+        n, arms = by_cat[cat]["n"], by_cat[cat]["arms"]
+        if tuple(arms) != ONETOOL_ARMS:
+            raise CaptureError(f"{cat}: arms {list(arms)}, expected {list(ONETOOL_ARMS)}")
+        right, no_call, counts = {}, {}, {}
+        for arm, c in arms.items():
+            where = f"{cat}, {arm}"
+            outcome = c[cols["right"]:]
+            if arm == "untrained":
+                totals = [to_int(x, where) for x in outcome]
+                k = 1
+            else:
+                totals = [exact_total(x, seeds, where) for x in outcome]
+                k = seeds
+            if sum(totals) > k * n:
+                raise CaptureError(f"{where}: outcomes over n")
+            if main_right is not None and arm in main_right[cat]:
+                if main_right[cat][arm] != totals[0]:
+                    raise CaptureError(f"{where}: right totals {totals[0]}, the main report's "
+                                       f"r5a {main_right[cat][arm]}")
+            right[arm] = percent(Fraction(totals[0], k * n))
+            no_call[arm] = percent(Fraction(totals[1], k * n))
+            counts[arm] = (c[cols["right"]], c[cols["no call"]])
+        rows.append(RerunRow(cat, n, right, no_call, counts))
+    return Rerun(report_model(onetool), seeds, to_int(left, "left out"), tuple(rows))
+
+
+R5A_TITLE = "Right, per arm and category (r5a)"
+
+
+def r5a_right_totals(text: str, seeds: int) -> dict[str, dict[str, int]]:
+    """The main report's r5a per-seed right counts: per category, {"untrained": count,
+    "main real": the SFT seeds' total}."""
+    lines = section(text, R5A_TITLE)
+    head = (["category", "n", "untr"] + [f"SFT {s}" for s in range(1, seeds + 1)]
+            + [f"ctl {s}" for s in range(1, seeds + 1)])
+    out = {}
+    for r in table(lines, head, "r5a"):
+        out[r[0]] = {"untrained": to_int(r[2], f"r5a, {r[0]}"),
+                     "main real": sum(to_int(x, f"r5a, {r[0]}") for x in r[3:3 + seeds])}
+    return out
+
+
+LABEL_GAP = 0.5  # inches between the centres of two value labels in a row
+
+
+def fan(xs: list[float], gap: float) -> list[float]:
+    """Label centres for markers at ``xs`` (ascending): each run of markers closer than
+    ``gap`` gets labels ``gap`` apart, centred on the run, order kept."""
+    out: list[float] = []
+    runs: list[list[float]] = []
+    for x in xs:
+        if runs and x - runs[-1][-1] < gap:
+            runs[-1].append(x)
+        else:
+            runs.append([x])
+    for run in runs:
+        mid = (run[0] + run[-1]) / 2
+        out += [mid + gap * (i - (len(run) - 1) / 2) for i in range(len(run))]
+    return out
+
+
+def share_value(cell: str) -> float:
+    return float(cell.rstrip("%"))
+
+
+def figure_rerun(theme: Theme, rr: Rerun, out: Path | None = None) -> Path:
+    """One dumbbell panel: per BFCL category, right for the untrained model (hollow), the
+    main run's SFT (blue circle) and the rerun without the one-tool no-call rows (blue
+    diamond), an arrow from the main run to the rerun; a thin 'no call' column beside."""
+    ink, sec, muted = theme.ink, theme.secondary, theme.muted
+    blue = theme.series[0]
+    W = 12.8
+    fig, ax = canvas(W, 6.0)
+    label_x = 2.6
+    x0, x1 = label_x + 0.75, 9.45          # the share axis
+    nc_x = [10.3, 11.15, 12.0]             # the no-call column: one value per arm
+
+    def X(v):
+        return x0 + (x1 - x0) * v / 100
+
+    top = 5.6
+    ax.text(0.2, top + 0.3, "Leaving out the one-tool rows that don't call: right on BFCL, "
+            "by category", ha="left", va="center", fontsize=13.5, fontweight="bold", color=ink)
+    ax.text(0.2, top - 0.05, f"{rr.model}. Hollow: untrained; blue circle: SFT, main run; "
+            f"blue diamond: SFT without the {rr.left_out} one-tool no-call rows; each a mean "
+            f"of {rr.seeds} seeds.", ha="left", va="center", fontsize=10, color=sec)
+    # untrained hollow and drawn last, so its ring shows over an SFT marker it overlaps
+    styles = {"untrained": ("o", "none", sec), "main real": ("o", blue, blue),
+              "onetool": ("D", blue, blue)}
+    # legend
+    lx, ly = x0, top - 0.5
+    for arm, label in (("untrained", "untrained"), ("main real", "SFT, main run"),
+                       ("onetool", "SFT without the one-tool no-call rows")):
+        mk, fc, ec = styles[arm]
+        ax.plot(lx + 0.1, ly, marker=mk, ms=8 if mk == "o" else 7, mfc=fc, mec=ec, mew=1.5)
+        t = ax.text(lx + 0.28, ly, label, ha="left", va="center", fontsize=10.5, color=sec)
+        lx += 0.28 + text_width(fig, t) + 0.45
+    y = ly - 0.55
+    ax.text(nc_x[1], y, "no call", ha="center", va="center", fontsize=10.5,
+            fontweight="bold", color=ink)
+    for xx, name in zip(nc_x, ("untrained", "main", "rerun"), strict=True):
+        ax.text(xx, y - 0.24, name, ha="center", va="center", fontsize=8.8, color=muted)
+    y -= 0.35
+    y_grid_top = y
+    row_h, group_gap = 0.62, 0.15
+    by_cat = {r.category: r for r in rr.rows}
+    ys = []
+    first = True
+    for group, cats in ONETOOL_GROUPS:
+        y -= 0.2 if first else group_gap
+        first = False
+        ax.text(0.2, y + 0.05, group, ha="left", va="center", fontsize=10.3,
+                fontweight="bold", color=sec)
+        y -= 0.45
+        for cat in cats:
+            r = by_cat[cat]
+            ax.text(label_x, y, f"{CATEGORY_LABELS[cat]} (n={r.n})", ha="right", va="center",
+                    fontsize=10.5, color=ink)
+            v = {a: share_value(r.right[a]) for a in ONETOOL_ARMS}
+            a, b = X(v["main real"]), X(v["onetool"])
+            if abs(b - a) > 0.15:
+                ax.annotate("", xy=(b, y), xytext=(a, y), arrowprops=dict(
+                    arrowstyle="-|>", color=blue, lw=1.6, shrinkA=5, shrinkB=5,
+                    mutation_scale=11), zorder=3)
+            for arm in ONETOOL_ARMS:
+                mk, fc, ec = styles[arm]
+                ax.plot(X(v[arm]), y, marker=mk, ms=8 if mk == "o" else 7.5, mfc=fc, mec=ec,
+                        mew=1.5, zorder=6 if arm == "untrained" else 5)
+            # values above their markers, in the markers' left-to-right order; labels
+            # of markers closer than a label's width fan out, with a leader to the marker
+            colour = {"untrained": sec, "main real": blue, "onetool": blue}
+            order = sorted(ONETOOL_ARMS, key=lambda k: (v[k], ONETOOL_ARMS.index(k)))
+            lx_ = fan([X(v[k]) for k in order], LABEL_GAP)
+            for k, xl in zip(order, lx_, strict=True):
+                ax.text(xl, y + 0.27, f"{v[k]:.1f}", ha="center", va="center", fontsize=9.2,
+                        family=MONO, color=colour[k], zorder=6)
+                if abs(xl - X(v[k])) > 0.04:
+                    ax.plot([X(v[k]), xl], [y + 0.09, y + 0.18], color=theme.grid, lw=0.8,
+                            zorder=2)
+            for xx, arm in zip(nc_x, ONETOOL_ARMS, strict=True):
+                ax.text(xx, y, r.no_call[arm], ha="center", va="center", fontsize=9,
+                        family=MONO, color=colour[arm])
+            ys.append(y)
+            y -= row_h
+    y_axis = ys[-1] - 0.35
+    ax.plot([x0, x1], [y_axis, y_axis], color=theme.axis, lw=0.8)
+    for v in range(0, 101, 25):
+        ax.plot([X(v), X(v)], [y_axis, y_grid_top], color=theme.grid, lw=0.7, zorder=0)
+        ax.text(X(v), y_axis - 0.18, f"{v}%", ha="center", va="center", fontsize=9.2,
+                color=muted)
+    sep = (x1 + nc_x[0]) / 2 + 0.05
+    ax.plot([sep, sep], [y_axis, y_grid_top + 0.45], color=theme.axis, lw=0.9)
+    ax.text((x0 + x1) / 2, y_axis - 0.42, "right, share of items", ha="center",
+            va="center", fontsize=10, color=sec)
+    bottom = y_axis - 0.7
+    ax.set_ylim(bottom, top + 0.6)
+    fig.set_size_inches(W, top + 0.6 - bottom)
+    return save_both(fig, "onetool-rerun", theme, out)
+
+
+# --------------------------------------------------------------------------
 # Entry point
 # --------------------------------------------------------------------------
 
 NAMES = ("tool-call-round-trip", "two-checks", "untrained-outcomes", "toolace-funnel",
-         "what-sft-trains", "sft-effects", "group-movements", "base-vs-instruct")
+         "what-sft-trains", "sft-effects", "group-movements", "base-vs-instruct",
+         "onetool-rerun")
 
 
 def default_score_capture(model: str = MODEL) -> Path:
@@ -2090,6 +2512,7 @@ def make_figures(only: str | None = None, *, score: Path | None = None,
         path = score or default_score_capture()
         _say(f"tool-call-round-trip: r1 from {path.relative_to(ROOT) if path.is_relative_to(ROOT) else path}")
         rt = parse_round_trip(path.read_text(), (OUTPUTS / "r1-prompt.txt").read_text())
+        check_prompt_view((OUTPUTS / "r1-prompt-view.txt").read_text(), rt)
         render(figure_round_trip, rt)
     if "two-checks" in want:
         render(figure_two_checks, parse_check_demo((OUTPUTS / "check-demo.txt").read_text()))
@@ -2140,7 +2563,15 @@ def make_figures(only: str | None = None, *, score: Path | None = None,
         else:
             b_text, i_text = base.read_text(), inst.read_text()
             render(figure_base_vs_instruct, [(panel_title(b_text), model_shifts(b_text)),
-                                             (panel_title(i_text), model_shifts(i_text))])
+                                             (panel_title(i_text), model_shifts(i_text))],
+                   [seed_count(b_text), seed_count(i_text)])
+    if "onetool-rerun" in want:
+        paths = [OUTPUTS / x for x in ("sft-onetool.txt", "sft-data-onetool.txt", "sft.txt")]
+        missing = [p.name for p in paths if not p.exists()]
+        if missing:
+            _say(f"onetool-rerun: skipped, capture missing: {', '.join(missing)}")
+        else:
+            render(figure_rerun, parse_rerun(*(p.read_text() for p in paths)))
     for p in written:
         _say(f"wrote {p.relative_to(ROOT) if p.is_relative_to(ROOT) else p}")
     return written

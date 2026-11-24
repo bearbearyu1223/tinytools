@@ -460,3 +460,122 @@ def test_r5b_rows_must_sum_to_n():
         "untrained          104        0        12        0       204    481")
     with pytest.raises(F.CaptureError, match="sum to 801"):
         F.parse_r5b(text)
+
+
+# -- typed-in counts now parsed (round-3 review) ----------------------------------------
+
+def test_seed_and_sampling_counts_are_parsed():
+    text = SFT_TXT.read_text()
+    assert F.seed_count(text) == 3 and F.seed_count(BASE_TF_TXT.read_text()) == 3
+    assert F.r6a_sampling(text) == (8, "1")
+    mv = F.parse_movements(text)
+    assert (mv.seeds, mv.samples, mv.temperature) == (3, 8, "1")
+    n, right = F.primary_summary(F.parse_effects(text))
+    assert (n, right.primary, right.on) == (5, 4, "BFCL call items, pooled")
+    assert F.number_word(n) == "five"
+
+
+def test_r6a_title_and_samples_must_agree():
+    text = SFT_TXT.read_text().replace("  samples                            8 per task",
+                                       "  samples                            6 per task")
+    with pytest.raises(F.CaptureError, match="groups of 8 but 6"):
+        F.r6a_sampling(text)
+
+
+def test_panels_must_share_their_seed_count(tmp_path):
+    text = SFT_TXT.read_text()
+    two = text.replace("  seeds with a whole pair            1, 2, 3",
+                       "  seeds with a whole pair            1, 2")
+    mv3, mv2 = F.parse_movements(text), F.parse_movements(two)
+    with pytest.raises(F.CaptureError, match="seed count"):
+        F.figure_movements(F.THEMES[0], [("a", mv3), ("b", mv2)], out=tmp_path)
+    shifts = F.model_shifts(text)
+    with pytest.raises(F.CaptureError, match="seed count"):
+        F.figure_base_vs_instruct(F.THEMES[0], [("a", shifts), ("b", shifts)], [3, 2],
+                                  out=tmp_path)
+
+
+# -- the one-tool rerun (onetool-rerun) ----------------------------------------------------
+
+ONETOOL_TXT = F.OUTPUTS / "sft-onetool.txt"
+ONETOOL_DATA_TXT = F.OUTPUTS / "sft-data-onetool.txt"
+
+
+def _rerun(onetool=None, data=None, main=None):
+    return F.parse_rerun(onetool or ONETOOL_TXT.read_text(),
+                         data or ONETOOL_DATA_TXT.read_text(),
+                         main if main is not None else SFT_TXT.read_text())
+
+
+def test_rerun_shares_from_the_captures():
+    rr = _rerun()
+    assert (rr.model, rr.seeds, rr.left_out) == ("Qwen2.5-1.5B-Instruct", 3, 514)
+    got = {r.category: (r.n, tuple(r.right.values()), tuple(r.no_call.values()))
+           for r in rr.rows}
+    assert got == {
+        "simple": (360, ("90.6%", "34.1%", "81.1%"), ("0.3%", "62.6%", "9.5%")),
+        # 59.7 is 179 / 3: 33.1% as r5a prints it, not 59.7 / 180 = 33.2%
+        "parallel": (180, ("81.1%", "33.1%", "69.8%"), ("0.0%", "62.4%", "12.2%")),
+        "multiple": (180, ("86.1%", "79.6%", "86.3%"), ("0.0%", "13.9%", "6.9%")),
+        "par_multi": (180, ("77.2%", "75.4%", "76.7%"), ("0.0%", "7.6%", "5.2%"))}
+
+
+def test_rerun_main_run_counts_must_match_r5a():
+    text = ONETOOL_TXT.read_text().replace("main real       122.7", "main real       123.0")
+    with pytest.raises(F.CaptureError, match="r5a 368"):
+        _rerun(onetool=text)
+
+
+def test_rerun_left_out_rows_must_agree():
+    text = ONETOOL_DATA_TXT.read_text().replace(
+        "    its rows of the left-out types   514", "    its rows of the left-out types   515")
+    with pytest.raises(F.CaptureError, match="514 rows left out"):
+        _rerun(data=text)
+
+
+def test_exact_total_and_fan():
+    assert F.exact_total("59.7", 3, "x") == 179
+    with pytest.raises(F.CaptureError):
+        F.exact_total("59.5", 3, "x")  # no integer over 3 has this mean
+    assert F.fan([1.0, 5.0], 0.5) == [1.0, 5.0]
+    assert F.fan([1.0, 1.1, 1.2], 0.5) == pytest.approx([0.6, 1.1, 1.6])
+
+
+def test_rerun_renders_both_themes(tmp_path):
+    rr = _rerun()
+    paths = []
+    for theme in F.THEMES:
+        with F.styled(theme):
+            paths.append(F.figure_rerun(theme, rr, out=tmp_path))
+    assert [p.name for p in paths] == ["onetool-rerun-light.png", "onetool-rerun-dark.png"]
+
+
+# -- box 1's part brackets (round-3 review) ---------------------------------------------
+
+def test_part_spans_follow_the_readable_view():
+    ex, tools, req, _ = F._excerpt(PROMPT.rstrip("\n"), 70)
+    spans = dict(F.part_spans(PROMPT.rstrip("\n"), PROMPT, 70))
+    assert list(spans) == ["system", "tools", "format", "user"]  # the empty assistant: none
+    assert ex[slice(*spans["system"])] == "You are Qwen."
+    assert ex[slice(*spans["tools"])].startswith("# Tools\n<tools>")
+    assert ex[slice(*spans["tools"])].endswith("</tools>")
+    assert spans["tools"][0] < tools[0] and spans["tools"][1] == tools[1]  # the list inside
+    assert ex[slice(*spans["format"])] == "Call a tool.<|im_end|>"
+    assert ex[slice(*spans["user"])] == "What is 2 + 2?<|im_end|>"
+    assert spans["user"][0] == req[0]
+
+
+def _real_round_trip():
+    score = F.OUTPUTS / f"score-{F.MODEL}-test-greedy-limitall.txt"
+    return F.parse_round_trip(score.read_text(), (F.OUTPUTS / "r1-prompt.txt").read_text())
+
+
+def test_prompt_view_agrees_with_r1():
+    rt = _real_round_trip()
+    view = (F.OUTPUTS / "r1-prompt-view.txt").read_text()
+    F.check_prompt_view(view, rt)  # parts in order; 540 and 388
+    with pytest.raises(F.CaptureError, match="prompt view counts"):
+        F.check_prompt_view(view.replace("  the tool list itself                  388",
+                                         "  the tool list itself                  389"), rt)
+    with pytest.raises(F.CaptureError, match="prompt view's parts"):
+        F.check_prompt_view(view.replace("  [format]\n", "  [fmt]\n"), rt)
