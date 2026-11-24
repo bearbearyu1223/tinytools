@@ -1403,6 +1403,7 @@ class Funnel:
     each_arm: int
     with_call: int  # in each arm
     no_call: int    # in each arm, the same rows in both
+    no_call_parts: tuple[int, ...] = ()  # no_call by tools offered: 2+, one, none
 
 
 def parse_funnel(stats: str, sft_text: str) -> Funnel:
@@ -1441,7 +1442,8 @@ def parse_funnel(stats: str, sft_text: str) -> Funnel:
         left_out=n(R_OUT_LABEL, 1),
         offered=n("total", 1) - n(R_OUT_LABEL, 1),
         dropped=dropped, each_arm=n("total", 3),
-        with_call=n(R_CALL_LABEL, 3), no_call=sum(n(lab, 3) for lab in R_NO_CALL_LABELS))
+        with_call=n(R_CALL_LABEL, 3), no_call=sum(n(lab, 3) for lab in R_NO_CALL_LABELS),
+        no_call_parts=tuple(n(lab, 3) for lab in R_NO_CALL_LABELS))
     checks = [
         (fn.total - fn.chinese == fn.english, "rows - Chinese != English"),
         (fn.english - fn.not_json == fn.converted, "English - not JSON != converted"),
@@ -1468,6 +1470,10 @@ def parse_funnel(stats: str, sft_text: str) -> Funnel:
 
 
 FUNNEL_GREY = {"light": ("#c9c6bd", "#9f9b91"), "dark": ("#6f6c66", "#57544f")}
+# The one-tool no-call rows: the no-call grey under a hatch, no new colour (blue and green
+# are the arms'). The hatch is darker than the grey on light, lighter on dark.
+FUNNEL_HATCH = {"light": "#6f6b62", "dark": "#b3afa6"}
+NO_CALL_TOOLS = ("2+ tools", "1 tool", "none")  # R_NO_CALL_LABELS' order, as the bracket says
 
 
 def figure_toolace_funnel(theme: Theme, fn: Funnel, out: Path | None = None) -> Path:
@@ -1498,6 +1504,42 @@ def figure_toolace_funnel(theme: Theme, fn: Funnel, out: Path | None = None) -> 
         for j, line in enumerate(lines):
             ax.text(side, y + 0.11 * (len(lines) - 1) - 0.22 * j, line, ha="left",
                     va="center", fontsize=10, color=sec if j else ink, zorder=5)
+
+    hatch = FUNNEL_HATCH[theme.name]
+    one_tool = fn.no_call_parts[1]
+
+    def no_call_segments(y):
+        """The no-call rows split by tools offered, left to right: 2+, one (hatched), none;
+        each labelled inside if its count fits, else above the bar."""
+        start = fn.with_call
+        spans, above = [], []
+        for k, n in enumerate(fn.no_call_parts):
+            ax.add_patch(Rectangle((x0 + start * per, y - bar_h / 2), n * per, bar_h,
+                                   facecolor=grey, edgecolor="none", zorder=3,
+                                   hatch="////" if k == 1 else None, hatchcolor=hatch))
+            ax.add_patch(Rectangle((x0 + start * per, y - bar_h / 2), n * per, bar_h,
+                                   facecolor="none", edgecolor=theme.surface, lw=1.0, zorder=4))
+            mid = x0 + (start + n / 2) * per
+            t = ax.text(mid, y, f"{n:,}", ha="center", va="center", fontsize=9.2,
+                        color=ink_for(grey), zorder=6,
+                        bbox=dict(boxstyle="square,pad=0.12", facecolor=grey, edgecolor="none"))
+            if text_width(fig, t) + 0.04 > n * per:
+                above.append((t, mid))
+            spans.append((x0 + start * per, x0 + (start + n) * per))
+            start += n
+        # counts too wide for their segment go above the bar, spread apart (fan), each
+        # with a leader to its segment when it had to move
+        if above:
+            gap = max(text_width(fig, t) for t, _ in above) + 0.1
+            ya = y + bar_h / 2 + 0.17
+            for (t, mid), xl in zip(above, fan([m for _, m in above], gap), strict=True):
+                t.set_position((xl, ya))
+                t.set_color(sec)
+                t.set_bbox(None)
+                if abs(xl - mid) > 0.03:
+                    ax.plot([mid, xl], [y + bar_h / 2 + 0.01, ya - 0.08], color=sec, lw=0.7,
+                            zorder=5)
+        return spans
 
     def title(y, text, sub=None):
         ax.text(x0 - 0.15, y + (0.1 if sub else 0), text, ha="right", va="center",
@@ -1539,35 +1581,38 @@ def figure_toolace_funnel(theme: Theme, fn: Funnel, out: Path | None = None) -> 
     n_drop = sum(k for _, k in fn.dropped)
     title(y, "without broken turns")
     bar(y, fn.with_call, grey2)
-    ax.add_patch(Rectangle((x0 + fn.with_call * per, y - bar_h / 2), fn.no_call * per, bar_h,
-                           facecolor=grey, edgecolor=theme.surface, lw=1.0, zorder=3))
     count_in(x0 + 0.12, y, f"{fn.with_call:,} with a call", grey2)
-    count_in(x0 + (fn.with_call + fn.no_call / 2) * per, y, f"{fn.no_call:,}", grey, ha="center")
+    spans = no_call_segments(y)
     hollow(y, fn.each_arm, n_drop,
            [f"{n_drop:,} rows dropped:",
             ", ".join(f"{k:,} {label}" for label, k in fn.dropped)])
-    ax.text(x0 + (fn.with_call + fn.no_call / 2) * per, y - bar_h / 2 - 0.14, "no call",
+    # a bracket under the three no-call segments, and what they offer
+    ya, yb = y - bar_h / 2 - 0.05, y - bar_h / 2 - 0.12
+    ax.plot([spans[0][0], spans[0][0], spans[-1][1], spans[-1][1]], [ya, yb, yb, ya],
+            color=sec, lw=1.0)
+    offers = [f"{n:,} offer {t}" if t != "none" else f"{n:,} offer none"
+              for n, t in zip(fn.no_call_parts, NO_CALL_TOOLS, strict=True)]
+    ax.text((spans[0][0] + spans[-1][1]) / 2, yb - 0.17, "no call: " + ", ".join(offers),
             ha="center", va="center", fontsize=9.6, color=sec)
 
     # the two arms, the same rows; only the call turns differ
-    y -= step + 0.25
-    ax.plot([0.2, W - 0.2], [y + step / 2 + 0.05, y + step / 2 + 0.05], color=theme.grid, lw=1.0)
+    y -= step + 0.6
+    ax.plot([0.2, W - 0.2], [y + step / 2 + 0.12, y + step / 2 + 0.12], color=theme.grid, lw=1.0)
     for label, call, colour in (("real arm", "ToolACE's call", blue),
                                 ("control", "a random call", green)):
         title(y, f"{label}: {fn.each_arm:,}")
         bar(y, fn.with_call, colour)
-        ax.add_patch(Rectangle((x0 + fn.with_call * per, y - bar_h / 2), fn.no_call * per,
-                               bar_h, facecolor=grey, edgecolor=theme.surface, lw=1.0, zorder=3))
         count_in(x0 + 0.12, y, f"{fn.with_call:,} with {call}", colour)
-        count_in(x0 + (fn.with_call + fn.no_call / 2) * per, y, f"{fn.no_call:,}", grey,
-                 ha="center")
-        y -= step * 0.8
+        no_call_segments(y)
+        y -= step * 0.8 + 0.12
     # one bracket across both arms' no-call segments
-    yb_top, yb_bot = y + 2 * step * 0.8 + bar_h / 2, y + step * 0.8 - bar_h / 2
+    yb_top, yb_bot = y + 2 * (step * 0.8 + 0.12) + bar_h / 2, y + step * 0.8 + 0.12 - bar_h / 2
     bx = x0 + fn.each_arm * per + 0.1
     ax.plot([bx, bx + 0.07, bx + 0.07, bx], [yb_top, yb_top, yb_bot, yb_bot], color=sec, lw=1.0)
-    ax.text(bx + 0.2, (yb_top + yb_bot) / 2, "no-call rows: the same rows in both arms",
+    ax.text(bx + 0.2, (yb_top + yb_bot) / 2 + 0.12, "no-call rows: the same rows in both arms",
             ha="left", va="center", fontsize=10, color=sec)
+    ax.text(bx + 0.2, (yb_top + yb_bot) / 2 - 0.12, f"the {one_tool:,} hatched rows are the "
+            "only one-tool rows left (§5)", ha="left", va="center", fontsize=10, color=sec)
     ax.text(x0, y + 0.15, "Every row is cut after its first call turn.", ha="left",
             va="center", fontsize=10, color=sec)
     bottom = y - 0.15
@@ -2254,6 +2299,8 @@ class Rerun:
     model: str
     seeds: int
     left_out: int      # one-tool no-call rows left out of the training set
+    untrained_runs: int  # the untrained arm's runs (the reading table's; one)
+    decoding: str        # Setup's decoding, e.g. "greedy"
     rows: tuple[RerunRow, ...]
 
 
@@ -2327,7 +2374,18 @@ def parse_rerun(onetool: str, data: str, main: str | None = None) -> Rerun:
             no_call[arm] = percent(Fraction(totals[1], k * n))
             counts[arm] = (c[cols["right"]], c[cols["no call"]])
         rows.append(RerunRow(cat, n, right, no_call, counts))
-    return Rerun(report_model(onetool), seeds, to_int(left, "left out"), tuple(rows))
+    reading = section_matching(onetool, r"The reading: \w+(?:-\w+)*")
+    if len(reading) != 1:
+        raise CaptureError(f"expected one 'The reading' section, found {len(reading)}")
+    runs = {r[0]: to_int(r[1], f"the reading, {r[0]}") for r in table(
+        reading[0][1], ["arm", "runs", "replies", "changed"], "the reading")}
+    if runs.get("main real") != seeds or runs.get("onetool real") != seeds:
+        raise CaptureError(f"the reading's runs {runs}, but {seeds} seeds per SFT arm")
+    if "untrained" not in runs:
+        raise CaptureError("the reading has no untrained row")
+    return Rerun(model=report_model(onetool), seeds=seeds, left_out=to_int(left, "left out"),
+                 untrained_runs=runs["untrained"], decoding=kv(setup, "decoding", "Setup"),
+                 rows=tuple(rows))
 
 
 R5A_TITLE = "Right, per arm and category (r5a)"
@@ -2388,8 +2446,13 @@ def figure_rerun(theme: Theme, rr: Rerun, out: Path | None = None) -> Path:
     ax.text(0.2, top + 0.3, "Leaving out the one-tool rows that don't call: right on BFCL, "
             "by category", ha="left", va="center", fontsize=13.5, fontweight="bold", color=ink)
     ax.text(0.2, top - 0.05, f"{rr.model}. Hollow: untrained; blue circle: SFT, main run; "
-            f"blue diamond: SFT without the {rr.left_out} one-tool no-call rows; each a mean "
-            f"of {rr.seeds} seeds.", ha="left", va="center", fontsize=10, color=sec)
+            f"blue diamond: SFT without the {rr.left_out} one-tool no-call rows.",
+            ha="left", va="center", fontsize=10, color=sec)
+    runs = "run" if rr.untrained_runs == 1 else "runs"
+    ax.text(0.2, top - 0.3, f"The two SFT arms are means of {rr.seeds} seeds; untrained is "
+            f"{number_word(rr.untrained_runs)} {rr.decoding} {runs}.", ha="left", va="center",
+            fontsize=10, color=sec)
+    top -= 0.25  # everything below sits under the subtitle's second line
     # untrained hollow and drawn last, so its ring shows over an SFT marker it overlaps
     styles = {"untrained": ("o", "none", sec), "main real": ("o", blue, blue),
               "onetool": ("D", blue, blue)}
@@ -2459,8 +2522,8 @@ def figure_rerun(theme: Theme, rr: Rerun, out: Path | None = None) -> Path:
     ax.text((x0 + x1) / 2, y_axis - 0.42, "right, share of items", ha="center",
             va="center", fontsize=10, color=sec)
     bottom = y_axis - 0.7
-    ax.set_ylim(bottom, top + 0.6)
-    fig.set_size_inches(W, top + 0.6 - bottom)
+    ax.set_ylim(bottom, top + 0.25 + 0.6)
+    fig.set_size_inches(W, top + 0.25 + 0.6 - bottom)
     return save_both(fig, "onetool-rerun", theme, out)
 
 

@@ -338,6 +338,7 @@ def test_funnel(capsys):
     assert (fn.total, fn.english, fn.converted, fn.offered, fn.each_arm) == \
         (11300, 11282, 10782, 8518, 8504)
     assert (fn.with_call, fn.no_call, fn.left_out) == (6975, 1529, 2264)
+    assert fn.no_call_parts == (767, 514, 248) and sum(fn.no_call_parts) == fn.no_call
     assert [k for _, k in fn.dropped] == [5, 9]
 
 
@@ -510,6 +511,7 @@ def _rerun(onetool=None, data=None, main=None):
 def test_rerun_shares_from_the_captures():
     rr = _rerun()
     assert (rr.model, rr.seeds, rr.left_out) == ("Qwen2.5-1.5B-Instruct", 3, 514)
+    assert (rr.untrained_runs, rr.decoding) == (1, "greedy")  # the subtitle's "one greedy run"
     got = {r.category: (r.n, tuple(r.right.values()), tuple(r.no_call.values()))
            for r in rr.rows}
     assert got == {
@@ -579,3 +581,23 @@ def test_prompt_view_agrees_with_r1():
                                          "  the tool list itself                  389"), rt)
     with pytest.raises(F.CaptureError, match="prompt view's parts"):
         F.check_prompt_view(view.replace("  [format]\n", "  [fmt]\n"), rt)
+
+
+def test_rerun_seed_count_must_match_the_runs():
+    text = ONETOOL_TXT.read_text().replace("  onetool real     3     6348",
+                                           "  onetool real     2     6348")
+    with pytest.raises(F.CaptureError, match="3 seeds per SFT arm"):
+        _rerun(onetool=text)
+
+
+def test_funnel_from_the_committed_captures(tmp_path):
+    fn = F.parse_funnel((F.OUTPUTS / "toolace-stats.txt").read_text(),
+                        (F.OUTPUTS / "sft-data.txt").read_text())
+    assert (fn.total, fn.english, fn.converted, fn.offered, fn.each_arm) == (
+        11300, 11282, 10782, 8518, 8504)
+    assert (fn.chinese, fn.not_json, fn.left_out, sum(k for _, k in fn.dropped)) == (
+        18, 500, 2264, 14)
+    assert (fn.with_call, fn.no_call_parts) == (6975, (767, 514, 248))
+    for theme in F.THEMES:
+        with F.styled(theme):
+            F.figure_toolace_funnel(theme, fn, out=tmp_path)
