@@ -58,14 +58,14 @@
 # stages before the pairs take ~2x their expected time (~2 h, the pair starting ~3.85 h in);
 # the runner's hard limit (max_hours) still holds: the pair is cut off, the stages before it
 # are already fetched, and the report can be rebuilt on the Mac.
-# Worst case: max_hours x the live price, 6.0 h x $1.99 = $11.94, within the $12 cap; with
+# Worst case: max_hours x the live price, 6.0 h x $1.99 = $11.94; with attempt 1 ($1.52) the experiment stays within its $14 cap; with
 # post 9's ledger ($10.48 so far) the post stays within its $50.
 name = "base"
 post = 9
 instance_type = "gpu_1x_a100_sxm4"   # 40 GB; Milestone 0 and the main run ran on it
 max_hours = 6.0                      # 6.0 x $1.99 = $11.94 <= cap_usd
 expected_hours = 4.9                 # 4.83 h above, rounded up
-cap_usd = 12
+cap_usd = 14                         # 12, raised by Han 2026-11-23 after attempt 1 was stopped ($1.52; splitlines bug)
 commands = [
   "export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True",
   "uv run tinytools toolace-convert",

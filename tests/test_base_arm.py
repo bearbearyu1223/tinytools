@@ -527,7 +527,7 @@ def test_the_base_experiment_is_mains_stages_with_the_profile():
         if isinstance(st, tuple) and st[0] in ("rescore", "bfcl-rescore"):
             assert "--model Qwen/Qwen2.5-1.5B " in c and "Qwen2.5-1.5B-Instruct" not in c
     assert (e.post, e.instance_type, e.cap_usd, e.setup_record) == (
-        9, "gpu_1x_a100_sxm4", 12.0, "outputs/base/setup.json")
+        9, "gpu_1x_a100_sxm4", 14.0, "outputs/base/setup.json")
 
 
 def test_the_base_experiment_fetches_the_base_arm_only():
@@ -562,7 +562,10 @@ def test_the_base_experiment_stays_within_both_caps_with_the_ledger():
                                   "regions_with_capacity_available": [{"name": "us-east-1"}]}}
     est = lr.make_estimate(e, types, ledger)
     assert est.worst == math.ceil(1.99 * e.max_hours * 100) / 100 <= 12.0
-    assert est.spent == 0.0 and est.post == 9  # nothing charged to "base" yet
+    # what "base" has spent so far (attempt 1, stopped: $1.52) plus the worst case fits its cap
+    assert est.spent == pytest.approx(sum(float(r["cost_usd"]) for r in ledger
+                                          if r["experiment"] == "base")) and est.post == 9
+    assert est.spent + est.worst <= e.cap_usd
     assert est.post_spent == pytest.approx(sum(float(r["cost_usd"]) for r in ledger
                                                if r["post"] == "9"))
     assert est.within_cap and est.expected <= est.worst

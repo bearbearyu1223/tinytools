@@ -536,10 +536,11 @@ result:
   paragraph. Both arms are shown side by side either way. The tag-free rescore reads saved
   replies (no model).
   The exact rule (`src/tinytools/tagfree.py`, printed in the report's Setup): a reply with a
-  `<tool_call>` tag is read as strict; any other reply's calls are the JSON objects at its
-  start with exactly the keys `name` (a string) and `arguments` (an object), one after another
-  with only whitespace between, up to the first thing that isn't one; the rest is ignored.
-  Those calls are rewritten into tags and go through the same checkers as strict. Commands
+  `<tool_call>` tag is read as strict; any other reply's call is the JSON object at its very
+  start, if it has exactly the keys `name` (a string) and `arguments` (an object), else no
+  call. One call at most (Han, 2026-11-23): everything after that first object is ignored,
+  including repeats of the same call, which the untrained base model writes to the cap. The
+  call is rewritten into tags and goes through the same checkers as strict. Commands
   (`--from` is read-only; default `outputs/<profile>/`):
   ```
   uv run tinytools sft-report --reading tagfree --from runs/2026-11-23-main/outputs/main \

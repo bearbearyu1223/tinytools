@@ -9,18 +9,19 @@ counts such calls, by this rule:
 
 1. If the reply contains a ``<tool_call>`` tag, the tag-free reading is the strict
    one: the same reply, the same calls.
-2. Otherwise, the calls are the **call objects at the start of the reply**
-   (leading whitespace skipped): JSON objects whose keys are exactly ``name`` and
-   ``arguments``, ``name`` a string and ``arguments`` a JSON object, one after
-   another with nothing but whitespace (or nothing) between them, taken until the
-   first thing that is not one. ``arguments`` written as a string, even one that
-   parses to an object, is not accepted, because the strict decoder does not
-   accept it inside tags either (it reads ``arguments`` with ``.items()``).
-3. Everything after the last call object is ignored, whatever it is: that is
-   what "tag-free" means. No call object at the start: no call.
+2. Otherwise, the call is **the first call object at the start of the reply**
+   (leading whitespace skipped): a JSON object whose keys are exactly ``name``
+   and ``arguments``, ``name`` a string and ``arguments`` a JSON object. At most
+   one call: ``arguments`` written as a string, even one that parses to an
+   object, is not accepted, because the strict decoder does not accept it inside
+   tags either (it reads ``arguments`` with ``.items()``).
+3. Everything after that first object is ignored, whatever it is, including
+   more call objects and repeats of the same call (the untrained base model
+   often writes one call over and over to the token cap; Han, 2026-11-23). No
+   call object at the start: no call.
 
-The reading is applied by rewriting the reply: a reply with call objects becomes
-those objects, each in ``<tool_call>`` tags as Qwen writes them
+The reading is applied by rewriting the reply: a reply that starts with a call
+object becomes that object in ``<tool_call>`` tags as Qwen writes it
 (:func:`tagfree_reply`), and every other reply is left as it is. The rewritten
 reply then goes through the same decoder, classifier and checkers as the strict
 reading (ours: :func:`tinytools.checkers.check_reply`; BFCL:
@@ -47,12 +48,12 @@ END_TAG = "</tool_call>"
 RULE = (
     "strict: a call counts only inside <tool_call> tags.",
     "tag-free: a reply with a <tool_call> tag is read as strict. Any",
-    "other reply's calls are the JSON objects at its start with exactly",
-    "the keys name (a string) and arguments (an object), one after",
-    "another with only whitespace between, up to the first thing that",
-    "is not one; everything after them is ignored. None: no call.",
+    "other reply's call is the JSON object at its very start, if it has",
+    "exactly the keys name (a string) and arguments (an object); else",
+    "no call. One call at most: everything after that first object is",
+    "ignored, including more call objects and repeats of the same call.",
     "Arguments written as a string are not a call (strict rejects them",
-    "too). The calls then go through the same checkers as strict.",
+    "too). The call then goes through the same checkers as strict.",
 )
 
 _DECODER = json.JSONDecoder()
@@ -65,30 +66,25 @@ def is_call_object(obj) -> bool:
 
 
 def bare_calls(text: str) -> list[dict]:
-    """The call objects at the start of ``text`` (rule 2 above), in order."""
-    calls: list[dict] = []
-    i = 0
-    while True:
-        while i < len(text) and text[i].isspace():
-            i += 1
-        if i >= len(text) or text[i] != "{":
-            return calls
-        try:
-            obj, end = _DECODER.raw_decode(text, i)
-        except ValueError:
-            return calls
-        if not is_call_object(obj):
-            return calls
-        calls.append(obj)
-        i = end
+    """The call at the start of ``text`` (rule 2 above): ``[call]``, or ``[]`` if the
+    text (after leading whitespace) does not start with a call object. Anything after
+    the first object is never read."""
+    i = len(text) - len(text.lstrip())
+    if not text.startswith("{", i):
+        return []
+    try:
+        obj, _ = _DECODER.raw_decode(text, i)
+    except ValueError:
+        return []
+    return [obj] if is_call_object(obj) else []
 
 
 def tagfree_reply(raw: str) -> str:
     """The reply the strict checkers read on the tag-free reading.
 
     ``raw`` itself if it has a ``<tool_call>`` tag or no call object at its start;
-    else its call objects, each written ``<tool_call>\\n{json}\\n</tool_call>``
-    (Qwen's format, what the strict decoder reads), joined by newlines.
+    else that one call written ``<tool_call>\\n{json}\\n</tool_call>`` (Qwen's
+    format, what the strict decoder reads).
     """
     if TAG in raw:
         return raw

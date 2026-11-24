@@ -9,8 +9,7 @@ import pytest
 
 from tinytools import tagfree as TF
 from tinytools.checkers import check_reply, decode
-from tinytools.classify import (CALLED_ANYWAY, DECLINED, NO_CALL, RIGHT, UNPARSEABLE,
-                                WRONG_COUNT)
+from tinytools.classify import (CALLED_ANYWAY, DECLINED, NO_CALL, RIGHT, UNPARSEABLE)
 
 ROOT = Path(__file__).resolve().parents[1]
 M0_BASE = ROOT / "runs" / "2026-11-22-milestone0" / "outputs" / "milestone0-Qwen2.5-1.5B-ours-replies.jsonl"
@@ -37,8 +36,10 @@ def test_one_call_then_garbage_is_one_call():
     assert TF.tagfree_reply(DEV_0000) == f"<tool_call>\n{CALC_JSON}\n</tool_call>"
 
 
-def test_repeated_calls_are_all_taken():
-    assert TF.bare_calls(DEV_0004) == [json.loads(STOCK)] * 3
+def test_a_repeated_call_reads_as_one_call():
+    # Han, 2026-11-23: the first object only; repeats of the same call are ignored
+    assert TF.bare_calls(DEV_0004) == [json.loads(STOCK)]
+    assert TF.tagfree_reply(DEV_0004) == f"<tool_call>\n{STOCK}\n</tool_call>"
 
 
 def test_a_whole_reply_that_is_one_call():
@@ -56,18 +57,17 @@ def test_json_in_prose_is_not_a_call():
     assert TF.bare_calls(raw) == [] and TF.tagfree_reply(raw) == raw
 
 
-def test_two_objects_with_whitespace_or_nothing_between():
+def test_two_different_calls_read_as_the_first():
     b = {"name": "b", "arguments": {}}
-    assert TF.bare_calls(f"  {CALC_JSON} \n\t {json.dumps(b)}  tail") == [CALC, b]
-    assert TF.bare_calls(f"{CALC_JSON}{json.dumps(b)}") == [CALC, b]
+    assert TF.bare_calls(f"  {CALC_JSON} \n\t {json.dumps(b)}  tail") == [CALC]
+    assert TF.bare_calls(f"{CALC_JSON}{json.dumps(b)}") == [CALC]
+    assert TF.tagfree_reply(f"{CALC_JSON}\n{json.dumps(b)}").count("<tool_call>") == 1
 
 
-def test_stops_at_the_first_thing_that_is_not_a_call():
+def test_only_the_very_first_object_counts():
     b = {"name": "b", "arguments": {}}
-    raw = f"{CALC_JSON} x {json.dumps(b)}"
-    assert TF.bare_calls(raw) == [CALC]
-    raw = f'{CALC_JSON}\n{{"name": "b"}}\n{json.dumps(b)}'  # a non-call object ends the run
-    assert TF.bare_calls(raw) == [CALC]
+    assert TF.bare_calls(f'{{"name": "b"}}\n{json.dumps(b)}') == []  # first is not a call
+    assert TF.bare_calls(f"{CALC_JSON} x {json.dumps(b)}") == [CALC]
 
 
 def test_nested_braces_and_quotes_inside_strings():
@@ -124,8 +124,8 @@ def test_rule_lines_fit_the_report():
 def test_ours_outcomes_on_both_readings():
     assert check_reply(DEV_0000, CALC).outcome == NO_CALL
     assert check_reply(TF.tagfree_reply(DEV_0000), CALC).outcome == RIGHT
-    stock = json.loads(STOCK)
-    assert check_reply(TF.tagfree_reply(DEV_0004), stock).outcome == WRONG_COUNT
+    repeated = "\n".join([CALC_JSON] * 5)  # dev-0004's shape, with a call that is right
+    assert check_reply(TF.tagfree_reply(repeated), CALC).outcome == RIGHT  # not a wrong count
     assert check_reply(TF.tagfree_reply(DEV_0006), CALC).outcome == NO_CALL
 
 

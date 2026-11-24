@@ -2,3 +2,4 @@ run,experiment,post,commit,instance_type,price_usd_per_hour,launched_at,ended_at
 2026-11-22-milestone0,milestone0,9,a9261401fc8a,gpu_1x_a100_sxm4,1.99,2026-11-22T18:09:02+00:00,2026-11-22T19:06:43+00:00,0.9614,1.9132,ok
 2026-11-22-main,main,9,89f3ce4f3005,gpu_1x_a100_sxm4,1.99,2026-11-23T05:12:50+00:00,2026-11-23T05:39:09+00:00,0.4385,0.8727,failed: a command exited 1
 2026-11-23-main,main,9,29aeae0b9628,gpu_1x_a100_sxm4,1.99,2026-11-23T17:15:17+00:00,2026-11-23T21:07:11+00:00,3.8649,7.6912,ok
+2026-11-23-base,base,9,44b5cb6d7da3,gpu_1x_a100_sxm4,1.99,2026-11-24T00:37:11+00:00,2026-11-24T01:23:02+00:00,0.7642,1.5207,interrupted (Ctrl-C)

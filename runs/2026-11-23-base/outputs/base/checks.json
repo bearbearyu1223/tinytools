@@ -1,0 +1,309 @@
+{
+  "template": {
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "rendered_with": "Qwen/Qwen2.5-0.5B-Instruct",
+    "files": {
+      "real.jsonl": {
+        "rows": 8504,
+        "identical": 8504,
+        "differ": []
+      },
+      "control-seed1.jsonl": {
+        "rows": 8504,
+        "identical": 8504,
+        "differ": []
+      },
+      "control-seed2.jsonl": {
+        "rows": 8504,
+        "identical": 8504,
+        "differ": []
+      },
+      "control-seed3.jsonl": {
+        "rows": 8504,
+        "identical": 8504,
+        "differ": []
+      }
+    },
+    "identical": true
+  },
+  "sha256": {
+    "real.jsonl": {
+      "sha256": "2cf7f25a4545d4d01dfa3c2f5d678c5d9194e20724ca417d2464b31cbdf1cdb8",
+      "pinned": "2cf7f25a4545d4d01dfa3c2f5d678c5d9194e20724ca417d2464b31cbdf1cdb8"
+    },
+    "control-seed1.jsonl": {
+      "sha256": "1a8b98c21361edc3dcc3d0e37e238b74c97e43d2dfc37c7a4f58ea83f1ec5f7f",
+      "pinned": "1a8b98c21361edc3dcc3d0e37e238b74c97e43d2dfc37c7a4f58ea83f1ec5f7f"
+    },
+    "control-seed2.jsonl": {
+      "sha256": "08d89acedda694f5ead4b943f42c866c245a5423e1e9964abc3ea406411a4fcb",
+      "pinned": "08d89acedda694f5ead4b943f42c866c245a5423e1e9964abc3ea406411a4fcb"
+    },
+    "control-seed3.jsonl": {
+      "sha256": "f5968d457419f1a89afa7582dc54acb1cb204b468c05fc2f878d09db4f2dea68",
+      "pinned": "f5968d457419f1a89afa7582dc54acb1cb204b468c05fc2f878d09db4f2dea68"
+    }
+  },
+  "base_prompts": {
+    "model": "Qwen/Qwen2.5-1.5B",
+    "tokenizer": "Qwen/Qwen2.5-1.5B-Instruct",
+    "instruct_tokenizer": "Qwen/Qwen2.5-1.5B-Instruct",
+    "splits_as_model": true,
+    "vocabulary": 151665,
+    "eos": {
+      "model's own": "<|endoftext|>",
+      "this arm's": "<|im_end|>"
+    },
+    "sets": [
+      {
+        "set": "training rows (real.jsonl)",
+        "n": 8504,
+        "as_instruct": 8504,
+        "with_own_template": 4198
+      },
+      {
+        "set": "our test tasks",
+        "n": 1000,
+        "as_instruct": 1000,
+        "with_own_template": 1000
+      },
+      {
+        "set": "our dev tasks",
+        "n": 200,
+        "as_instruct": 200,
+        "with_own_template": 200
+      },
+      {
+        "set": "our train-sample tasks",
+        "n": 500,
+        "as_instruct": 500,
+        "with_own_template": 500
+      },
+      {
+        "set": "BFCL eval items",
+        "n": 1116,
+        "as_instruct": 1116,
+        "with_own_template": 0
+      }
+    ],
+    "passes": true
+  },
+  "lengths": {
+    "rows": 8504,
+    "longest": 2975,
+    "mean": 739.182855126999,
+    "over 1024": 1369,
+    "over 3072": 0,
+    "tokens": 6286011,
+    "scored": 607322,
+    "assistant_turns": 8571,
+    "im_end_scored": 8571
+  },
+  "memory": {
+    "micro_batches": [
+      {
+        "rows": 8,
+        "longest": 1024,
+        "token_slots": 8192,
+        "scored": 531
+      },
+      {
+        "rows": 8,
+        "longest": 1024,
+        "token_slots": 8192,
+        "scored": 700
+      },
+      {
+        "rows": 3,
+        "longest": 2538,
+        "token_slots": 7614,
+        "scored": 1527
+      }
+    ],
+    "most_scored": 2,
+    "budget": 8192,
+    "device_bytes": 42406903808,
+    "headroom": 0.85,
+    "peak_rule": true,
+    "allocator": "expandable_segments:True",
+    "attempts": [
+      {
+        "checkpointing": false,
+        "ran": true,
+        "peak_bytes": 29174691840,
+        "within": true
+      }
+    ],
+    "nondeterminism": "",
+    "needs_checkpointing": false,
+    "fits": true
+  },
+  "system_shapes": {
+    "training row with a date line": [
+      "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.",
+      "Today is 2022-03-20, Sunday."
+    ],
+    "training row without one": [
+      "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
+    ],
+    "our test task": [
+      "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.",
+      "The current time is 2026-03-11 09:30, Wednesday."
+    ],
+    "BFCL eval item": [
+      "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
+    ]
+  },
+  "rows_with_date_line": [
+    4198,
+    8504
+  ],
+  "stops": {
+    "model_eos": [
+      151643
+    ],
+    "wanted": [
+      151645,
+      151643
+    ],
+    "engine_stop": [
+      151645,
+      151643
+    ],
+    "names": {
+      "151643": "<|endoftext|>",
+      "151645": "<|im_end|>"
+    },
+    "passes": true
+  },
+  "embed_rows": {
+    "same_as_first": {
+      "n": 2234,
+      "ids": "151644-151935 and 1,942 more from 124 to 151638",
+      "kinds": {
+        "added tokens": 21,
+        "vocabulary tokens": 1942,
+        "padding rows": 271
+      },
+      "trained": 4
+    },
+    "model": "Qwen/Qwen2.5-1.5B",
+    "instruct": "Qwen/Qwen2.5-1.5B-Instruct",
+    "tokens": [
+      "<|im_start|>",
+      "<|im_end|>",
+      "<tool_call>",
+      "</tool_call>"
+    ],
+    "ids": [
+      151644,
+      151645,
+      151657,
+      151658
+    ],
+    "tied": true,
+    "rows": 151936,
+    "hidden": 1536,
+    "dtype": "bfloat16",
+    "median_norm": 1.0322802066802979,
+    "base": {
+      "norms": [
+        0.4142495095729828,
+        0.41424962878227234,
+        0.4142497181892395,
+        0.4142497181892395
+      ],
+      "cos_min": 0.9999996423721313,
+      "cos_max": 0.9999997615814209,
+      "max_abs_diff": 1.52587890625e-05,
+      "cos_first": [
+        0.9999998211860657,
+        0.9999997615814209,
+        0.9999997615814209,
+        0.9999997615814209
+      ]
+    },
+    "instruct_rows": {
+      "norms": [
+        0.4264352321624756,
+        0.4220493733882904,
+        0.4312495291233063,
+        0.42900264263153076
+      ],
+      "cos_min": 0.9201127290725708,
+      "cos_max": 0.948189914226532,
+      "max_abs_diff": 0.011322021484375,
+      "cos_first": [
+        0.9999998211860657,
+        0.948189914226532,
+        0.9416860342025757,
+        0.9343750476837158
+      ]
+    },
+    "threshold": 0.9999,
+    "identical": true,
+    "passes": true
+  },
+  "merge_b0": {
+    "model": "Qwen/Qwen2.5-1.5B",
+    "tasks": 200,
+    "identical": 200,
+    "modules": 196,
+    "weights_equal": 196,
+    "batch_size": 64,
+    "device": "cuda",
+    "rows": 4,
+    "rows_equal": 4,
+    "tied": true
+  },
+  "merge_random_b": {
+    "model": "Qwen/Qwen2.5-1.5B",
+    "prompts": 6,
+    "modules": 196,
+    "dtype": "float32",
+    "b_scale": 0.01,
+    "tolerance": 0.01,
+    "rows": {
+      "merged": {
+        "relative": 1.3418349495586095e-05,
+        "max_abs": 0.00043904781341552734,
+        "argmax_same": 3341,
+        "positions": 3341
+      },
+      "merged, 1.25 x the scaling": {
+        "relative": 0.11685226743619256,
+        "max_abs": 1.6135406494140625,
+        "argmax_same": 3310,
+        "positions": 3341
+      },
+      "merged, rows left out": {
+        "relative": 0.9179500698344288,
+        "max_abs": 20.534934997558594,
+        "argmax_same": 3120,
+        "positions": 3341
+      },
+      "base (nothing merged)": {
+        "relative": 1.0,
+        "max_abs": 20.306270599365234,
+        "argmax_same": 3100,
+        "positions": 3341
+      }
+    },
+    "passes": true,
+    "embed_rows": {
+      "tokens": [
+        "<|im_start|>",
+        "<|im_end|>",
+        "<tool_call>",
+        "</tool_call>"
+      ],
+      "ids": [
+        151644,
+        151645,
+        151657,
+        151658
+      ],
+      "seed": 3
+    }
+  }
+}
