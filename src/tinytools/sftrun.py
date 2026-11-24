@@ -317,7 +317,15 @@ def scoring_walls(walls: dict[str, float], prefer_trained: bool) -> list[float]:
     the base run's hours even if training taught the model to end its turns. Until a
     trained model is scored the prior stands, as it does for main before anything is
     measured; a trained model that still runs to the cap is measured by seed 1's pair, so
-    seed 2's estimate sees it. Pure."""
+    seed 2's estimate sees it.
+
+    Known case, accepted (T9e review S3; tests/review/test_review_t9_deadline.py): seed
+    1's pair is estimated with the prior, so if its trained models still score at the
+    untrained pace (~2,809 s each), a pair admitted late can overrun the deadline. That
+    needs the stages before the pairs to take about twice base.toml's estimate (~2 h, so
+    the pair starts ~3.85 h in); the runner's hard limit still holds (the pair is cut off,
+    nothing before it is lost). Using the untrained wall instead would skip seed 1 needlessly
+    after ~2.26 h, so the estimate stays as it is. Pure."""
     trained = [w for k, w in walls.items() if k.startswith(tuple(f"{a}-seed" for a in T.ARMS))]
     return trained if prefer_trained else list(walls.values())
 
@@ -421,6 +429,22 @@ def largest_micro_batches(lengths: list[int], s: T.Settings, seeds=(1, 2, 3),
     return [sorted(rows, key=lambda i: (-lengths[i], i)) for rows in best]
 
 
+def most_scored_micro_batch(lengths: list[int], scored: list[int], s: T.Settings,
+                            seeds=(1, 2, 3)) -> list[int]:
+    """The micro-batch with the most scored tokens over the seeds' plans (more token slots,
+    then the rows, breaking ties), longest row first. The base arm's delta adds a
+    full-vocabulary term per scored token (T9e review M1), so this one can peak higher than
+    the largest by slots. Pure."""
+    seen: dict[tuple[int, ...], tuple[int, int]] = {}
+    for seed in seeds:
+        for st in T.plan_steps(len(lengths), seed, s.epochs, s.batch_rows):
+            for mb in T.micro_batches(st.rows, lengths, s.token_budget):
+                seen[tuple(sorted(mb))] = (sum(scored[i] for i in mb),
+                                           T.padded_tokens([mb], lengths))
+    best = max(seen, key=lambda rows: (seen[rows], rows))
+    return sorted(best, key=lambda i: (-lengths[i], i))
+
+
 HEADROOM = 0.85  # checkpointing stays off only if a step's peak is at most this share
 ALLOC_CONF = "expandable_segments:True"  # PYTORCH_CUDA_ALLOC_CONF for every sft-* command
 
@@ -446,7 +470,10 @@ def memory_probe(s: T.Settings, records: list[dict], device, tokenizer: str | No
     with checkpointing, which must meet the same bar. A nondeterminism error is handled
     as training handles it (:func:`train.accumulate_or_relax`), recorded, and the strict
     setting restored after. ``tokenizer`` and ``embed_rows``: as training gets them (the
-    base arm's delta is in the step)."""
+    base arm's delta is in the step). With ``embed_rows`` the step also runs the
+    micro-batch with the most scored tokens (:func:`most_scored_micro_batch`) if it is not
+    one of the two: the step's peak, which the gate reads, is then the largest of the three
+    micro-batches' peaks. Without them (main) the step is main's, unchanged."""
     import torch
     from transformers import AutoModelForCausalLM
 
@@ -455,6 +482,14 @@ def memory_probe(s: T.Settings, records: list[dict], device, tokenizer: str | No
 
     lengths = [r["n_tokens"] for r in records]
     mbs = largest_micro_batches(lengths, s)
+    scored = [r["n_trained"] for r in records]
+    by_scored = None
+    if embed_rows:
+        top = most_scored_micro_batch(lengths, scored, s)
+        by_scored = next((j for j, mb in enumerate(mbs) if sorted(mb) == sorted(top)), None)
+        if by_scored is None:
+            mbs.append(top)
+            by_scored = len(mbs) - 1
     rows = [i for mb in mbs for i in mb]
     tok = T.load_tokenizer(s.model, tokenizer)
     row_ids = T.token_ids(tok, embed_rows) if embed_rows else []
@@ -467,7 +502,10 @@ def memory_probe(s: T.Settings, records: list[dict], device, tokenizer: str | No
     pad = tok.pad_token_id if tok.pad_token_id is not None else tok.eos_token_id
     total = total_memory_bytes(device)
     out = {"micro_batches": [{"rows": len(mb), "longest": max(lengths[i] for i in mb),
-                              "token_slots": T.padded_tokens([mb], lengths)} for mb in mbs],
+                              "token_slots": T.padded_tokens([mb], lengths),
+                              **({"scored": sum(scored[i] for i in mb)}
+                                 if by_scored is not None else {})} for mb in mbs],
+           **({"most_scored": by_scored} if by_scored is not None else {}),
            "budget": s.token_budget, "device_bytes": total, "headroom": HEADROOM,
            "peak_rule": device.type == "cuda", "allocator": cuda_allocator(device),
            "attempts": [], "nondeterminism": ""}
@@ -522,11 +560,20 @@ def _print_memory(rep, mem: dict, model: str, device) -> None:
     """sft-check's memory section, from :func:`memory_probe`'s record."""
     gb = lambda b: "-" if b is None else f"{b / 1e9:.1f} GB"  # noqa: E731
     rep.kv("model", model)
+    by_scored = mem.get("most_scored")
     for j, mb in enumerate(mem["micro_batches"], 1):
         rep.kv(f"micro-batch {j}", f"{mb['rows']} rows x {mb['longest']:,} tokens "
                f"= {mb['token_slots']:,} slots")
+        if by_scored is not None:
+            rep.kv("  scored tokens", f"{mb['scored']:,}"
+                   + (" (the most of any micro-batch)" if j - 1 == by_scored else ""))
     rep.kv("token budget", f"{mem['budget']:,}")
-    rep.kv("the step", "both micro-batches, then AdamW")
+    n = len(mem["micro_batches"])
+    rep.kv("the step", ("both" if n == 2 else f"the {n}") + " micro-batches, then AdamW")
+    if by_scored is not None:
+        rep.note("Probed: the two with the most token slots and the one with the")
+        rep.note("most scored tokens (the delta adds a full-vocabulary term per")
+        rep.note("scored token). The step's peak is the largest of theirs.")
     rep.kv("device memory", gb(mem["device_bytes"]))
     if mem["peak_rule"]:
         rep.kv(f"limit ({mem['headroom']:.0%} of it)", gb(mem["headroom"] * mem["device_bytes"]))
@@ -809,10 +856,60 @@ def hub_rows(model_id: str, ids: list[int]) -> "torch.Tensor":  # noqa: F821
         return torch.stack([sl[i:i + 1][0] for i in ids]).float()
 
 
+def rows_like(w, i: int, threshold: float = ROW_IDENTICAL, chunk: int = 16384) -> list[int]:
+    """Ids of every row of ``w`` whose cosine with row ``i`` is at least ``threshold`` (row
+    ``i`` included), in float32, a chunk of rows at a time. Pure."""
+    import torch
+
+    v = w[i].detach().float()
+    v = v / torch.linalg.vector_norm(v)
+    out = []
+    for a in range(0, len(w), chunk):
+        r = w[a:a + chunk].detach().float()
+        cos = (r @ v) / torch.linalg.vector_norm(r, dim=1).clamp_min(1e-30)
+        out += [a + int(j) for j in torch.nonzero(cos >= threshold).flatten().cpu()]
+    return out
+
+
+def id_runs(ids: list[int]) -> str:
+    """Sorted ids as runs: ``[1, 2, 3, 7]`` -> ``"1-3, 7"``. Pure."""
+    runs: list[list[int]] = []
+    for i in sorted(ids):
+        if runs and i == runs[-1][1] + 1:
+            runs[-1][1] = i
+        else:
+            runs.append([i, i])
+    return ", ".join(f"{a}" if a == b else f"{a}-{b}" for a, b in runs)
+
+
+def id_summary(ids: list[int], max_runs: int = 3) -> str:
+    """:func:`id_runs` if there are at most ``max_runs`` runs; otherwise the longest run
+    and how many ids are outside it, and their range. Pure."""
+    full = id_runs(ids)
+    runs = full.split(", ")
+    if len(runs) <= max_runs:
+        return full
+    size = lambda r: int(r.split("-")[1]) - int(r.split("-")[0]) + 1 if "-" in r else 1  # noqa: E731
+    big = max(runs, key=lambda r: (size(r), -runs.index(r)))
+    a, b = (int(x) for x in (big.split("-") if "-" in big else (big, big)))
+    rest = [i for i in ids if not a <= i <= b]
+    return f"{big} and {len(rest):,} more from {min(rest)} to {max(rest)}"
+
+
+def id_kinds(ids: list[int], vocab_size: int, added: set[int]) -> dict[str, int]:
+    """How many of ``ids`` are added tokens, ordinary vocabulary tokens, and padding rows
+    (an embedding row with no token: id at or past the tokenizer's ``len``). Pure."""
+    pad = sum(i >= vocab_size for i in ids)
+    add = sum(i < vocab_size and i in added for i in ids)
+    return {"added tokens": add, "vocabulary tokens": len(ids) - pad - add, "padding rows": pad}
+
+
 def rows_check(lm, model: str, tokens: tuple[str, ...], ids: list[int],
-               instruct: str) -> dict:
+               instruct: str, tok=None) -> dict:
     """The four rows in the loaded base model (as it scores: the device's dtype) beside the
-    Instruct model's: norms, cosines, largest difference; and the median row norm."""
+    Instruct model's: norms, cosines, largest difference; and the median row norm. With
+    ``tok``: every row of the embedding identical to the first token's (T9e review S2), and
+    what those ids are."""
     import torch
 
     from .device import dtype_name
@@ -823,7 +920,14 @@ def rows_check(lm, model: str, tokens: tuple[str, ...], ids: list[int],
     median = float(torch.linalg.vector_norm(w.detach(), dim=1, dtype=torch.float32)
                    .median().cpu())
     b, ins = row_similarity(base), row_similarity(hub_rows(instruct, ids))
-    return {"model": model, "instruct": instruct, "tokens": list(tokens), "ids": ids,
+    same = {}
+    if tok is not None:
+        like = rows_like(w, ids[0])
+        same = {"same_as_first": {"n": len(like), "ids": id_summary(like),
+                                  "kinds": id_kinds(like, len(tok),
+                                                    set(tok.added_tokens_decoder)),
+                                  "trained": sum(i in like for i in ids)}}
+    return {**same, "model": model, "instruct": instruct, "tokens": list(tokens), "ids": ids,
             "tied": tied(lm), "rows": len(w), "hidden": int(w.shape[1]),
             "dtype": dtype_name(w.dtype),
             "median_norm": median, "base": b, "instruct_rows": ins, "threshold": ROW_IDENTICAL,
@@ -849,6 +953,15 @@ def _print_rows(rep, rw: dict) -> None:
     rep.kv("pairwise cosine, Instruct", f"{ins['cos_min']:.4f} to {ins['cos_max']:.4f}")
     rep.kv("identical in the base model", rw["identical"])
     rep.note(f"(identical: every pairwise cosine at least {rw['threshold']:g})")
+    sf = rw.get("same_as_first")
+    if sf:
+        kinds = " + ".join(f"{v:,} {k}" for k, v in sf["kinds"].items() if v)
+        rep.note(f"rows sharing {rw['tokens'][0]}'s embedding: {sf['n']:,}")
+        rep.note(f"  ({kinds}; ids {sf['ids']})", wrap=True)
+        rep.note(f"(every row of the embedding, cosine at least {rw['threshold']:g};"
+                 f" the {sf['trained']} above among them)", wrap=True)
+        rep.note(f"Only the {len(rw['ids'])} the format uses are trained; the others stay "
+                 "frozen.", wrap=True)
     rep.note("Tied and identical: from any hidden state, ending the turn and")
     rep.note("opening a call score the same, and LoRA can't separate them. The")
     rep.note(f"base arm trains a delta on these rows: {len(rw['ids'])} x {rw['hidden']:,} = "
@@ -965,7 +1078,8 @@ def run_check(root: Path, quick: bool, model: str | None, dev_limit: int | None,
                                   "assistant_turns": turns, "im_end_scored": closed}
 
     # 2b. memory: one training step on the two largest micro-batches (T8 review B1)
-    rep.section("Memory: one training step, the two largest micro-batches")
+    rep.section("Memory: one training step, the two largest micro-batches" if not m.embed_rows
+                else "Memory: one training step, the largest micro-batches")
     mem = memory_probe(s, real if s.rows is None else real[:s.rows], device, m.tokenizer,
                        m.embed_rows)
     _print_memory(rep, mem, s.model, device)
@@ -1010,7 +1124,7 @@ def run_check(root: Path, quick: bool, model: str | None, dev_limit: int | None,
         stops_ok = st["passes"]
     if m.embed_rows:
         row_ids = T.token_ids(tok_m, m.embed_rows)
-        rw = rows_check(lm, model, m.embed_rows, row_ids, prof.tokenizer_for(model))
+        rw = rows_check(lm, model, m.embed_rows, row_ids, prof.tokenizer_for(model), tok_m)
         _print_rows(rep, rw)
         checks["embed_rows"] = rw
         rows_ok = rw["passes"]
@@ -1618,9 +1732,10 @@ def _r4c(rep, m: Mode, trains: dict, seeds: list[int], checks: dict) -> None:
         for t, i in zip(er["tokens"], er["ids"], strict=True):
             rep.kv(f"  {t}", f"id {i}")
         rep.kv("  trainable parameters", f"{er['trainable']:,}")
-        rep.note("  In LoRA's AdamW group: its lr, schedule and betas; weight decay")
-        rep.note(f"  {er['weight_decay']:g}, as LoRA's. Embeddings are tied: the input embedding")
-        rep.note("  and the output head both see E + delta.")
+        rep.note("  In LoRA's AdamW group: its lr, schedule and betas;")
+        rep.note(f"  weight decay {er['weight_decay']:g}, as LoRA's.")
+        rep.note("  Embeddings are tied: the input embedding and the output head")
+        rep.note("  both see E + delta.")
         rep.kv("trainable parameters, all", f"{first['trainable'] + er['trainable']:,}")
     for k, v in first["dtypes"].items():
         rep.kv(f"dtype: {k}", v)

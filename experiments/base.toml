@@ -52,6 +52,12 @@
 # scoring takes ~0.78 h like the untrained one's, and seeds 2-3 don't fit: sft-pair estimates
 # each pair from what seed 1's pair measured and doesn't start one that can't finish before
 # the deadline (pairs stay whole; the report says which seeds it has).
+# Known case, accepted (T9e review S3): seed 1's pair is estimated with the 0.25 h scoring
+# prior (no trained model is measured yet), so a seed-1 pair admitted late can overrun the
+# deadline if its trained models still score at the untrained pace. That happens only if the
+# stages before the pairs take ~2x their expected time (~2 h, the pair starting ~3.85 h in);
+# the runner's hard limit (max_hours) still holds: the pair is cut off, the stages before it
+# are already fetched, and the report can be rebuilt on the Mac.
 # Worst case: max_hours x the live price, 6.0 h x $1.99 = $11.94, within the $12 cap; with
 # post 9's ledger ($10.48 so far) the post stays within its $50.
 name = "base"

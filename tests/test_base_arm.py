@@ -297,6 +297,54 @@ def test_the_memory_step_runs_with_the_rows(tmp_path):
                    token_budget=2 * max(r["n_tokens"] for r in recs))
     mem = R.memory_probe(s, recs, torch.device("cpu"), None, T.EMBED_ROWS)
     assert mem["fits"] and [a["ran"] for a in mem["attempts"]] == [True]
+    # T9e review M1: the micro-batch with the most scored tokens is probed too
+    lengths, scored = [r["n_tokens"] for r in recs], [r["n_trained"] for r in recs]
+    top = R.most_scored_micro_batch(lengths, scored, s)
+    j = mem["most_scored"]
+    assert mem["micro_batches"][j]["scored"] == sum(scored[i] for i in top)
+    assert all(mb["scored"] <= mem["micro_batches"][j]["scored"] for mb in mem["micro_batches"])
+    main = R.memory_probe(s, recs, torch.device("cpu"))  # main: the step as before
+    assert "most_scored" not in main and len(main["micro_batches"]) == 2
+    assert all("scored" not in mb for mb in main["micro_batches"])
+
+
+def test_the_micro_batch_with_the_most_scored_tokens():
+    s = T.Settings(batch_rows=4, epochs=1, token_budget=4000)
+    lengths = [3000, 100, 900, 950, 1000, 990, 200, 300, 2900, 50]
+    scored = [10, 90, 800, 900, 50, 950, 150, 250, 20, 40]  # the long rows score little
+    top = R.most_scored_micro_batch(lengths, scored, s)
+    every = {}
+    for seed in (1, 2, 3):
+        for st in T.plan_steps(len(lengths), seed, 1, 4):
+            for mb in T.micro_batches(st.rows, lengths, 4000):
+                every[tuple(sorted(mb))] = sum(scored[i] for i in mb)
+    assert sum(scored[i] for i in top) == max(every.values())
+    assert sorted(top) not in [sorted(mb) for mb in R.largest_micro_batches(lengths, s)]
+    assert lengths[top[0]] == max(lengths[i] for i in top)
+
+
+def test_rows_like_finds_every_copy_of_a_row():
+    g = torch.Generator().manual_seed(0)
+    w = torch.randn(50, 8, generator=g)
+    w[[3, 17, 40, 41, 42]] = w[3] * torch.tensor([1.0, 0.5, 2.0, 1.0, 1.0])[:, None]
+    w[41] += 1e-6  # still one direction
+    w[42] = -w[3]  # opposite: cosine -1
+    assert R.rows_like(w, 3, chunk=7) == [3, 17, 40, 41]
+    assert R.rows_like(w.bfloat16(), 3) == [3, 17, 40, 41]
+
+
+def test_id_runs_and_kinds():
+    assert R.id_runs([7, 1, 2, 3, 9, 10]) == "1-3, 7, 9-10"
+    assert R.id_runs([5]) == "5"
+    assert R.id_summary([1, 2, 3, 7]) == "1-3, 7"
+    assert R.id_summary([124, 125, 177, 180, *range(151644, 151936)]) == \
+        "151644-151935 and 4 more from 124 to 180"
+    ids = list(range(151644, 151936))
+    added = set(range(151643, 151665))
+    assert R.id_kinds(ids, 151665, added) == {"added tokens": 21, "vocabulary tokens": 0,
+                                              "padding rows": 271}
+    assert R.id_kinds([1, 2], 10, {2}) == {"added tokens": 1, "vocabulary tokens": 1,
+                                           "padding rows": 0}
 
 
 # -- the base arm's prompts and stops -------------------------------------------------------
@@ -361,7 +409,10 @@ def test_the_base_arms_check_sections_fit_74_columns(tmp_path):
           "tokens": list(T.EMBED_ROWS), "ids": [151644, 151645, 151657, 151658], "tied": True,
           "rows": 151936, "hidden": 1536, "dtype": "bfloat16", "median_norm": 1.032,
           "base": sim, "instruct_rows": dict(sim, cos_min=0.92, cos_max=0.95),
-          "threshold": R.ROW_IDENTICAL, "identical": True, "passes": True}
+          "threshold": R.ROW_IDENTICAL, "identical": True, "passes": True,
+          "same_as_first": {"n": 292, "ids": "151644-151935", "trained": 4,
+                            "kinds": {"added tokens": 21, "vocabulary tokens": 0,
+                                      "padding rows": 271}}}
     rep = Report("t", out=tmp_path / "t.txt")
     R._profile_lines(rep, R.mode(False, ROOT, profile="base"))
     R._print_base_prompts(rep, pr)
@@ -375,6 +426,8 @@ def test_the_base_arms_check_sections_fit_74_columns(tmp_path):
     rep.close()
     text = (tmp_path / "t.txt").read_text()
     assert "4 x 1,536 = 6,144" in text and "6,144 parameters" in text
+    assert "rows sharing <|im_start|>'s embedding: 292" in text
+    assert "(21 added tokens + 271 padding rows; ids 151644-151935)" in text
     assert all(len(x) <= 74 for x in text.splitlines())
 
 
