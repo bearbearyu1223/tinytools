@@ -16,6 +16,8 @@ uv run tinytools bfcl-score --model Qwen/Qwen2.5-0.5B-Instruct \
 uv run tinytools bfcl-score --split dev --samples 8 --temperature 1.0
 uv run tinytools bfcl-rescore --replies outputs/bfcl-<...>-replies.jsonl  # no model
 uv run tinytools tasks              # our tool tasks -> data/tasks/, counts (r2a)
+uv run tinytools tasks --onetool    # post 10's one-tool kinds -> data/tasks/onetool-*.jsonl
+uv run tinytools bfcl-functions     # functions offered per BFCL item, before/after dev slice
 uv run tinytools check-demo         # three calls checked both ways (r2b)
 uv run tinytools score --split test --limit 30              # greedy, 30 per kind
 uv run tinytools score --split test --limit 10 --samples 8 --temperature 1.0

@@ -1,0 +1,287 @@
+==========================================================================
+tinytools tasks --onetool
+==========================================================================
+device        : mps (Apple arm64)
+torch         : 2.13.0
+platform      : Darwin 24.6.0 (arm64)
+device memory : 17.2 GB
+
+--------------------------------------------------------------------------
+One tool offered: tasks by kind and sub-kind
+--------------------------------------------------------------------------
+  kind / sub-kind        test  dev  train  train-sample
+  -------------------------------------------------------
+  one tool, fits          500   40   1000           100
+    plain                 250   20    500            50
+      explicit values     188   15    375            38
+      tricky values        62    5    125            12
+    operation verb        250   20    500            50
+  one tool, doesn't fit   500   40   1000           100
+    cross-domain          250   20    500            50
+      executable job      125   10    250            25
+      distractor job      125   10    250            25
+    near miss             250   20    500            50
+  total                  1000   80   2000           200
+  reading-required        375   30    750            75
+  seed 0. train-sample is a seeded sample of train, dealt
+  over each stratum's jobs as the splits are.
+  fits: right = execution match; doesn't fit: right = declined.
+  reading-required: a doesn't-fit item whose job is a tool that runs
+  (not the one offered); only reading the tool tells it from a fits
+  item of the same job.
+
+--------------------------------------------------------------------------
+The tools: post 9's five, and twelve that run now
+--------------------------------------------------------------------------
+  operation tools (their own registry; post 9 never offers them):
+    calendar   cancel_calendar_event, update_calendar_event
+    contacts   add_contact, update_contact, delete_contact
+    documents  create_document, delete_document, rename_document,
+               share_document
+    math       differentiate, integrate, factor_polynomial
+  post 9's tools that run            5
+  distractors (schema only)          6
+  tools that run now                 17
+  post 9's schemas byte-identical    yes (4c14a216716dc804)
+  post 9 tasks offering a new tool   0
+  checked by execution: state reset before every call; calendar,
+  contacts and documents compared whole after the call; math by
+  the result's canonical polynomial. delete_calendar_event stays a
+  distractor (it takes an event id).
+
+--------------------------------------------------------------------------
+Near miss: which pairs count
+--------------------------------------------------------------------------
+  dropped: same domain, and the tool offered does a direct step of the
+  job: a look-up finds the record a change, delete or share acts on;
+  creating a record is a step of changing one (create anew, drop the old).
+  offered                 needs (pair dropped)
+  ----------------------------------------------
+  search_contacts               update_contact
+  add_contact                   update_contact
+  search_contacts               delete_contact
+  get_calendar_event     update_calendar_event
+  create_calendar_event  update_calendar_event
+  get_calendar_event     cancel_calendar_event
+  search_documents             rename_document
+  create_document              rename_document
+  search_documents             delete_document
+  search_documents              share_document
+  10 pairs dropped. Kept: cancel or delete offered for a change
+  (one call can't do the edit, so declining is right).
+  families with no near-miss pair    none
+
+  family (fits / near miss)  pairs   test  dev  train  train-sample
+  -------------------------------------------------------------------
+  differentiate                  3  18/17  1/2  36/36           4/3
+  integrate                      3  18/18  2/2  36/36           4/4
+  factor_polynomial              3  18/18  1/1  36/35           3/3
+  add_contact                    3  18/18  2/1  36/35           4/3
+  update_contact                 1  18/18  1/2  36/36           4/4
+  delete_contact                 2  17/18  1/2  35/36           3/4
+  get_calendar_event             3  18/18  1/2  35/36           4/4
+  create_calendar_event          3  18/18  1/1  36/35           3/3
+  update_calendar_event          1  18/18  2/1  35/36           3/4
+  cancel_calendar_event          2  18/18  1/2  36/36           3/3
+  create_document                4  17/18  2/1  36/36           4/4
+  rename_document                2  18/18  2/1  36/36           3/4
+  delete_document                3  18/17  2/1  35/35           4/4
+  share_document                 3  18/18  1/1  36/36           4/3
+  fits: operation verb (the family's own tool offered); near miss:
+  another tool of the domain offered. pairs: tools that can be offered.
+  largest fits - near-miss gap       1 (any family, any split)
+
+--------------------------------------------------------------------------
+Cross-domain: what the request needs
+--------------------------------------------------------------------------
+  needs                     domain  test  dev  train  train-sample
+  ------------------------------------------------------------------
+  calculator                  math     8    0     15             1
+  differentiate               math     8    0     14             2
+  integrate                   math     7    1     15             2
+  factor_polynomial           math     7    1     15             2
+  search_contacts         contacts     7    1     14             1
+  add_contact             contacts     7    0     14             1
+  update_contact          contacts     7    0     15             1
+  delete_contact          contacts     7    1     14             2
+  get_calendar_event      calendar     8    0     15             2
+  create_calendar_event   calendar     8    1     15             1
+  update_calendar_event   calendar     7    1     15             1
+  cancel_calendar_event   calendar     7    1     14             1
+  search_documents       documents     8    0     15             1
+  create_document        documents     7    1     15             1
+  rename_document        documents     7    1     15             2
+  delete_document        documents     7    1     15             2
+  share_document         documents     8    0     15             2
+  send_email                 email    25    2     50             5
+  get_weather              weather    25    2     50             5
+  set_reminder           reminders    25    2     50             5
+  get_stock_price           stocks    25    2     50             5
+  translate_text          language    25    2     50             5
+  the first 17 run (reading-required); the last 5 are distractors.
+  dev: every distractor job          yes
+  dev: every domain as cross-domain  yes
+  dev: every operation family        yes
+
+--------------------------------------------------------------------------
+Examples from test
+--------------------------------------------------------------------------
+  plain, explicit:
+    offered get_calendar_event, needs get_calendar_event:
+      Look at my calendar on 19 March for me.
+  plain, tricky:
+    offered search_contacts, needs search_contacts:
+      Get Katherine Nguyen's details from my contacts.
+  operation verb:
+    offered update_calendar_event, needs update_calendar_event:
+      Reschedule "Coffee with Ben Carter" for Sunday, April 19.
+  cross-domain, executable:
+    offered create_calendar_event, needs delete_contact:
+      Remove Oscar Lindqvist from my contacts, please.
+  cross-domain, distractor:
+    offered rename_document, needs get_weather:
+      Is it going to be sunny in Daegu this weekend?
+  near miss:
+    offered cancel_calendar_event, needs update_calendar_event:
+      Move "Coffee with Ben Carter" to March 21st.
+
+--------------------------------------------------------------------------
+Shortcut controls: rules that never read the operation
+--------------------------------------------------------------------------
+  rule (test set)        c+    c-      D    D_R  D_near
+  -------------------------------------------------------
+  Rule A (verb only)   64.6  45.4  +19.2   +0.0    +0.1
+  job identity        100.0  75.0  +25.0   +0.0    +0.0
+  domain identity     100.0  50.0  +50.0  +41.5    +0.0
+  tool-name overlap    55.8  21.4  +34.4  +35.0   +24.6
+  call iff tricky      12.4   1.6  +10.8   +1.9    +0.0
+  controls (the first three): Rule A declines on a delete, change,
+  share or symbolic word; job identity declines unless the job is a
+  tool that runs; domain identity calls iff the tool offered is in
+  the request's domain (it reads the tool's app, not its operation).
+  tool-name overlap (descriptive): calls iff a word of the tool's
+  name, or its plural, is in the request. call iff tricky (a check):
+  calls iff the values are written the tricky way.
+  c+, c-, D: call rate (%) where a call is / isn't needed, whole
+  test; D = c+ - c-.
+  D_R: on R, 375 reading-required items and the 500 fits items
+  of the same 17 jobs; means over the jobs.
+  D_near: operation-verb fits vs near miss (same domain), 250 and 250
+  items; means over the 14 operation families.
+
+  R: tricky values, by job        fits  doesn't fit
+  ---------------------------------------------------
+  get_calendar_event        16 (22.5%)     2 (7.7%)
+  create_calendar_event     16 (22.2%)     2 (7.7%)
+  search_contacts           15 (28.8%)    2 (28.6%)
+  calculator                15 (28.3%)      2 (25%)
+  cross-domain items of these jobs are dealt 3 : 1 explicit : tricky,
+  as plain fits are; near misses and operation-verb fits are explicit.
+
+--------------------------------------------------------------------------
+Entity overlap with post 9's train split and one-tool train
+--------------------------------------------------------------------------
+  test: stratum             post 9 train  one-tool train
+  --------------------------------------------------------
+  plain, explicit            114 (60.6%)      44 (23.4%)
+  plain, tricky               32 (51.6%)      19 (30.6%)
+  operation verb              26 (10.4%)      51 (20.4%)
+  cross-domain, executable    26 (20.8%)      31 (24.8%)
+  cross-domain, distractor        0 (0%)      37 (29.6%)
+  near miss                    21 (8.4%)        50 (20%)
+  all                        219 (21.9%)     232 (23.2%)
+  an item whose job and slot values (contact, title, numbers, a date
+  counted once however written) occur in a train item: post 9's, or
+  one-tool's (RL trains on both). Distractor jobs are held out from
+  all of post 9's splits; cancel counts post 9's delete-event items.
+  right answer in one-tool train     same 92, both 57, opposite 83
+  per test item above: its one-tool train items all have its right
+  answer (call or decline), some each way, or all the opposite one.
+  test items whose task is in        dev 6, train 73
+  dev items whose task is in         train 7
+  a task: the job, its values (a date counted once however written)
+  and the tool offered. Dev and train skip a task an earlier split
+  has only if the date is written the same way, so these count the
+  calendar tasks that recur with the date written another way.
+  Calendar dates repeat across splits: the pool has only 45 event days.
+
+--------------------------------------------------------------------------
+Pools: big enough for test + dev + train, all disjoint
+--------------------------------------------------------------------------
+  pool (the job; phrasing)       candidates  drawn   ratio
+  ----------------------------------------------------------
+  get_stock_price                       180     77    2.34
+  create_document                       320    133    2.41
+  delete_document                       395    131    3.02
+  delete_contact                        450    131    3.44
+  get_weather                           344     77    4.47
+  search_contacts                       600    131    4.58
+  translate_text                        363     77    4.71
+  set_reminder                          366     77    4.75
+  cancel_calendar_event                 684    133    5.14
+  search_contacts; tricky               300     53    5.66
+  search_documents                      790    139    5.68
+  factor_polynomial                     900    132    6.82
+  get_calendar_event                   1920    242    7.93
+  get_calendar_event; tricky            432     54    8.00
+  update_contact                       1608    133   12.09
+  send_email                           1254     77   16.29
+  add_contact                          2670    131   20.38
+  integrate                            2933    135   21.73
+  differentiate                        2955    132   22.39
+  create_calendar_event                5999    243   24.69
+  calculator                           4967    133   37.35
+  calculator; tricky                   3631     54   67.24
+  share_document                      14220    133  106.92
+  create_calendar_event; tricky        5999     55  109.07
+  rename_document                     18960    134  141.49
+  update_calendar_event               36792    133  276.63
+  candidates: distinct requests, post 9's request texts (and, for
+  distractor jobs, entities) removed; drawn: test + dev + train.
+  every pool covers its draw         yes
+
+  splits                same text  same template+slots
+  ------------------------------------------------------
+  test / dev                    0                    0
+  test / train                  0                    0
+  dev / train                   0                    0
+  test / post 9 (any)           0                    -
+  dev / post 9 (any)            0                    -
+  train / post 9 (any)          0                    -
+  post 9's template ids never occur here (ours start '1t-').
+
+--------------------------------------------------------------------------
+The step mix: kinds per RL step (fixed weights)
+--------------------------------------------------------------------------
+  kind                   weight   share  fallback   share
+  ---------------------------------------------------------
+  choose+fill                40   40.0%        40   36.4%
+  tricky arguments           15   15.0%        15   13.6%
+  no tool fits               15   15.0%        15   13.6%
+  one tool, fits             15   15.0%        25   22.7%
+  one tool, doesn't fit      15   15.0%        15   13.6%
+  total                     100  100.0%       110  100.0%
+  fallback: the gate's, if too few one-tool-fits groups are mixed.
+  within one tool, fits: plain and operation verb 1 : 1 (the splits).
+
+--------------------------------------------------------------------------
+Post 9's splits, unchanged
+--------------------------------------------------------------------------
+  split         tasks  sha256 (first 16)  pinned  file
+  ------------------------------------------------------
+  test           1000   ef5f1ae004e76b72     yes  same
+  dev             200   fabf92cbf4ea84fe     yes  same
+  train          5000   d44888a0368a1b0a     yes  same
+  train-sample    500   fd6c706bd0e1bfe7     yes  same
+  post 9's split hashes unchanged    yes (4 of 4 match)
+
+--------------------------------------------------------------------------
+Files (regenerated byte for byte from the seed)
+--------------------------------------------------------------------------
+  split         tasks  sha256 (first 16)
+  ----------------------------------------
+  test           1000   7b0ae3f5230de8ac
+  dev              80   b80cdf8aecf2f7b8
+  train          2000   bc4289c6b3b26635
+  train-sample    200   9ac4fcba61d7adb1
+  files: data/tasks/onetool-<split>.jsonl

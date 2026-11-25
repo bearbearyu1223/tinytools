@@ -1,0 +1,59 @@
+==========================================================================
+tinytools bfcl-functions
+==========================================================================
+device        : mps (Apple arm64)
+torch         : 2.13.0
+platform      : Darwin 24.6.0 (arm64)
+device memory : 17.2 GB
+
+--------------------------------------------------------------------------
+The data: bfcl-eval's own files
+--------------------------------------------------------------------------
+  bfcl-eval                          2025.12.17
+  the leaderboard's version          2025.12.17 (same: yes)
+  sha256 of each file read, and whether it is the pinned one:
+    BFCL_v4_simple_python.json                   pinned yes
+      82dd63ba502eb2520c6b5d1d9a5c4b590e03ff261565175561f6228a367d1991
+    BFCL_v4_parallel.json                        pinned yes
+      19f51a82eff42e5d62541aa500115a056eb78f437c2ba1f10415fd7c8e5dda84
+    BFCL_v4_multiple.json                        pinned yes
+      aef168155ebd74b7ac2401198b201343bc7d16d7a3d7e0d4e6d8ee82c6969b2a
+    BFCL_v4_parallel_multiple.json               pinned yes
+      8863ea8433239f55c5f016154cf0830853c89f693c6ea270396a2fa121960579
+    BFCL_v4_irrelevance.json                     pinned yes
+      2b6ed4c2e992cdcf5f1678a701851f944bef7550ee026ed1ddb89efed5be01a6
+  every file the pinned one          yes (5 of 5)
+
+--------------------------------------------------------------------------
+Functions offered per item, every item in the file
+--------------------------------------------------------------------------
+  category           items        1 fn       2 fns       3 fns     4 fns
+  ------------------------------------------------------------------------
+  simple               400  400 (100%)           -           -         -
+  parallel             200  200 (100%)           -           -         -
+  multiple             200           -  79 (39.5%)  85 (42.5%)  36 (18%)
+  parallel_multiple    200           -   100 (50%)    80 (40%)  20 (10%)
+  irrelevance          240  240 (100%)           -           -         -
+  (%): share of the category's items.
+
+--------------------------------------------------------------------------
+After the dev slice (the items post 10 scores)
+--------------------------------------------------------------------------
+  category           items        1 fn       2 fns       3 fns       4 fns
+  ------------------------------------------------------------------------
+  simple               360  360 (100%)           -           -           -
+  parallel             180  180 (100%)           -           -           -
+  multiple             180           -  69 (38.3%)  79 (43.9%)  32 (17.8%)
+  parallel_multiple    180           -  93 (51.7%)  70 (38.9%)   17 (9.4%)
+  irrelevance          216  216 (100%)           -           -           -
+  dev slice: 10% of each category, seed 0, held out of
+  every published BFCL number.
+
+--------------------------------------------------------------------------
+One-function prompts
+--------------------------------------------------------------------------
+  set                1 function, all  in dev  1 function, after
+  ---------------------------------------------------------------
+  simple + parallel       600 (100%)      60         540 (100%)
+  irrelevance             240 (100%)      24         216 (100%)
+  simple + parallel need a call; irrelevance needs none.

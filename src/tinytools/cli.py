@@ -7,6 +7,8 @@ Commands (``tinytools <command> --help`` for each one's flags):
     toolace-convert write the English rows in Qwen2.5's tool format to data/
     bfcl-score      score a model on BFCL, outcome by outcome; or sample it 8 times
     tasks           generate our tool tasks (test / dev / train) and count them
+                    (--onetool: post 10's one-tool kinds, their sub-kinds, the step mix)
+    bfcl-functions  functions offered per BFCL item, every item and after the dev slice
     check-demo      three calls checked by exact match and by execution match
     score           score a model on our tool tasks, outcome by outcome; or sample 8
     rescore         re-check a score replies file with the current checkers (no model)
@@ -698,6 +700,300 @@ def cmd_tasks(args) -> None:
     rep.table(["split", "tasks", "sha256 (first 16)"],
               [[s, len(splits[s]), tasks.sha256(splits[s])[:16]] for s in names])
     rep.note(f"files: {paths['test'].parent.relative_to(ROOT)}/<split>.jsonl")
+    rep.close()
+
+
+def cmd_tasks_onetool(args) -> None:
+    """r2a: post 10's one-tool kinds by sub-kind and split, the operation tools, the
+    near-miss rule, the shortcut controls (D, D_R, D_near), the phrasing check, the
+    entity overlap with both train splits, post 9 unchanged."""
+    from . import onetool_tasks as ot
+    from . import shortcuts as sc
+    from . import tasks, tools
+    from .bfclfuncs import count_pct
+
+    post9 = tasks.generate(args.seed)
+    splits = ot.generate(args.seed, post9=post9)
+    directory = TASKS_DIR if args.seed == tasks.DEFAULT_SEED else TASKS_DIR / f"seed{args.seed}"
+    paths = ot.write(splits, directory)
+    suffix = "" if args.seed == tasks.DEFAULT_SEED else f"-seed{args.seed}"
+    rep = Report("tinytools tasks --onetool", out=OUTPUTS / f"tasks-onetool{suffix}.txt")
+    rep.header()
+    names = list(splits)
+    test = splits["test"]
+
+    rep.section("One tool offered: tasks by kind and sub-kind")
+    per = {s: ot.counts(splits[s]) for s in names}
+    sub = {s: ot.subkind_counts(splits[s]) for s in names}
+    rows = []
+    for kind in ot.KINDS:
+        rows.append([kind, *[sum(n for (k, _), n in sub[s].items() if k == kind)
+                             for s in names]])
+        for sk in ot.SUBKINDS[kind]:
+            rows.append([f"  {sk}", *[sub[s][(kind, sk)] for s in names]])
+            parts = [st for st in ot.STRATA if st.subkind == sk and st.name != sk]
+            for st in parts:
+                label = st.phrasing if sk == ot.PLAIN else f"{st.job_class} job"
+                rows.append([f"    {label}", *[per[s][st.name] for s in names]])
+    rows.append(["total", *[len(splits[s]) for s in names]])
+    rows.append(["reading-required", *[sum(t["reading_required"] for t in splits[s])
+                                       for s in names]])
+    rep.table(["kind / sub-kind", *names], rows)
+    rep.note(f"seed {args.seed}. {ot.SAMPLE_SPLIT} is a seeded sample of train, dealt")
+    rep.note("over each stratum's jobs as the splits are.")
+    rep.note("fits: right = execution match; doesn't fit: right = declined.")
+    rep.note("reading-required: a doesn't-fit item whose job is a tool that runs")
+    rep.note("(not the one offered); only reading the tool tells it from a fits")
+    rep.note("item of the same job.")
+
+    rep.section("The tools: post 9's five, and twelve that run now")
+    by_domain: dict[str, list[str]] = {}
+    for name in tools.OPERATION_NAMES:
+        by_domain.setdefault(ot.JOBS[name].domain, []).append(name)
+    rep.note("operation tools (their own registry; post 9 never offers them):")
+    for d, ns in by_domain.items():
+        rep.kv(f"  {d}", ", ".join(ns), width=12, wrap=True)
+    rep.kv("post 9's tools that run", len(tools.TOOL_NAMES))
+    rep.kv("distractors (schema only)", len(tools.DISTRACTOR_NAMES))
+    rep.kv("tools that run now", len(tools.EXECUTABLE_NAMES))
+    schema_sha = hashlib.sha256(ot.post9_schema_bytes()).hexdigest()
+    rep.kv("post 9's schemas byte-identical",
+           f"{'yes' if schema_sha == ot.POST9_SCHEMAS_SHA256 else 'NO'} ({schema_sha[:16]})")
+    in_post9 = sum(n in t["tools"] for s in tasks.SPLITS for t in post9[s]
+                   for n in tools.OPERATION_NAMES)
+    rep.kv("post 9 tasks offering a new tool", in_post9)
+    rep.note("checked by execution: state reset before every call; calendar,")
+    rep.note("contacts and documents compared whole after the call; math by")
+    rep.note("the result's canonical polynomial. delete_calendar_event stays a")
+    rep.note("distractor (it takes an event id).")
+
+    rep.section("Near miss: which pairs count")
+    rep.note(f"dropped: {ot.STEP_RULE}.", wrap=True)
+    rows = [[o, job] for o, job in ot.dropped_near_pairs()]
+    rep.table(["offered", "needs (pair dropped)"], rows)
+    rep.note(f"{len(rows)} pairs dropped. Kept: cancel or delete offered for a change")
+    rep.note("(one call can't do the edit, so declining is right).")
+    short = ot.near_shortfall()
+    rep.kv("families with no near-miss pair", ", ".join(short) if short else "none",
+           wrap=True)
+    rep.blank()
+    rows = []
+    for fam in ot.FAMILIES:
+        def fn(s, fam=fam):
+            f = sum(t["tool"] == fam and t["subkind"] == ot.VERB for t in splits[s])
+            n = sum(t["tool"] == fam and t["subkind"] == ot.NEAR for t in splits[s])
+            return f"{f}/{n}"
+        rows.append([fam, len(ot.near_offers(fam)), *[fn(s) for s in names]])
+    rep.table(["family (fits / near miss)", "pairs", *names], rows)
+    worst = max(abs(sum(t["tool"] == f and t["subkind"] == ot.VERB for t in splits[s])
+                    - sum(t["tool"] == f and t["subkind"] == ot.NEAR for t in splits[s]))
+                for f in ot.FAMILIES for s in names)
+    rep.note("fits: operation verb (the family's own tool offered); near miss:")
+    rep.note("another tool of the domain offered. pairs: tools that can be offered.")
+    rep.kv("largest fits - near-miss gap", f"{worst} (any family, any split)")
+
+    rep.section("Cross-domain: what the request needs")
+    rows = [[job, ot.JOBS[job].domain, *[sum(t["tool"] == job and t["subkind"] == ot.CROSS
+                                             for t in splits[s]) for s in names]]
+            for job in (*ot.EXECUTABLE_JOBS, *ot.DISTRACTOR_JOBS)]
+    rep.table(["needs", "domain", *names], rows)
+    rep.note("the first 17 run (reading-required); the last 5 are distractors.")
+    dev = splits["dev"]
+    dev_jobs = {t["tool"] for t in dev}
+    dev_cross_domains = {t["job_domain"] for t in dev if t["subkind"] == ot.CROSS}
+    rep.kv("dev: every distractor job",
+           all(any(t["tool"] == j and t["subkind"] == ot.CROSS for t in dev)
+               for j in ot.DISTRACTOR_JOBS))
+    rep.kv("dev: every domain as cross-domain",
+           all(ot.JOBS[j].domain in dev_cross_domains for j in ot.EXECUTABLE_JOBS))
+    rep.kv("dev: every operation family", all(f in dev_jobs for f in ot.FAMILIES))
+
+    rep.section("Examples from test")
+    by_id = sorted(test, key=lambda t: t["id"])
+    for st in ot.STRATA:
+        t = next(x for x in by_id if ot.stratum_of(x) == st.name)
+        rep.note(f"{st.name}:")
+        rep.note(f"  offered {t['tools'][0]}, needs {t['tool']}:")
+        rep.note(f"    {t['request']}", wrap=True)
+
+    rep.section("Shortcut controls: rules that never read the operation")
+    rows = []
+    for group in (sc.RULES, sc.DESCRIPTIVE, sc.CHECKS):
+        for label, rule in group.items():
+            x = sc.rule_scores(test, rule)
+            rows.append([label, f"{100 * x.whole.c_plus:.1f}", f"{100 * x.whole.c_minus:.1f}",
+                         f"{100 * x.whole.d:+.1f}", f"{100 * x.reading.d:+.1f}",
+                         f"{100 * x.near.d:+.1f}"])
+    rep.table(["rule (test set)", "c+", "c-", "D", "D_R", "D_near"], rows)
+    x = sc.rule_scores(test, sc.rule_a_calls)
+    rep.note("controls (the first three): Rule A declines on a delete, change,")
+    rep.note("share or symbolic word; job identity declines unless the job is a")
+    rep.note("tool that runs; domain identity calls iff the tool offered is in")
+    rep.note("the request's domain (it reads the tool's app, not its operation).")
+    rep.note("tool-name overlap (descriptive): calls iff a word of the tool's")
+    rep.note("name, or its plural, is in the request. call iff tricky (a check):")
+    rep.note("calls iff the values are written the tricky way.")
+    rep.note("c+, c-, D: call rate (%) where a call is / isn't needed, whole")
+    rep.note("test; D = c+ - c-.")
+    rep.note(f"D_R: on R, {x.reading.n_minus} reading-required items and the "
+             f"{x.reading.n_plus} fits items", wrap=True)
+    rep.note(f"of the same {len(x.reading.jobs)} jobs; means over the jobs.")
+    rep.note(f"D_near: operation-verb fits vs near miss (same domain), "
+             f"{x.near.n_plus} and {x.near.n_minus}", wrap=True)
+    rep.note(f"items; means over the {len(x.near.jobs)} operation families.")
+    r = sc.reading_subset(test)
+    rows = []
+    for j in sc.reading_jobs(r):
+        if j not in ot.TRICKY_TOOLS:
+            continue
+        side = {k: [t for t in r if t["tool"] == j and t["kind"] == k] for k in ot.KINDS}
+        rows.append([j, *[count_pct(sum(t["phrasing"] == ot.TRICKY for t in side[k]),
+                                    len(side[k])) for k in ot.KINDS]])
+    rep.blank()
+    rep.table(["R: tricky values, by job", "fits", "doesn't fit"], rows)
+    rep.note("cross-domain items of these jobs are dealt 3 : 1 explicit : tricky,")
+    rep.note("as plain fits are; near misses and operation-verb fits are explicit.")
+
+    rep.section("Entity overlap with post 9's train split and one-tool train")
+    p9_train = {ot.dated_record_entity(t) for t in post9["train"]}
+    one_train = {ot.dated_record_entity(t) for t in splits["train"]}
+    rows = []
+    for st in [*ot.STRATA, None]:
+        mine = [t for t in test if st is None or ot.stratum_of(t) == st.name]
+        hits = [sum(ot.dated_record_entity(t) in keys for t in mine)
+                for keys in (p9_train, one_train)]
+        rows.append(["all" if st is None else st.name,
+                     *[count_pct(h, len(mine)) for h in hits]])
+    rep.table(["test: stratum", "post 9 train", "one-tool train"], rows)
+    rep.note("an item whose job and slot values (contact, title, numbers, a date")
+    rep.note("counted once however written) occur in a train item: post 9's, or")
+    rep.note("one-tool's (RL trains on both). Distractor jobs are held out from")
+    rep.note("all of post 9's splits; cancel counts post 9's delete-event items.")
+    agree = ot.answer_agreement(test, splits["train"])
+    rep.kv("right answer in one-tool train", "same {}, both {}, opposite {}".format(
+        agree[ot.SAME_ANSWER], agree[ot.BOTH_ANSWERS], agree[ot.OPPOSITE_ANSWER]))
+    rep.note("per test item above: its one-tool train items all have its right")
+    rep.note("answer (call or decline), some each way, or all the opposite one.")
+    keys = {s: {ot.dated_record_key(t) for t in splits[s]} for s in ("dev", "train")}
+    rep.kv("test items whose task is in", "dev {}, train {}".format(
+        *[sum(ot.dated_record_key(t) in keys[s] for t in test) for s in ("dev", "train")]))
+    rep.kv("dev items whose task is in", "train {}".format(
+        sum(ot.dated_record_key(t) in keys["train"] for t in splits["dev"])))
+    rep.note("a task: the job, its values (a date counted once however written)")
+    rep.note("and the tool offered. Dev and train skip a task an earlier split")
+    rep.note("has only if the date is written the same way, so these count the")
+    rep.note("calendar tasks that recur with the date written another way.")
+    rep.note(f"Calendar dates repeat across splits: the pool has only "
+             f"{len(tasks._event_days())} event days.", wrap=True)
+
+    rep.section("Pools: big enough for test + dev + train, all disjoint")
+    pool_rows = sorted(ot.pool_capacity(args.seed, post9=post9),
+                       key=lambda r: (r.headroom, r.job, r.phrasing))
+    rep.table(["pool (the job; phrasing)", "candidates", "drawn", "ratio"],
+              [[f"{r.job}{'; tricky' if r.phrasing == ot.TRICKY else ''}", r.candidates,
+                r.drawn, f"{r.headroom:.2f}"] for r in pool_rows])
+    rep.note("candidates: distinct requests, post 9's request texts (and, for")
+    rep.note("distractor jobs, entities) removed; drawn: test + dev + train.")
+    rep.kv("every pool covers its draw", all(r.candidates >= r.drawn for r in pool_rows))
+    main = list(ot.SPLITS)
+
+    def keyset(recs, by):
+        return {t["request"] if by == "text" else (t["template"], json.dumps(t["slots"],
+                                                                                sort_keys=True))
+                for t in recs}
+    pairs = [(a, b) for i, a in enumerate(main) for b in main[i + 1:]]
+    rows = [[f"{a} / {b}", len(keyset(splits[a], "text") & keyset(splits[b], "text")),
+             len(keyset(splits[a], "slots") & keyset(splits[b], "slots"))] for a, b in pairs]
+    p9_text = ot.post9_texts(post9)
+    rows += [[f"{s} / post 9 (any)", len(keyset(splits[s], "text") & p9_text), "-"]
+             for s in main]
+    rep.blank()
+    rep.table(["splits", "same text", "same template+slots"], rows)
+    rep.note("post 9's template ids never occur here (ours start '1t-').")
+
+    rep.section("The step mix: kinds per RL step (fixed weights)")
+    main_mix, fallback = ot.mix_shares(ot.STEP_MIX), ot.mix_shares(ot.FALLBACK_MIX)
+    rows = [[k, ot.STEP_MIX[k], f"{main_mix[k]:.1f}%", ot.FALLBACK_MIX[k], f"{fallback[k]:.1f}%"]
+            for k in ot.STEP_MIX]
+    rows.append(["total", sum(ot.STEP_MIX.values()), f"{sum(main_mix.values()):.1f}%",
+                 sum(ot.FALLBACK_MIX.values()), f"{sum(fallback.values()):.1f}%"])
+    rep.table(["kind", "weight", "share", "fallback", "share"], rows)
+    rep.note("fallback: the gate's, if too few one-tool-fits groups are mixed.")
+    rep.note("within one tool, fits: plain and operation verb 1 : 1 (the splits).")
+
+    rep.section("Post 9's splits, unchanged")
+    rows, same = [], 0
+    for s, pinned in ot.POST9_SHA256.items():
+        h = tasks.sha256(post9[s])
+        f = TASKS_DIR / f"{s}.jsonl"
+        on_disk = "missing" if not f.exists() else (
+            "same" if hashlib.sha256(f.read_bytes()).hexdigest() == pinned else "differs")
+        same += h == pinned
+        rows.append([s, len(post9[s]), h[:16], h == pinned, on_disk])
+    rep.table(["split", "tasks", "sha256 (first 16)", "pinned", "file"], rows)
+    rep.kv("post 9's split hashes unchanged", f"{'yes' if same == len(rows) else 'NO'} "
+           f"({same} of {len(rows)} match)")
+
+    rep.section("Files (regenerated byte for byte from the seed)")
+    rep.table(["split", "tasks", "sha256 (first 16)"],
+              [[s, len(splits[s]), ot.sha256(splits[s])[:16]] for s in names])
+    rep.note(f"files: {paths[ot.FILE_PREFIX + 'test'].parent.relative_to(ROOT)}/"
+             f"{ot.FILE_PREFIX}<split>.jsonl")
+    rep.close()
+
+
+def cmd_bfcl_functions(args) -> None:
+    """r2b's first part: functions offered per BFCL item, before and after the dev slice."""
+    from . import bfclfuncs as bf
+    from .bfcl import DEV_SEED, DEV_SHARE, LEADERBOARD_BFCL_EVAL, bfcl_version
+
+    rep = Report("tinytools bfcl-functions", out=OUTPUTS / "bfcl-functions.txt")
+    rep.header()
+    counts = [bf.count(c) for c in bf.ORDER]
+
+    rep.section("The data: bfcl-eval's own files")
+    version = bfcl_version()
+    rep.kv("bfcl-eval", version)
+    rep.kv("the leaderboard's version", f"{LEADERBOARD_BFCL_EVAL} (same: "
+           f"{'yes' if version == LEADERBOARD_BFCL_EVAL else 'NO'})")
+    rep.note("sha256 of each file read, and whether it is the pinned one:")
+    for c in counts:
+        rep.note(f"  {c.path.name:<44} pinned {'yes' if c.pinned else 'NO'}")
+        rep.note(f"    {c.sha256}")
+    rep.kv("every file the pinned one", f"{'yes' if all(c.pinned for c in counts) else 'NO'} "
+           f"({sum(c.pinned for c in counts)} of {len(counts)})")
+
+    sizes = sorted({k for c in counts for k in c.every})
+    heads = ["category", "items", *[f"{k} fn{'s' if k > 1 else ''}" for k in sizes]]
+    for title, attr, total in [("Functions offered per item, every item in the file", "every", "n"),
+                               ("After the dev slice (the items post 10 scores)", "after_dev",
+                                "n_after")]:
+        rep.section(title)
+        rows = []
+        for c in counts:
+            got, n = getattr(c, attr), getattr(c, total)
+            rows.append([c.category, n, *[bf.count_pct(got[k], n) if got[k] else "-"
+                                          for k in sizes]])
+        rep.table(heads, rows)
+        if attr == "every":
+            rep.note("(%): share of the category's items.")
+        else:
+            rep.note(f"dev slice: {DEV_SHARE}% of each category, seed {DEV_SEED}, held out of")
+            rep.note("every published BFCL number.")
+
+    rep.section("One-function prompts")
+    by = {c.category: c for c in counts}
+    rows = []
+    for label, cats in [("simple + parallel", ("simple", "parallel")),
+                        ("irrelevance", ("irrelevance",))]:
+        one = sum(by[c].every[1] for c in cats)
+        one_after = sum(by[c].after_dev[1] for c in cats)
+        n = sum(by[c].n for c in cats)
+        n_after = sum(by[c].n_after for c in cats)
+        rows.append([label, bf.count_pct(one, n), sum(by[c].dev for c in cats),
+                     bf.count_pct(one_after, n_after)])
+    rep.table(["set", "1 function, all", "in dev", "1 function, after"], rows)
+    rep.note("simple + parallel need a call; irrelevance needs none.")
     rep.close()
 
 
@@ -1780,7 +2076,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("tasks", help="generate our tool tasks (test, dev, train) and count them")
     s.add_argument("--seed", type=int, default=0)
-    s.set_defaults(fn=cmd_tasks)
+    s.add_argument("--onetool", action="store_true",
+                   help="post 10's one-tool kinds instead (data/tasks/onetool-*.jsonl, "
+                        "outputs/tasks-onetool.txt); post 9's files are not rewritten")
+    s.set_defaults(fn=lambda a: (cmd_tasks_onetool if a.onetool else cmd_tasks)(a))
+
+    sub.add_parser("bfcl-functions", help="functions offered per BFCL item, before and after "
+                   "the dev slice").set_defaults(fn=cmd_bfcl_functions)
 
     sub.add_parser("check-demo", help="three calls checked by exact and execution match"
                    ).set_defaults(fn=cmd_check_demo)

@@ -290,18 +290,25 @@ CREATE_SPOKEN = [
 ]
 
 
-def create_pool(tricky: bool, rng: random.Random, size: int = 6000) -> list[Candidate]:
+def create_pool(tricky: bool, rng: random.Random, size: int = 6000,
+                templates: list[str] | None = None, prefix: str = "create") -> list[Candidate]:
+    """``templates``/``prefix``: another template set (post 10's one-tool pools); the
+    default is post 9's. The draws from ``rng`` are the same for any template set *with
+    the same number of templates* (``rng.randrange(len(templates))`` is the first draw of
+    each candidate, and randrange's draws depend on its bound), so a set of another
+    size gives other values, not post 9's with other wording."""
     today = tools.now().date()
     people = _names(False)
     if tricky:
         whens = [(p, d) for p, d in relative_dates(today) if d > today]  # future only
-        times, durs, templates = spoken_times(), SPOKEN_DURATIONS, CREATE_SPOKEN
+        times, durs = spoken_times(), SPOKEN_DURATIONS
+        templates = CREATE_SPOKEN if templates is None else templates
     else:
         days = [today + dt.timedelta(k) for k in range(1, 43)]
         whens = [(p, d) for d in days for p in explicit_dates(d)]
         times = [(t, t) for t in TIMES_24]
         durs = [(str(m), m) for m in (15, 20, 30, 45, 60, 75, 90, 120)]
-        templates = CREATE_PLAIN
+        templates = CREATE_PLAIN if templates is None else templates
     out = []
     for _ in range(size):
         i = rng.randrange(len(templates))
@@ -316,7 +323,7 @@ def create_pool(tricky: bool, rng: random.Random, size: int = 6000) -> list[Cand
         if who:
             args["attendees"] = who
         slots = {"title": title, "when": when, "time": time_text, "dur": dur_text, "who": who}
-        out.append(Candidate(f"create-{'spoken' if tricky else 'plain'}-{i}", slots,
+        out.append(Candidate(f"{prefix}-{'spoken' if tricky else 'plain'}-{i}", slots,
                              templates[i].format(title=title, when=when, time=time_text,
                                                  dur=dur_text, with_=with_),
                              _call("create_calendar_event", **args)))
@@ -384,8 +391,13 @@ CALC_UNITS = [
 ]
 
 
-def calculator_pool(tricky: bool, rng: random.Random, size: int = 6000) -> list[Candidate]:
-    templates = CALC_UNITS if tricky else CALC_PLAIN
+def calculator_pool(tricky: bool, rng: random.Random, size: int = 6000,
+                    templates: list[tuple[str, str]] | None = None,
+                    prefix: str = "calc") -> list[Candidate]:
+    """``templates``/``prefix`` as in :func:`create_pool`; a template may use any slot
+    below. The draws from ``rng`` don't depend on the templates' text."""
+    if templates is None:
+        templates = CALC_UNITS if tricky else CALC_PLAIN
     out = []
     for _ in range(size):
         i = rng.randrange(len(templates))
@@ -401,7 +413,7 @@ def calculator_pool(tricky: bool, rng: random.Random, size: int = 6000) -> list[
             "eur": _num(rng, 5, 2000), "h2": _num(rng, 1, 9), "m2": _num(rng, 1, 59),
         }
         used = {k: v for k, v in slots.items() if "{" + k + "}" in text}
-        out.append(Candidate(f"calc-{'units' if tricky else 'plain'}-{i}", used,
+        out.append(Candidate(f"{prefix}-{'units' if tricky else 'plain'}-{i}", used,
                              text.format(**used),
                              _call("calculator", expression=expr.format(**used))))
     return out

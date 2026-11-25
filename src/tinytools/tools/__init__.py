@@ -31,6 +31,23 @@ with no words left as no title (the date alone narrows the search).
 Distractor tools (:data:`DISTRACTORS`) have schemas only. They are offered in
 prompts but are never a task's right answer, and calling one is an error.
 
+**Operation tools (post 10)**, :data:`OPERATIONS`: twelve more tools that run, in a
+registry of their own so post 9's lists (:data:`TOOL_NAMES`, :data:`DISTRACTOR_NAMES`)
+and prompts are unchanged; :data:`EXECUTABLE_NAMES` is both. They change the state or
+compute a polynomial:
+
+    cancel_calendar_event, update_calendar_event          the calendar
+    add_contact, update_contact, delete_contact           the contacts
+    create_document, delete_document, rename_document,    the documents
+    share_document
+    differentiate, integrate, factor_polynomial           a polynomial in x (:mod:`poly`)
+
+A record is found by name or title, never by a search: a contact by its whole name as
+the contact list spells it (case and spacing aside); an event or a document by its
+whole title (the same words, :data:`STOPWORDS` aside). No match is an error, and so is
+more than one (an event title that occurs twice needs its date, for cancelling). Every
+call runs on fresh state, so execution match compares the whole state after the call.
+
 Pure Python; tested in ``tests/test_tools.py``.
 """
 
@@ -53,7 +70,8 @@ DATA = Path(__file__).resolve().parent / "data"
 __all__ = [
     "SCHEMAS", "DISTRACTORS", "TOOL_NAMES", "DISTRACTOR_NAMES", "ToolError", "State",
     "clock", "contacts", "calendar", "documents", "fresh_state", "execute", "words",
-    "evaluate", "STOPWORDS", "schema", "context_line", "is_blank",
+    "evaluate", "STOPWORDS", "schema", "context_line", "is_blank", "OPERATIONS",
+    "OPERATION_NAMES", "EXECUTABLE_NAMES", "contacts_key", "documents_key", "title_key",
 ]
 
 
@@ -235,9 +253,158 @@ TOOL_NAMES = tuple(SCHEMAS)
 DISTRACTOR_NAMES = tuple(DISTRACTORS)
 
 
+# -- operation tools (post 10): their own registry ------------------------------------
+
+_TITLE = {"type": "string", "description": "The event's title."}
+_DOC_TITLE = {"type": "string", "description": "The document's title."}
+_CONTACT_NAME = {"type": "string",
+                 "description": "The contact's full name, as the contact list spells it."}
+_POLY = {"type": "string",
+         "description": "A polynomial in x with integer coefficients, e.g. \"3x^2 - 4x + 1\"."}
+
+OPERATIONS: dict[str, dict] = {
+    "cancel_calendar_event": {
+        "name": "cancel_calendar_event",
+        "description": "Cancel an event on the user's calendar, found by its title. If two "
+                       "events have the same title, give the date too.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": _TITLE,
+                "date": {"type": "string",
+                         "description": "The event's day, as YYYY-MM-DD (only needed to tell "
+                                        "apart events with the same title)."},
+            },
+            "required": ["title"],
+        },
+    },
+    "update_calendar_event": {
+        "name": "update_calendar_event",
+        "description": "Move an event on the user's calendar to a new start time, a new day, "
+                       "or both. The event is found by its title; its length stays the same.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": _TITLE,
+                "start_time": {"type": "string", "description": "The new start time, 24-hour HH:MM."},
+                "date": {"type": "string", "description": "The new day, as YYYY-MM-DD."},
+            },
+            "required": ["title"],
+        },
+    },
+    "add_contact": {
+        "name": "add_contact",
+        "description": "Add a new contact to the user's contacts.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "The person's full name."},
+                "phone": {"type": "string", "description": "Phone number."},
+                "email": {"type": "string", "description": "Email address."},
+                "team": {"type": "string", "description": "The team they work on."},
+            },
+            "required": ["name"],
+        },
+    },
+    "update_contact": {
+        "name": "update_contact",
+        "description": "Change the phone number, email address or team of one of the user's "
+                       "contacts. Give at least one new value.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": _CONTACT_NAME,
+                "phone": {"type": "string", "description": "The new phone number."},
+                "email": {"type": "string", "description": "The new email address."},
+                "team": {"type": "string", "description": "The new team."},
+            },
+            "required": ["name"],
+        },
+    },
+    "delete_contact": {
+        "name": "delete_contact",
+        "description": "Delete one of the user's contacts.",
+        "parameters": {
+            "type": "object",
+            "properties": {"name": _CONTACT_NAME},
+            "required": ["name"],
+        },
+    },
+    "create_document": {
+        "name": "create_document",
+        "description": "Create a new, empty shared document.",
+        "parameters": {
+            "type": "object",
+            "properties": {"title": {"type": "string", "description": "The new document's title."}},
+            "required": ["title"],
+        },
+    },
+    "delete_document": {
+        "name": "delete_document",
+        "description": "Delete a shared document, found by its title.",
+        "parameters": {
+            "type": "object",
+            "properties": {"title": _DOC_TITLE},
+            "required": ["title"],
+        },
+    },
+    "rename_document": {
+        "name": "rename_document",
+        "description": "Rename a shared document.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "The document's current title."},
+                "new_title": {"type": "string", "description": "The new title."},
+            },
+            "required": ["title", "new_title"],
+        },
+    },
+    "share_document": {
+        "name": "share_document",
+        "description": "Share a shared document with one of the user's contacts (edit access).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": _DOC_TITLE,
+                "contact": _CONTACT_NAME,
+            },
+            "required": ["title", "contact"],
+        },
+    },
+    "differentiate": {
+        "name": "differentiate",
+        "description": "Differentiate a polynomial in x and return the derivative.",
+        "parameters": {"type": "object", "properties": {"polynomial": _POLY},
+                       "required": ["polynomial"]},
+    },
+    "integrate": {
+        "name": "integrate",
+        "description": "Integrate a polynomial in x and return the indefinite integral, "
+                       "with constant 0.",
+        "parameters": {"type": "object", "properties": {"polynomial": _POLY},
+                       "required": ["polynomial"]},
+    },
+    "factor_polynomial": {
+        "name": "factor_polynomial",
+        "description": "Factor a polynomial in x into linear factors with integer roots, "
+                       "e.g. \"x^2 - x - 6\" gives (x + 2)(x - 3).",
+        "parameters": {"type": "object", "properties": {"polynomial": _POLY},
+                       "required": ["polynomial"]},
+    },
+}
+
+OPERATION_NAMES = tuple(OPERATIONS)
+EXECUTABLE_NAMES = TOOL_NAMES + OPERATION_NAMES
+
+
 def schema(name: str) -> dict:
-    """A tool's schema, real or distractor."""
-    return copy.deepcopy(SCHEMAS.get(name) or DISTRACTORS[name])
+    """A tool's schema: post 9's real tools and distractors, or an operation tool."""
+    return copy.deepcopy(SCHEMAS.get(name) or DISTRACTORS.get(name) or OPERATIONS[name])
+
+
+def _schema_for_check(name: str) -> dict:
+    return SCHEMAS[name] if name in SCHEMAS else OPERATIONS[name]
 
 
 # -- argument checking -------------------------------------------------------------
@@ -270,11 +437,11 @@ def _check(name: str, args: Any) -> dict:
     """Validate ``args`` against the tool's schema; return them cleaned."""
     if not isinstance(args, dict):
         raise ToolError("arguments must be an object")
-    props = SCHEMAS[name]["parameters"]["properties"]
+    props = _schema_for_check(name)["parameters"]["properties"]
     unknown = sorted(set(args) - set(props))
     if unknown:
         raise ToolError(f"unknown argument(s): {', '.join(unknown)}")
-    required = SCHEMAS[name]["parameters"]["required"]
+    required = _schema_for_check(name)["parameters"]["required"]
     args = {k: v for k, v in args.items() if k in required or not is_blank(v)}
     missing = [k for k in required if k not in args]
     if missing:
@@ -446,12 +613,193 @@ def _search_documents(state: State, query: str) -> dict:
     return {"documents": copy.deepcopy(hits)}
 
 
+# -- the operation tools ---------------------------------------------------------------
+
+
+def _same_name(a: str, b: str) -> bool:
+    return " ".join(a.split()).casefold() == " ".join(b.split()).casefold()
+
+
+def _same_title(a: str, b: str) -> bool:
+    """The same words (case-insensitive, :data:`STOPWORDS` aside); a title of nothing
+    but filler words matches nothing."""
+    wa = words(a, drop_stopwords=True)
+    return bool(wa) and wa == words(b, drop_stopwords=True)
+
+
+def _one(records: list[dict], what: str, given: str) -> dict:
+    if not records:
+        raise ToolError(f"no {what} matches {given!r}")
+    if len(records) > 1:
+        raise ToolError(f"{len(records)} {what}s match {given!r}")
+    return records[0]
+
+
+def _contact(state: State, name: str) -> dict:
+    return _one([c for c in state.contacts if _same_name(c["name"], name)], "contact", name)
+
+
+def _document(state: State, title: str) -> dict:
+    return _one([d for d in state.documents if _same_title(d["title"], title)], "document",
+                title)
+
+
+def _event(state: State, title: str, date: str | None = None) -> dict:
+    day = _date(date) if date is not None else None
+    hits = [e for e in state.calendar if _same_title(e["title"], title)
+            and (day is None or e["date"] == day)]
+    if len(hits) > 1:
+        raise ToolError(f"{len(hits)} events match {title!r}; give the date")
+    return _one(hits, "event", title)
+
+
+def _cancel_calendar_event(state: State, title: str, date: str | None = None) -> dict:
+    event = _event(state, title, date)
+    state.calendar.remove(event)
+    return {"cancelled": copy.deepcopy(event)}
+
+
+def _update_calendar_event(state: State, title: str, start_time: str | None = None,
+                           date: str | None = None) -> dict:
+    if start_time is None and date is None:
+        raise ToolError("give a new start_time, a new date, or both")
+    event = _event(state, title)
+    if start_time is not None:
+        event["start_time"] = _time(start_time)
+    if date is not None:
+        event["date"] = _date(date)
+    return {"updated": copy.deepcopy(event)}
+
+
+def _next_id(records: list[dict], prefix: str) -> str:
+    return f"{prefix}{max(int(r['id'].split('-')[-1]) for r in records) + 1:03d}"
+
+
+def _add_contact(state: State, name: str, phone: str | None = None, email: str | None = None,
+                 team: str | None = None) -> dict:
+    if any(_same_name(c["name"], name) for c in state.contacts):
+        raise ToolError(f"{name!r} is already a contact")
+    contact = {"id": _next_id(state.contacts, "c-"), "name": name, "email": email or "",
+               "phone": phone or "", "team": team or "", "tricky_spelling": False}
+    state.contacts.append(contact)
+    return {"added": {k: contact[k] for k in ("id", "name", "email", "phone", "team")}}
+
+
+def _update_contact(state: State, name: str, phone: str | None = None,
+                    email: str | None = None, team: str | None = None) -> dict:
+    new = {k: v for k, v in (("phone", phone), ("email", email), ("team", team))
+           if v is not None}
+    if not new:
+        raise ToolError("give a new phone, email or team")
+    contact = _contact(state, name)
+    contact.update(new)
+    return {"updated": {k: contact[k] for k in ("id", "name", "email", "phone", "team")}}
+
+
+def _delete_contact(state: State, name: str) -> dict:
+    contact = _contact(state, name)
+    state.contacts.remove(contact)
+    return {"deleted": {k: contact[k] for k in ("id", "name")}}
+
+
+def _create_document(state: State, title: str) -> dict:
+    if not words(title, drop_stopwords=True):
+        raise ToolError("the title has no words")
+    if any(_same_title(d["title"], title) for d in state.documents):
+        raise ToolError(f"a document titled {title!r} exists")
+    doc = {"id": _next_id(state.documents, "doc-"), "title": title, "updated": clock()["date"]}
+    state.documents.append(doc)
+    return {"created": copy.deepcopy(doc)}
+
+
+def _delete_document(state: State, title: str) -> dict:
+    doc = _document(state, title)
+    state.documents.remove(doc)
+    return {"deleted": copy.deepcopy(doc)}
+
+
+def _rename_document(state: State, title: str, new_title: str) -> dict:
+    doc = _document(state, title)
+    if not words(new_title, drop_stopwords=True):
+        raise ToolError("the new title has no words")
+    if any(_same_title(d["title"], new_title) for d in state.documents if d is not doc):
+        raise ToolError(f"a document titled {new_title!r} exists")
+    doc["title"] = new_title
+    return {"renamed": copy.deepcopy(doc)}
+
+
+def _share_document(state: State, title: str, contact: str) -> dict:
+    doc = _document(state, title)
+    person = _contact(state, contact)["name"]
+    shared = doc.setdefault("shared_with", [])
+    if person not in shared:
+        shared.append(person)
+    return {"shared": copy.deepcopy(doc)}
+
+
+def _math(fn):
+    from .. import poly
+
+    def run(state: State, polynomial: str) -> dict:
+        try:
+            return {"result": fn(poly, poly.parse(polynomial))}
+        except poly.PolyError as e:
+            raise ToolError(str(e)) from e
+    return run
+
+
+_differentiate = _math(lambda poly, p: poly.to_text(poly.differentiate(p)))
+_integrate = _math(lambda poly, p: poly.to_text(poly.integrate(p)))
+_factor_polynomial = _math(lambda poly, p: poly.factor_text(*poly.factor(p)))
+
+
+def title_key(title: str) -> tuple[str, ...]:
+    """A title as the tools tell titles apart (:func:`_same_title`): its words,
+    case-insensitive, :data:`STOPWORDS` and punctuation aside. ``"Q1 vendor
+    scorecard"``, ``'"Q1 vendor scorecard"'``, ``"The Q1 vendor scorecard."`` are one
+    title. Execution match compares a title the model writes this way."""
+    return tuple(sorted(words(title, drop_stopwords=True)))
+
+
+def contacts_key(contacts: list[dict]) -> tuple:
+    """The contacts as execution match compares them (ids aside): name, email and team
+    case-insensitive, the phone by its digits only (``1-555-123-4567`` is
+    ``+1-555-123-4567``; ``555-123-4567``, without the country code, is not)."""
+    def phone(v: str) -> str:
+        return "".join(ch for ch in v if ch.isdigit())
+    return tuple(sorted((" ".join(c["name"].split()).casefold(), c["email"].strip().casefold(),
+                         phone(c["phone"]), " ".join(c["team"].split()).casefold())
+                        for c in contacts))
+
+
+def documents_key(documents: list[dict]) -> tuple:
+    """The documents as execution match compares them (ids aside): title by
+    :func:`title_key` (the tool's own equivalence), last update, and who it is shared
+    with."""
+    return tuple(sorted((title_key(d["title"]), d["updated"],
+                         tuple(sorted(n.casefold() for n in d.get("shared_with", []))))
+                        for d in documents))
+
+
 _IMPL = {
     "calculator": _calculator,
     "search_contacts": _search_contacts,
     "get_calendar_event": _get_calendar_event,
     "create_calendar_event": _create_calendar_event,
     "search_documents": _search_documents,
+    # post 10's operation tools (their own registry, :data:`OPERATIONS`)
+    "cancel_calendar_event": _cancel_calendar_event,
+    "update_calendar_event": _update_calendar_event,
+    "add_contact": _add_contact,
+    "update_contact": _update_contact,
+    "delete_contact": _delete_contact,
+    "create_document": _create_document,
+    "delete_document": _delete_document,
+    "rename_document": _rename_document,
+    "share_document": _share_document,
+    "differentiate": _differentiate,
+    "integrate": _integrate,
+    "factor_polynomial": _factor_polynomial,
 }
 
 

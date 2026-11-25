@@ -41,6 +41,17 @@ the reply's call raises no error; and the results agree:
   collapsed) and attendees (as a case-insensitive multiset). The tool
   accepts ``"15:00:00"`` for ``"15:00"`` (seconds 00 only), so execution
   match does too; exact match compares the strings and does not.
+* post 10's operation tools (:data:`tools.OPERATIONS`): the math ones
+  (differentiate, integrate, factor_polynomial) by the polynomial given *and*
+  the one returned, both as canonical text (:mod:`tinytools.poly`), so
+  differentiating ``x^2 + 3x`` fails against ``x^2 + 3x + 5`` though the
+  derivatives agree; the others by the *whole* state after the call
+  (:func:`whole_state_key`: calendar, contacts, documents), so deleting or
+  changing a record other than the one asked for fails, and a name or title
+  that matches more than one record is an error. A title the model writes
+  (create_document, rename_document) compares as the tools compare titles
+  (:func:`tools.title_key`: its words, stopwords and punctuation aside); a
+  phone by its digits only.
 
 On a no-tool-fits task (reference ``None``) both checks say right only when
 the reply holds no ``<tool_call>`` tag at all (outcome "declined"; any tag
@@ -146,9 +157,9 @@ def _norm(value: Any) -> Any:
 
 def _drop_blank_optional(name: str, args: dict) -> dict:
     """``args`` without optional arguments given as ``None`` or blank (a known tool's schema)."""
-    if name not in tools.SCHEMAS:
+    if name not in tools.EXECUTABLE_NAMES:
         return args
-    required = tools.SCHEMAS[name]["parameters"]["required"]
+    required = tools.schema(name)["parameters"]["required"]
     return {k: v for k, v in args.items() if k in required or not tools.is_blank(v)}
 
 
@@ -186,6 +197,18 @@ def state_key(calendar: list[dict]) -> tuple:
         for e in calendar))
 
 
+# Post 10's operation tools (tools.OPERATIONS): the math ones return a polynomial; the
+# others change the state, and execution match compares all of it after the call.
+MATH_OPERATIONS = ("differentiate", "integrate", "factor_polynomial")
+
+
+def whole_state_key(state: tools.State) -> tuple:
+    """Calendar, contacts and documents as execution match compares them, so a call that
+    changes the wrong record, or one record too many, never matches."""
+    return (state_key(state.calendar), tools.contacts_key(state.contacts),
+            tools.documents_key(state.documents))
+
+
 @dataclass(frozen=True)
 class Run:
     result: dict  # what the tool returned (fed back to the model)
@@ -202,6 +225,14 @@ def run(name: str, args: Any) -> Run:
         compared = result["result"]
     elif name == "create_calendar_event":
         compared = state_key(state.calendar)
+    elif name in MATH_OPERATIONS:
+        # the input and the result, each as poly's canonical text: d/dx drops the
+        # constant, so a call on the wrong polynomial can return the right derivative
+        from . import poly
+
+        compared = (poly.normalize(args["polynomial"]), result["result"])
+    elif name in tools.OPERATION_NAMES:
+        compared = whole_state_key(state)
     else:
         (records,) = result.values()
         compared = frozenset(r["id"] for r in records)
