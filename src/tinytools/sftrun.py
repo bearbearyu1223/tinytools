@@ -926,6 +926,16 @@ def id_kinds(ids: list[int], vocab_size: int, added: set[int]) -> dict[str, int]
     return {"added tokens": add, "vocabulary tokens": len(ids) - pad - add, "padding rows": pad}
 
 
+def added_tokens(added: dict[int, str], vocab_size: int, like: list[int]) -> dict:
+    """The tokenizer's added tokens (``added_tokens_decoder``: id -> token, those with a
+    row under ``vocab_size``): how many, their ids, and the ones not in ``like`` (the rows
+    sharing the first trained token's embedding), as (token, id). Pure."""
+    ids = sorted(i for i in added if i < vocab_size)
+    same = set(like)
+    return {"n": len(ids), "ids": id_summary(ids),
+            "not_sharing": [(added[i], i) for i in ids if i not in same]}
+
+
 def rows_check(lm, model: str, tokens: tuple[str, ...], ids: list[int],
                instruct: str, tok=None) -> dict:
     """The four rows in the loaded base model (as it scores: the device's dtype) beside the
@@ -948,6 +958,9 @@ def rows_check(lm, model: str, tokens: tuple[str, ...], ids: list[int],
         same = {"same_as_first": {"n": len(like), "ids": id_summary(like),
                                   "kinds": id_kinds(like, len(tok),
                                                     set(tok.added_tokens_decoder)),
+                                  "added": added_tokens(
+                                      {i: t.content for i, t in tok.added_tokens_decoder.items()},
+                                      len(tok), like),
                                   "trained": sum(i in like for i in ids)}}
     return {**same, "model": model, "instruct": instruct, "tokens": list(tokens), "ids": ids,
             "tied": tied(lm), "rows": len(w), "hidden": int(w.shape[1]),
@@ -980,6 +993,11 @@ def _print_rows(rep, rw: dict) -> None:
         kinds = " + ".join(f"{v:,} {k}" for k, v in sf["kinds"].items() if v)
         rep.note(f"rows sharing {rw['tokens'][0]}'s embedding: {sf['n']:,}")
         rep.note(f"  ({kinds}; ids {sf['ids']})", wrap=True)
+        ad = sf.get("added")
+        if ad:
+            apart = ", ".join(f"{t} ({i})" for t, i in ad["not_sharing"]) or "none"
+            rep.note(f"  added tokens: {ad['n']} (ids {ad['ids']}); not sharing: {apart}",
+                     wrap=True)
         rep.note(f"(every row of the embedding, cosine at least {rw['threshold']:g};"
                  f" the {sf['trained']} above among them)", wrap=True)
         rep.note(f"Only the {len(rw['ids'])} the format uses are trained; the others stay "
@@ -990,6 +1008,40 @@ def _print_rows(rep, rw: dict) -> None:
              f"{len(rw['ids']) * rw['hidden']:,} float32")
     rep.note("parameters, beside LoRA, in the same optimizer.")
 
+
+
+def rows_capture_name(suffix: str, device_type: str) -> str:
+    """``sft-check --only rows``'s capture: the profile's suffix and the device it ran on
+    (``sft-check-base-rows-mps.txt``), so it never overwrites the full check's. Pure."""
+    return f"sft-check{suffix}-rows-{device_type}.txt"
+
+
+def run_rows(root: Path, quick: bool, model: str | None, profile: str = "base") -> int:
+    """sft-check's embedding-rows section alone (``--only rows``): the same
+    :func:`rows_check` and :func:`_print_rows` the full check runs, under the usual header
+    (where it ran), in its own capture. No training set, no merge checks."""
+    from . import bfcl
+    from .cli import _quiet_hf
+    from .device import get_device
+    from .report import Report
+
+    _quiet_hf()
+    m = mode(quick, root, profile=profile)
+    if not m.embed_rows:
+        sys.exit(f"--only rows: the {profile} profile trains no embedding rows")
+    prof = T.PROFILES[m.profile]
+    model = model or m.settings.model
+    device = get_device()
+    rep = Report("tinytools sft-check --only rows" + m.title
+                 + (" --quick (not for publication)" if quick else ""),
+                 out=root / "outputs" / rows_capture_name(m.suffix, device.type))
+    rep.header()
+    tok_m, lm = bfcl.load_model(model, device, prof.tokenizer_for(model))
+    ids = T.token_ids(tok_m, m.embed_rows)
+    rw = rows_check(lm, model, m.embed_rows, ids, prof.tokenizer_for(model), tok_m)
+    _print_rows(rep, rw)
+    rep.close()
+    return 0 if rw["passes"] else 1
 
 
 def run_check(root: Path, quick: bool, model: str | None, dev_limit: int | None,

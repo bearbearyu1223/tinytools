@@ -1974,6 +1974,8 @@ def cmd_sft_check(args) -> None:
                               args.profile))
 
 
+    if args.only == "rows":
+        sys.exit(sftrun.run_rows(ROOT, args.quick, args.model, args.profile))
 def cmd_sft_score(args) -> None:
     from . import sftrun
 
@@ -2223,6 +2225,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("sft-pair", help="one seed: train real, score, train control, score")
     s.add_argument("--quick", action="store_true", help=quick_help)
+    s.add_argument("--only", choices=("rows",), default=None,
+                   help="rows: only the embedding-rows section (--profile base), into "
+                        "outputs/sft-check-base-rows-<device>.txt; the model, no sets")
     s.add_argument("--seed", type=int, required=True)
     s.add_argument("--deadline-epoch", type=float, default=None, help=deadline_help)
     s.add_argument("--batch-size", type=int, default=None, help=BATCH_HELP)

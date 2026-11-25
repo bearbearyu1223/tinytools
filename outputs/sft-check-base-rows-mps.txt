@@ -1,0 +1,39 @@
+==========================================================================
+tinytools sft-check --only rows --profile base
+==========================================================================
+device        : mps (Apple arm64)
+torch         : 2.13.0
+platform      : Darwin 24.6.0 (arm64)
+device memory : 17.2 GB
+
+--------------------------------------------------------------------------
+The four embedding rows: why the base arm trains them
+--------------------------------------------------------------------------
+  model                              Qwen/Qwen2.5-1.5B
+  embeddings tied (input = output)   yes
+  Each row's norm and its cosine with <|im_start|>, in the base
+  model (float32, as loaded) and in Qwen2.5-1.5B-Instruct:
+  token             id   norm  cosine  Instruct norm  cosine
+  ------------------------------------------------------------
+  <|im_start|>  151644  0.414  1.0000          0.426  1.0000
+  <|im_end|>    151645  0.414  1.0000          0.422  0.9482
+  <tool_call>   151657  0.414  1.0000          0.431  0.9417
+  </tool_call>  151658  0.414  1.0000          0.429  0.9344
+  median row norm, base              1.032 (all 151,936 rows)
+  pairwise cosine, base              1.0000 to 1.0000
+    largest |difference|, base       1.5e-05
+  pairwise cosine, Instruct          0.9201 to 0.9482
+  identical in the base model        yes
+  (identical: every pairwise cosine at least 0.9999)
+  rows sharing <|im_start|>'s embedding: 2,234
+    (21 added tokens + 1,942 vocabulary tokens + 271 padding rows; ids
+    151644-151935 and 1,942 more from 124 to 151638)
+    added tokens: 22 (ids 151643-151664); not sharing: <|endoftext|>
+    (151643)
+  (every row of the embedding, cosine at least 0.9999; the 4 above among
+  them)
+  Only the 4 the format uses are trained; the others stay frozen.
+  Tied and identical: from any hidden state, ending the turn and
+  opening a call score the same, and LoRA can't separate them. The
+  base arm trains a delta on these rows: 4 x 1,536 = 6,144 float32
+  parameters, beside LoRA, in the same optimizer.

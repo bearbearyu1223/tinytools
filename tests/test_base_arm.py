@@ -573,3 +573,19 @@ def test_the_base_experiment_held_its_cap_in_the_ledger():
                                                if r["post"] == "9"))
     assert est.post_spent <= lr.POST_CAP_USD
     assert e.expected_hours < e.max_hours
+
+
+def test_added_tokens_names_the_ones_not_sharing():
+    from tinytools.sftrun import added_tokens
+
+    added = {10: "<|endoftext|>", 11: "<|im_start|>", 12: "<|im_end|>", 99: "<past_vocab>"}
+    got = added_tokens(added, vocab_size=20, like=[3, 11, 12, 25])
+    assert got == {"n": 3, "ids": "10-12", "not_sharing": [("<|endoftext|>", 10)]}
+    assert added_tokens(added, 20, like=[10, 11, 12])["not_sharing"] == []
+
+
+def test_rows_capture_is_named_for_its_device():
+    from tinytools.sftrun import rows_capture_name
+
+    assert rows_capture_name("-base", "mps") == "sft-check-base-rows-mps.txt"
+    assert rows_capture_name("-base", "cuda") != "sft-check-base.txt"  # never the full check's
